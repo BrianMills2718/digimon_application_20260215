@@ -375,6 +375,9 @@ SPARK_TOKENS = {
 
 def count_input_tokens(messages, model="gpt-3.5-turbo-0125"):
     """Return the number of tokens used by a list of messages."""
+    # Strip LiteLLM provider prefix (e.g., "openai/gpt-4o-mini" -> "gpt-4o-mini")
+    if "/" in model:
+        model = model.split("/", 1)[1]
     if "claude" in model:
         vo = anthropic.Client()
         num_tokens = vo.count_tokens(str(messages))
@@ -466,6 +469,9 @@ def count_output_tokens(string: str, model: str) -> int:
     Returns:
         int: The number of tokens in the text string.
     """
+    # Strip LiteLLM provider prefix (e.g., "openai/gpt-4o-mini" -> "gpt-4o-mini")
+    if "/" in model:
+        model = model.split("/", 1)[1]
     if "claude" in model:
         vo = anthropic.Client()
         num_tokens = vo.count_tokens(string)

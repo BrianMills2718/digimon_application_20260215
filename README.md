@@ -1,13 +1,3 @@
-Okay, this is a great README that already captures a lot of the spirit and direction of your DIGIMON fork! To make it even more comprehensive and reflective of our recent progress and your larger vision (especially the agent autonomously handling raw text to insights), I'll integrate our recent accomplishments and future plans more explicitly.
-
-Here's a revised, complete README.md. I've focused on:
-
-Clearly stating the end-to-end agent vision.
-Updating "Current Features & Capabilities" to reflect the new agent tools.
-Refining "Future Plans" to be more specific about the agent's intelligence and the ReACT paradigm.
-Ensuring a logical flow and incorporating the strong sections you already have.
-Markdown
-
 # 👾 DIGIMON: Deep Analysis of Graph-Based Retrieval-Augmented Generation (RAG) Systems
 
 <div style="text-align: center;">
@@ -179,12 +169,3 @@ In-depth Analysis of Graph-based RAG in a Unified Framework
   year={2025}
 }
 
-**Key Changes Made:**
-
-* **Elevated Agent Vision:** More clearly stated the goal of an agent handling tasks end-to-end, from raw text to insights, using ReACT principles.
-* **Updated Current Features:** Specifically mentioned the new `PrepareCorpusFromDirectoryTool` and the status of graph construction tools and their testing.
-* **Refined Future Plans:** Made the future plans more agent-centric, focusing on planning, ReACT, KG structuring strategy, dynamic retrieval, and the remaining tool implementations.
-* **LLM Configuration Clarity:** Updated the "Supported LLM Backends" to reflect the use of `LiteLLMProvider` and how to configure for cloud vs. local models using LiteLLM conventions.
-* **Structure and Flow:** Ensured a logical flow from project goals to current capabilities, quick start, and future plans.
-
-ou'll also want to integrate your detailed tables for "Graph Types Overview" and "Retrieval Operators" back into the "Representative Graph RAG Methods & Operators" section.
