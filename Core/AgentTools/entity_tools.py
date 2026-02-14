@@ -465,13 +465,14 @@ Return ONLY a JSON array. No other text."""
 
         extracted = []
         for e in entities_raw[:max_entities]:
-            extracted.append(ExtractedEntityData(
+            eed = ExtractedEntityData(
                 entity_name=e.get("entity_name", "unknown"),
                 source_id="entity_agent_tool",
                 entity_type=e.get("entity_type", "unknown"),
                 description=e.get("description", ""),
-                extraction_confidence=e.get("confidence", 0.8),
-            ))
+            )
+            eed.extraction_confidence = e.get("confidence", 0.8)
+            extracted.append(eed)
 
         logger.info(f"Entity.Agent: Extracted {len(extracted)} entities")
         return EntityAgentOutputs(extracted_entities=extracted)
