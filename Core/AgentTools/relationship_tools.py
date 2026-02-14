@@ -287,13 +287,6 @@ async def relationship_vdb_build_tool(
         )
 
 
-async def relationship_score_aggregator_tool(
-    params: RelationshipScoreAggregatorInputs,
-    graphrag_context: Optional[Any] = None
-) -> RelationshipScoreAggregatorOutputs:
-    logger.info(f"Executing tool 'Relationship.ScoreAggregator' with params: {params}")
-    return RelationshipScoreAggregatorOutputs(aggregated_relationship_scores={"example_rel": 0.9})
-
 async def relationship_vdb_search_tool(
     params: RelationshipVDBSearchInputs,
     graphrag_context: GraphRAGContext
@@ -385,99 +378,141 @@ async def relationship_vdb_search_tool(
 
 async def relationship_agent_tool(
     params: RelationshipAgentInputs,
-    graphrag_context: Optional[Any] = None 
+    graphrag_context: GraphRAGContext,
 ) -> RelationshipAgentOutputs:
     """
-    Utilizes an LLM to find or extract useful relationships from the given context.
-    Wraps core GraphRAG logic for LLM-based relationship extraction.
+    Uses an LLM to extract relationships from text context,
+    guided by a query and known entities.
     """
-    print(f"Executing tool 'Relationship.Agent' with parameters: {params}")
+    import json as _json
 
-    # 1. Extract parameters from 'params: RelationshipAgentInputs'
-    #    - query_text: str
-    #    - text_context: Union[str, List[str]]
-    #    - context_entities: List[ExtractedEntityData] (or their IDs)
-    #    - target_relationship_types: Optional[List[str]]
-    #    - llm_config_override_patch: Optional[Dict[str, Any]]
-    #    - max_relationships_to_extract: Optional[int]
+    logger.info(
+        f"Executing Relationship.Agent: query='{params.query_text[:80]}', "
+        f"{len(params.context_entities)} context entities"
+    )
 
-    # Placeholder: Prepare prompt for LLM.
-    # Placeholder: Get LLM instance.
-    # Placeholder: Make LLM call.
-    # Placeholder: Parse LLM response into List[RelationshipData].
+    text = params.text_context
+    if isinstance(text, list):
+        text = "\n\n".join(text)
 
-    print(f"Placeholder: Would use LLM to extract relationships from context '{params.text_context}' based on query '{params.query_text}'.")
-    print(f"Context entities provided: {len(params.context_entities)}")
-    print(f"Target relationship types: {params.target_relationship_types}")
+    max_rels = params.max_relationships_to_extract or 10
+    entity_names = [getattr(e, 'entity_name', str(e)) for e in params.context_entities]
+    entities_str = ", ".join(entity_names[:20])
+    types_str = ", ".join(params.target_relationship_types) if params.target_relationship_types else "any type"
 
-    # Dummy results
-    dummy_extracted_relationships = []
-    num_to_extract = params.max_relationships_to_extract if params.max_relationships_to_extract is not None else 1
+    prompt = f"""Extract relationships between entities from the following text.
+Known entities: {entities_str}
+Focus on relationship types: {types_str}
+Return a JSON array of objects with fields: "src_id", "tgt_id", "relation_name", "description".
+Extract at most {max_rels} relationships.
 
-    # Use context_entities if available to make more meaningful dummy data
-    entity_ids_for_dummy_rels = [getattr(e, 'entity_name', f"dummy_entity_{idx}") for idx, e in enumerate(params.context_entities)]
-    if not entity_ids_for_dummy_rels:
-        entity_ids_for_dummy_rels = ["dummy_src_1", "dummy_tgt_1"]
-    if len(entity_ids_for_dummy_rels) == 1:
-        entity_ids_for_dummy_rels.append(f"another_entity_for_{entity_ids_for_dummy_rels[0]}")
+Query: {params.query_text}
 
+Text:
+{text[:4000]}
 
-    for i in range(num_to_extract):
-        rel_type = params.target_relationship_types[0] if params.target_relationship_types else "related_to_by_llm"
-        dummy_extracted_relationships.append(
-            RelationshipData( 
-                src_id=entity_ids_for_dummy_rels[i % len(entity_ids_for_dummy_rels)],
-                tgt_id=entity_ids_for_dummy_rels[(i+1) % len(entity_ids_for_dummy_rels)], 
-                source_id="llm_agent_relationship_tool",
-                relation_name=rel_type,
-                description=f"LLM identified relationship {i+1} of type {rel_type}",
-                relevance_score=0.90 - (i*0.02) 
-                # Ensure all required fields from CoreRelationship are present
-            )
-        )
+Return ONLY a JSON array. No other text."""
 
-    return RelationshipAgentOutputs(extracted_relationships=dummy_extracted_relationships)
+    llm = graphrag_context.llm_provider
+    if llm is None:
+        logger.error("Relationship.Agent: No LLM provider available")
+        return RelationshipAgentOutputs(extracted_relationships=[])
+
+    try:
+        response = await llm.aask(prompt)
+        resp_text = response.strip()
+        if resp_text.startswith("```"):
+            resp_text = resp_text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+        rels_raw = _json.loads(resp_text)
+        if not isinstance(rels_raw, list):
+            rels_raw = [rels_raw]
+
+        extracted = []
+        for r in rels_raw[:max_rels]:
+            extracted.append(RelationshipData(
+                src_id=r.get("src_id", "unknown"),
+                tgt_id=r.get("tgt_id", "unknown"),
+                source_id="relationship_agent_tool",
+                relation_name=r.get("relation_name", "related_to"),
+                description=r.get("description", ""),
+            ))
+
+        logger.info(f"Relationship.Agent: Extracted {len(extracted)} relationships")
+        return RelationshipAgentOutputs(extracted_relationships=extracted)
+
+    except Exception as e:
+        logger.error(f"Relationship.Agent: LLM extraction failed: {e}", exc_info=True)
+        return RelationshipAgentOutputs(extracted_relationships=[])
 
 
 # --- Tool Implementation for: Relationship Score Aggregator ---
 # tool_id: "Relationship.ScoreAggregator"
 
-from Core.AgentSchema.tool_contracts import RelationshipScoreAggregatorInputs, RelationshipScoreAggregatorOutputs
-from typing import Dict, List, Optional, Any, Tuple, Literal
-
 async def relationship_score_aggregator_tool(
     params: RelationshipScoreAggregatorInputs,
-    graphrag_context: Optional[Any] = None
+    graphrag_context: GraphRAGContext
 ) -> RelationshipScoreAggregatorOutputs:
     """
-    Computes relationship scores based on entity scores (e.g., from PPR) and returns top-k relationships.
-    Wraps core GraphRAG logic.
+    Computes relationship scores by aggregating entity scores (e.g. from PPR)
+    onto the edges connecting those entities, then returns top-k relationships.
     """
-    print(f"Executing tool 'Relationship.ScoreAggregator' with parameters: {params}")
+    logger.info(
+        f"Executing tool 'Relationship.ScoreAggregator' with "
+        f"{len(params.entity_scores)} entity scores, "
+        f"graph='{params.graph_reference_id}', method='{params.aggregation_method}'"
+    )
 
-    # 1. Extract parameters from 'params: RelationshipScoreAggregatorInputs'
-    #    - entity_scores: Dict[str, float]
-    #    - graph_reference_id: str
-    #    - top_k_relationships: Optional[int]
-    #    - aggregation_method: Optional[Literal["sum", "average", "max"]]
+    graph_instance = graphrag_context.get_graph_instance(params.graph_reference_id)
+    if graph_instance is None:
+        logger.error(f"Relationship.ScoreAggregator: Graph '{params.graph_reference_id}' not found")
+        return RelationshipScoreAggregatorOutputs(scored_relationships=[])
 
-    # Placeholder: Access graph, get relationships for entities in entity_scores,
-    # aggregate scores onto relationships, rank them.
-    print(f"Placeholder: Would aggregate scores for relationships in graph '{params.graph_reference_id}' using {len(params.entity_scores)} entity scores.")
+    # Extract NetworkX graph
+    nx_graph = None
+    if hasattr(graph_instance, '_graph') and hasattr(graph_instance._graph, 'graph') and isinstance(graph_instance._graph.graph, nx.Graph):
+        nx_graph = graph_instance._graph.graph
+    elif hasattr(graph_instance, '_graph') and isinstance(graph_instance._graph, nx.Graph):
+        nx_graph = graph_instance._graph
+    if nx_graph is None:
+        logger.error("Relationship.ScoreAggregator: Could not access NetworkX graph")
+        return RelationshipScoreAggregatorOutputs(scored_relationships=[])
 
-    # Dummy results
-    dummy_scored_relationships = []
-    num_to_return = params.top_k_relationships if params.top_k_relationships is not None else 2
+    scored_relationships: List[Tuple[RelationshipData, float]] = []
+    method = params.aggregation_method or "sum"
 
-    # Create some dummy RelationshipData if needed for the output structure
-    example_rels = [
-        RelationshipData(relationship_id=f"agg_rel_{i}", src_id=f"src_{i}", tgt_id=f"tgt_{i}", source_id="agg_tool", type="aggregated_score_type")
-        for i in range(num_to_return)
-    ]
+    for u, v, edge_data in nx_graph.edges(data=True):
+        score_u = params.entity_scores.get(u, 0.0)
+        score_v = params.entity_scores.get(v, 0.0)
 
-    for i in range(num_to_return):
-        dummy_scored_relationships.append(
-            (example_rels[i], 0.8 - (i * 0.1)) 
+        # Skip edges where neither endpoint has a score
+        if score_u == 0.0 and score_v == 0.0:
+            continue
+
+        if method == "sum":
+            agg_score = score_u + score_v
+        elif method == "average":
+            agg_score = (score_u + score_v) / 2.0
+        elif method == "max":
+            agg_score = max(score_u, score_v)
+        else:
+            agg_score = score_u + score_v
+
+        rel = RelationshipData(
+            src_id=u,
+            tgt_id=v,
+            source_id=edge_data.get("source_id", "score_aggregator"),
+            relation_name=str(edge_data.get("relation_name", edge_data.get("type", "unknown"))),
+            description=str(edge_data.get("description", "")) if edge_data.get("description") else None,
+            weight=float(edge_data.get("weight", 1.0)),
         )
+        scored_relationships.append((rel, agg_score))
 
-    return RelationshipScoreAggregatorOutputs(scored_relationships=dummy_scored_relationships)
+    # Sort descending by score
+    scored_relationships.sort(key=lambda x: x[1], reverse=True)
+
+    top_k = params.top_k_relationships if params.top_k_relationships is not None else 10
+    scored_relationships = scored_relationships[:top_k]
+
+    logger.info(f"Relationship.ScoreAggregator: Returning {len(scored_relationships)} scored relationships")
+    return RelationshipScoreAggregatorOutputs(scored_relationships=scored_relationships)

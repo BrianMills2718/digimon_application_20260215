@@ -586,14 +586,14 @@ class CommunityGetLayerOutputs(BaseToolOutput):
     #
     communities_in_layers: List[CommunityData] = Field(description="List of communities found at or below the specified layer depth.")
 
-# TODO for next steps (updated):
-# 1. Schema Harmonization: Critically review all Pydantic models in this file (tool_contracts.py)
-#    and in Core/AgentSchema/plan.py. Ensure that where placeholder types like Dict[str, Any] or
-#    simple type hints like List[str] for IDs are used, they are updated to reference or align with
-#    the more detailed Pydantic models from your Core/Schema/ directory
-#    (e.g., by importing and using them, or ensuring field compatibility).
-# 2. Mapping to Existing Code: Begin the process of mapping each `tool_id` and its
-#    Pydantic input/output contract to actual, callable Python functions/methods in your Core modules.
-#    This will likely involve some refactoring or writing new wrapper functions.
-# 3. Design and Implement the "Agent Orchestrator".
-# 4. Develop LLM Agent Prompts and integrate with a framework like PydanticAI/LiteLLM.
+# --- Tool Contract for: Entity Operator - TFIDF ---
+# Ranks candidate entities by TF-IDF cosine similarity to a query
+
+class EntityTFIDFInputs(BaseToolParams):
+    candidate_entity_ids: List[str] = Field(description="List of entity IDs to rank.")
+    query_text: str = Field(description="Query text to compare entities against.")
+    graph_reference_id: str = Field(description="Graph containing the entities.")
+    top_k: Optional[int] = Field(default=10, description="Number of top-ranked entities to return.")
+
+class EntityTFIDFOutputs(BaseToolOutput):
+    ranked_entities: List[Tuple[str, float]] = Field(description="List of (entity_id, tfidf_score) tuples.")

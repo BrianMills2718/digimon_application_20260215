@@ -88,11 +88,25 @@ class DynamicToolRegistry:
         from Core.AgentTools.entity_onehop_tools import entity_onehop_neighbors_tool
         from Core.AgentTools.entity_relnode_tools import entity_relnode_extract_tool
         from Core.AgentTools.relationship_tools import (
-            relationship_one_hop_neighbors_tool, 
-            relationship_vdb_build_tool, 
-            relationship_vdb_search_tool
+            relationship_one_hop_neighbors_tool,
+            relationship_vdb_build_tool,
+            relationship_vdb_search_tool,
+            relationship_score_aggregator_tool,
+            relationship_agent_tool,
         )
-        from Core.AgentTools.chunk_tools import chunk_from_relationships_tool, chunk_get_text_for_entities_tool
+        from Core.AgentTools.chunk_tools import (
+            chunk_from_relationships_tool, chunk_get_text_for_entities_tool,
+            chunk_occurrence_tool, chunk_aggregator_tool,
+        )
+        from Core.AgentTools.community_tools import (
+            community_detect_from_entities_tool, community_get_layer_tool,
+        )
+        from Core.AgentTools.subgraph_tools import (
+            subgraph_khop_paths_tool, subgraph_steiner_tree_tool, subgraph_agent_path_tool,
+        )
+        from Core.AgentTools.entity_tools import (
+            entity_agent_tool, entity_link_tool, entity_tfidf_tool,
+        )
         from Core.AgentTools.graph_construction_tools import (
             build_er_graph, build_rk_graph, build_tree_graph, 
             build_tree_graph_balanced, build_passage_graph
@@ -117,7 +131,12 @@ class DynamicToolRegistry:
             EntityVDBSearchInputs, EntityVDBBuildInputs, EntityPPRInputs,
             EntityOneHopInput, EntityRelNodeInput, RelationshipOneHopNeighborsInputs,
             RelationshipVDBBuildInputs, RelationshipVDBSearchInputs,
+            RelationshipScoreAggregatorInputs, RelationshipAgentInputs,
             ChunkFromRelationshipsInputs, ChunkGetTextForEntitiesInput,
+            ChunkOccurrenceInputs, ChunkRelationshipScoreAggregatorInputs,
+            CommunityDetectFromEntitiesInputs, CommunityGetLayerInputs,
+            SubgraphKHopPathsInputs, SubgraphSteinerTreeInputs, SubgraphAgentPathInputs,
+            EntityAgentInputs, EntityLinkInputs, EntityTFIDFInputs,
             GraphVisualizerInput, GraphAnalyzerInput
         )
         from Core.AgentSchema.corpus_tool_contracts import PrepareCorpusInputs
@@ -314,6 +333,179 @@ class DynamicToolRegistry:
             )
         )
         
+        # Register new operators: Relationship.ScoreAggregator, Relationship.Agent
+        self.register_tool(
+            tool_id="Relationship.ScoreAggregator",
+            function=relationship_score_aggregator_tool,
+            metadata=ToolMetadata(
+                tool_id="Relationship.ScoreAggregator",
+                name="Relationship Score Aggregator",
+                description="Aggregate entity scores onto relationships and return top-k",
+                category=ToolCategory.READ_ONLY,
+                capabilities={ToolCapability.RELATIONSHIP_ANALYSIS},
+                input_model=RelationshipScoreAggregatorInputs,
+                tags=["relationship", "aggregation", "scoring"]
+            )
+        )
+
+        self.register_tool(
+            tool_id="Relationship.Agent",
+            function=relationship_agent_tool,
+            metadata=ToolMetadata(
+                tool_id="Relationship.Agent",
+                name="Relationship Agent (LLM)",
+                description="Use LLM to extract relationships from text context",
+                category=ToolCategory.READ_ONLY,
+                capabilities={ToolCapability.RELATIONSHIP_ANALYSIS},
+                input_model=RelationshipAgentInputs,
+                tags=["relationship", "llm", "extraction"]
+            )
+        )
+
+        # Register new chunk operators
+        self.register_tool(
+            tool_id="Chunk.Occurrence",
+            function=chunk_occurrence_tool,
+            metadata=ToolMetadata(
+                tool_id="Chunk.Occurrence",
+                name="Chunk Co-occurrence Ranking",
+                description="Rank chunks by entity pair co-occurrence",
+                category=ToolCategory.READ_ONLY,
+                capabilities={ToolCapability.TEXT_RETRIEVAL},
+                input_model=ChunkOccurrenceInputs,
+                tags=["chunk", "occurrence", "ranking"]
+            )
+        )
+
+        self.register_tool(
+            tool_id="Chunk.Aggregator",
+            function=chunk_aggregator_tool,
+            metadata=ToolMetadata(
+                tool_id="Chunk.Aggregator",
+                name="Chunk Relationship Score Aggregator",
+                description="Aggregate relationship scores onto chunks",
+                category=ToolCategory.READ_ONLY,
+                capabilities={ToolCapability.TEXT_RETRIEVAL},
+                input_model=ChunkRelationshipScoreAggregatorInputs,
+                tags=["chunk", "aggregation", "scoring"]
+            )
+        )
+
+        # Register community operators
+        self.register_tool(
+            tool_id="Community.DetectFromEntities",
+            function=community_detect_from_entities_tool,
+            metadata=ToolMetadata(
+                tool_id="Community.DetectFromEntities",
+                name="Community Detection from Entities",
+                description="Find communities containing seed entities",
+                category=ToolCategory.READ_ONLY,
+                capabilities={ToolCapability.ANALYSIS},
+                input_model=CommunityDetectFromEntitiesInputs,
+                tags=["community", "detection", "entities"]
+            )
+        )
+
+        self.register_tool(
+            tool_id="Community.GetLayer",
+            function=community_get_layer_tool,
+            metadata=ToolMetadata(
+                tool_id="Community.GetLayer",
+                name="Community Get Layer",
+                description="Get communities at or below a hierarchy layer",
+                category=ToolCategory.READ_ONLY,
+                capabilities={ToolCapability.ANALYSIS},
+                input_model=CommunityGetLayerInputs,
+                tags=["community", "hierarchy", "layer"]
+            )
+        )
+
+        # Register subgraph operators
+        self.register_tool(
+            tool_id="Subgraph.KHopPaths",
+            function=subgraph_khop_paths_tool,
+            metadata=ToolMetadata(
+                tool_id="Subgraph.KHopPaths",
+                name="K-Hop Path Finder",
+                description="Find k-hop paths between entities in graph",
+                category=ToolCategory.READ_ONLY,
+                capabilities={ToolCapability.RELATIONSHIP_ANALYSIS},
+                input_model=SubgraphKHopPathsInputs,
+                tags=["subgraph", "paths", "traversal"]
+            )
+        )
+
+        self.register_tool(
+            tool_id="Subgraph.SteinerTree",
+            function=subgraph_steiner_tree_tool,
+            metadata=ToolMetadata(
+                tool_id="Subgraph.SteinerTree",
+                name="Steiner Tree",
+                description="Compute Steiner tree connecting terminal entities",
+                category=ToolCategory.READ_ONLY,
+                capabilities={ToolCapability.RELATIONSHIP_ANALYSIS},
+                input_model=SubgraphSteinerTreeInputs,
+                tags=["subgraph", "steiner", "tree"]
+            )
+        )
+
+        self.register_tool(
+            tool_id="Subgraph.AgentPath",
+            function=subgraph_agent_path_tool,
+            metadata=ToolMetadata(
+                tool_id="Subgraph.AgentPath",
+                name="Agent Path Ranker (LLM)",
+                description="Use LLM to rank/filter candidate paths by relevance",
+                category=ToolCategory.READ_ONLY,
+                capabilities={ToolCapability.RELATIONSHIP_ANALYSIS},
+                input_model=SubgraphAgentPathInputs,
+                tags=["subgraph", "paths", "llm", "ranking"]
+            )
+        )
+
+        # Register new entity operators
+        self.register_tool(
+            tool_id="Entity.Agent",
+            function=entity_agent_tool,
+            metadata=ToolMetadata(
+                tool_id="Entity.Agent",
+                name="Entity Agent (LLM)",
+                description="Use LLM to extract entities from text context",
+                category=ToolCategory.READ_ONLY,
+                capabilities={ToolCapability.ENTITY_DISCOVERY},
+                input_model=EntityAgentInputs,
+                tags=["entity", "llm", "extraction"]
+            )
+        )
+
+        self.register_tool(
+            tool_id="Entity.Link",
+            function=entity_link_tool,
+            metadata=ToolMetadata(
+                tool_id="Entity.Link",
+                name="Entity Linker",
+                description="Link entity mentions to canonical entities in VDB",
+                category=ToolCategory.READ_ONLY,
+                capabilities={ToolCapability.ENTITY_DISCOVERY, ToolCapability.VECTOR_SEARCH},
+                input_model=EntityLinkInputs,
+                tags=["entity", "linking", "canonicalization"]
+            )
+        )
+
+        self.register_tool(
+            tool_id="Entity.TFIDF",
+            function=entity_tfidf_tool,
+            metadata=ToolMetadata(
+                tool_id="Entity.TFIDF",
+                name="Entity TF-IDF Ranker",
+                description="Rank entities by TF-IDF similarity to query",
+                category=ToolCategory.READ_ONLY,
+                capabilities={ToolCapability.ENTITY_DISCOVERY},
+                input_model=EntityTFIDFInputs,
+                tags=["entity", "tfidf", "ranking"]
+            )
+        )
+
         # Register visualization and analysis tools
         self.register_tool(
             tool_id="graph.Visualize",

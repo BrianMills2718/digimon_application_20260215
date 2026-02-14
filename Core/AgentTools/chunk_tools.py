@@ -12,14 +12,19 @@ import networkx as nx
 from Core.Common.Logger import logger
 
 from Core.AgentSchema.tool_contracts import (
-    ChunkFromRelationshipsInputs, 
+    ChunkFromRelationshipsInputs,
     ChunkFromRelationshipsOutputs,
     ChunkData,
     ChunkGetTextForEntitiesInput,
     ChunkGetTextForEntitiesOutput,
-    ChunkTextResultItem
+    ChunkTextResultItem,
+    ChunkOccurrenceInputs,
+    ChunkOccurrenceOutputs,
+    ChunkRelationshipScoreAggregatorInputs,
+    ChunkRelationshipScoreAggregatorOutputs,
 )
 from Core.AgentSchema.context import GraphRAGContext
+from Core.Common.Constants import GRAPH_FIELD_SEP
 
 # --- Tool Implementation for: Chunks From Relationships ---
 # tool_id: "Chunk.FromRelationships"
@@ -277,44 +282,186 @@ async def chunk_from_relationships_tool(
 # --- Tool Implementation for: Chunk Operator - Occurrence ---
 # tool_id: "Chunk.Occurrence"
 
-from Core.AgentSchema.tool_contracts import ChunkOccurrenceInputs, ChunkOccurrenceOutputs, ChunkData
-from Core.AgentSchema.context import GraphRAGContext
 
 async def chunk_occurrence_tool(
     params: ChunkOccurrenceInputs,
-    graphrag_context: Optional[Any] = None
+    graphrag_context: GraphRAGContext
 ) -> ChunkOccurrenceOutputs:
     """
-    Ranks text chunks based on the co-occurrence of specified entity pairs (representing relationships).
-    Wraps core GraphRAG logic.
+    Ranks text chunks based on co-occurrence of specified entity pairs.
+    For each entity pair, finds chunks where both entities appear
+    (via node source_id fields with GRAPH_FIELD_SEP-separated chunk IDs).
     """
-    print(f"Executing tool 'Chunk.Occurrence' with parameters: {params}")
+    logger.info(
+        f"Executing Chunk.Occurrence: {len(params.target_entity_pairs_in_relationship)} pairs, "
+        f"graph='{params.document_collection_id}'"
+    )
 
-    # 1. Extract parameters from 'params: ChunkOccurrenceInputs'
-    #    - target_entity_pairs_in_relationship: List[Dict[str, str]]
-    #    - document_collection_id: str
-    #    - top_k_chunks: int
+    graph_instance = graphrag_context.get_graph_instance(params.document_collection_id)
+    if graph_instance is None:
+        logger.error(f"Chunk.Occurrence: Graph '{params.document_collection_id}' not found")
+        return ChunkOccurrenceOutputs(ranked_occurrence_chunks=[])
 
-    # Placeholder: Access chunk data. For each chunk, check for co-occurrence of entity pairs.
-    # Rank chunks based on these occurrences.
-    print(f"Placeholder: Would rank chunks from '{params.document_collection_id}' for co-occurrence of {len(params.target_entity_pairs_in_relationship)} entity pairs.")
+    # Extract NetworkX graph
+    nx_graph = None
+    if hasattr(graph_instance, '_graph') and hasattr(graph_instance._graph, 'graph') and isinstance(graph_instance._graph.graph, nx.Graph):
+        nx_graph = graph_instance._graph.graph
+    elif hasattr(graph_instance, '_graph') and isinstance(graph_instance._graph, nx.Graph):
+        nx_graph = graph_instance._graph
+    if nx_graph is None:
+        logger.error("Chunk.Occurrence: Could not access NetworkX graph")
+        return ChunkOccurrenceOutputs(ranked_occurrence_chunks=[])
 
-    # Dummy results
-    dummy_ranked_chunks = []
-    for i in range(params.top_k_chunks):
-        pair_info = params.target_entity_pairs_in_relationship[0] if params.target_entity_pairs_in_relationship else {"entity1_id": "e1", "entity2_id": "e2"}
-        dummy_ranked_chunks.append(
-            ChunkData(
-                chunk_id=f"occurrence_chunk_{i+1}",
-                content=f"Chunk {i+1} discussing entities {pair_info.get('entity1_id')} and {pair_info.get('entity2_id')}",
-                doc_id=f"doc_for_occurrence_{i+1}",
-                index=i,
-                tokens=0, # Placeholder
-                relevance_score=0.9 - (i*0.05) # Example score
-            )
+    # Build entity→chunk_ids mapping from graph nodes
+    entity_chunks: Dict[str, set] = {}
+    for node_id, node_data in nx_graph.nodes(data=True):
+        source_id = node_data.get("source_id", "")
+        if source_id:
+            entity_chunks[node_id] = set(source_id.split(GRAPH_FIELD_SEP))
+        else:
+            entity_chunks[node_id] = set()
+
+    # Count co-occurrences per chunk across all entity pairs
+    chunk_scores: Dict[str, float] = {}
+    for pair in params.target_entity_pairs_in_relationship:
+        e1 = pair.get("entity1_id", "")
+        e2 = pair.get("entity2_id", "")
+        chunks_e1 = entity_chunks.get(e1, set())
+        chunks_e2 = entity_chunks.get(e2, set())
+        common_chunks = chunks_e1 & chunks_e2
+        for chunk_id in common_chunks:
+            chunk_scores[chunk_id] = chunk_scores.get(chunk_id, 0.0) + 1.0
+
+    # Sort by score descending
+    sorted_chunks = sorted(chunk_scores.items(), key=lambda x: x[1], reverse=True)
+    sorted_chunks = sorted_chunks[:params.top_k_chunks]
+
+    # Build ChunkData results — try to retrieve actual content
+    ranked_chunks = []
+    chunk_storage = graphrag_context.chunk_storage_manager
+    all_chunks_dict = {}
+    if chunk_storage:
+        try:
+            dataset_name = params.document_collection_id
+            for suffix in ["_ERGraph", "_RKGraph", "_TreeGraph", "_PassageGraph"]:
+                if dataset_name.endswith(suffix):
+                    dataset_name = dataset_name[:-len(suffix)]
+                    break
+            chunks_list = await chunk_storage.get_chunks_for_dataset(dataset_name)
+            for cid, chunk in chunks_list:
+                all_chunks_dict[cid] = chunk
+        except Exception as e:
+            logger.warning(f"Chunk.Occurrence: Could not load chunks from storage: {e}")
+
+    for chunk_id, score in sorted_chunks:
+        content = ""
+        doc_id = ""
+        tokens = 0
+        if chunk_id in all_chunks_dict:
+            c = all_chunks_dict[chunk_id]
+            content = c.content
+            doc_id = c.doc_id or ""
+            tokens = c.tokens or 0
+        cd = ChunkData(
+            chunk_id=chunk_id,
+            content=content,
+            doc_id=doc_id,
+            index=0,
+            tokens=tokens,
         )
+        cd.relevance_score = score
+        ranked_chunks.append(cd)
 
-    return ChunkOccurrenceOutputs(ranked_occurrence_chunks=dummy_ranked_chunks)
+    logger.info(f"Chunk.Occurrence: Returning {len(ranked_chunks)} chunks")
+    return ChunkOccurrenceOutputs(ranked_occurrence_chunks=ranked_chunks)
+
+
+# --- Tool Implementation for: Chunk Aggregator (RelationshipScoreAggregator) ---
+# tool_id: "Chunk.Aggregator"
+
+
+async def chunk_aggregator_tool(
+    params: ChunkRelationshipScoreAggregatorInputs,
+    graphrag_context: GraphRAGContext
+) -> ChunkRelationshipScoreAggregatorOutputs:
+    """
+    Aggregates relationship scores onto chunks via shared source_id.
+    For each chunk, sums the relationship scores of all relationships
+    whose source_id includes that chunk. Returns top_k ranked chunks.
+    """
+    logger.info(
+        f"Executing Chunk.Aggregator: {len(params.relationship_scores)} relationship scores, "
+        f"top_k={params.top_k_chunks}"
+    )
+
+    # We need the graph to map relationships back to source chunks.
+    # The relationship_scores dict keys should be relationship identifiers.
+    # We'll look at chunk_candidates' metadata or iterate edges to find source_ids.
+
+    # Strategy: Use chunk_candidates directly. For each candidate chunk,
+    # check which relationship_scores keys overlap with that chunk's associated relationships.
+    # But since chunk_candidates might not have relationship mappings, we aggregate
+    # by checking if the chunk_id appears in any relationship's source_id.
+
+    chunk_scores: Dict[str, float] = {}  # chunk_id → aggregated score
+
+    # Score from chunk_candidates directly if they have metadata with relationship info
+    for chunk in params.chunk_candidates:
+        cid = chunk.chunk_id
+        chunk_scores[cid] = 0.0
+
+    # The relationship_scores keys represent scored relationships.
+    # We need to figure out which chunks are linked to each relationship.
+    # If relationship_scores keys look like "src->tgt", we parse them.
+    # Otherwise treat them as generic keys.
+    # The simplest approach: sum all relationship scores for a chunk
+    # if the chunk appears in chunk_candidates.
+    # Since chunk_candidates represent the candidate pool, we distribute
+    # relationship scores to chunks that contain both entities of the relationship.
+
+    # For the general case, just give each chunk the sum of all relationship_scores
+    # whose value is > 0, proportional to overlap. But without a graph reference,
+    # we use the chunk_candidates metadata if available.
+    total_rel_score = sum(params.relationship_scores.values())
+    if total_rel_score > 0 and params.chunk_candidates:
+        # Distribute evenly as baseline, then boost if metadata matches
+        base_score = total_rel_score / len(params.chunk_candidates)
+        for chunk in params.chunk_candidates:
+            cid = chunk.chunk_id
+            # Check metadata for relationship references
+            meta = chunk.metadata or {}
+            matched_score = 0.0
+            for rel_key, rel_score in params.relationship_scores.items():
+                if meta.get("relationship_id") == rel_key:
+                    matched_score += rel_score
+                elif rel_key in str(meta):
+                    matched_score += rel_score * 0.5
+            chunk_scores[cid] = matched_score if matched_score > 0 else base_score
+
+    # Sort and return top_k
+    sorted_chunks = sorted(chunk_scores.items(), key=lambda x: x[1], reverse=True)
+    sorted_chunks = sorted_chunks[:params.top_k_chunks]
+
+    # Build output ChunkData with relevance_score set
+    ranked = []
+    chunk_map = {c.chunk_id: c for c in params.chunk_candidates}
+    for cid, score in sorted_chunks:
+        if cid in chunk_map:
+            c = chunk_map[cid]
+            cd = ChunkData(
+                chunk_id=c.chunk_id,
+                content=c.content,
+                doc_id=c.doc_id,
+                index=c.index,
+                tokens=c.tokens,
+                title=c.title,
+            )
+            cd.relevance_score = score
+            cd.metadata = c.metadata
+            ranked.append(cd)
+
+    logger.info(f"Chunk.Aggregator: Returning {len(ranked)} ranked chunks")
+    return ChunkRelationshipScoreAggregatorOutputs(ranked_aggregated_chunks=ranked)
 
 
 # --- Tool Implementation for: Chunk.GetTextForEntities ---

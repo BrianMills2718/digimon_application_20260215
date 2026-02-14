@@ -362,6 +362,84 @@ async def entity_ppr(graph_reference_id: str, seed_entity_ids: list[str],
 
 
 # =============================================================================
+# ENTITY OPERATORS (NEW)
+# =============================================================================
+
+@mcp.tool()
+async def entity_agent(query_text: str, text_context: str,
+                       target_entity_types: list[str] = None,
+                       max_entities: int = 10) -> str:
+    """Use LLM to extract entities from text guided by a query.
+
+    Args:
+        query_text: Query to guide entity extraction
+        text_context: Text content to extract entities from
+        target_entity_types: Entity types to focus on (e.g. ['person', 'organization'])
+        max_entities: Maximum entities to extract
+    """
+    await _ensure_initialized()
+    from Core.AgentTools.entity_tools import entity_agent_tool
+    from Core.AgentSchema.tool_contracts import EntityAgentInputs
+
+    inputs = EntityAgentInputs(
+        query_text=query_text,
+        text_context=text_context,
+        target_entity_types=target_entity_types,
+        max_entities_to_extract=max_entities,
+    )
+    result = await entity_agent_tool(inputs, _state["context"])
+    return _format_result(result)
+
+
+@mcp.tool()
+async def entity_link(source_entities: list[str], vdb_reference_id: str,
+                      similarity_threshold: float = 0.5) -> str:
+    """Link entity mentions to canonical entities in a VDB.
+
+    Args:
+        source_entities: Entity mention strings to link
+        vdb_reference_id: VDB to search for canonical matches
+        similarity_threshold: Minimum score to consider a match
+    """
+    await _ensure_initialized()
+    from Core.AgentTools.entity_tools import entity_link_tool
+    from Core.AgentSchema.tool_contracts import EntityLinkInputs
+
+    inputs = EntityLinkInputs(
+        source_entities=source_entities,
+        knowledge_base_reference_id=vdb_reference_id,
+        similarity_threshold=similarity_threshold,
+    )
+    result = await entity_link_tool(inputs, _state["context"])
+    return _format_result(result)
+
+
+@mcp.tool()
+async def entity_tfidf(candidate_entity_ids: list[str], query_text: str,
+                       graph_reference_id: str, top_k: int = 10) -> str:
+    """Rank candidate entities by TF-IDF similarity to a query.
+
+    Args:
+        candidate_entity_ids: Entity IDs to rank
+        query_text: Query to compare against
+        graph_reference_id: Graph containing the entities
+        top_k: Number of top results
+    """
+    await _ensure_initialized()
+    from Core.AgentTools.entity_tools import entity_tfidf_tool
+    from Core.AgentSchema.tool_contracts import EntityTFIDFInputs
+
+    inputs = EntityTFIDFInputs(
+        candidate_entity_ids=candidate_entity_ids,
+        query_text=query_text,
+        graph_reference_id=graph_reference_id,
+        top_k=top_k,
+    )
+    result = await entity_tfidf_tool(inputs, _state["context"])
+    return _format_result(result)
+
+
+# =============================================================================
 # RELATIONSHIP TOOLS
 # =============================================================================
 
@@ -385,9 +463,120 @@ async def relationship_onehop(entity_ids: list[str], graph_reference_id: str) ->
     return _format_result(result)
 
 
+@mcp.tool()
+async def relationship_score_aggregator(
+    entity_scores: dict, graph_reference_id: str,
+    top_k: int = 10, aggregation_method: str = "sum"
+) -> str:
+    """Aggregate entity scores (e.g. from PPR) onto relationships and return top-k.
+
+    Args:
+        entity_scores: Dict mapping entity_id to score
+        graph_reference_id: ID of the graph
+        top_k: Number of top relationships to return
+        aggregation_method: How to combine scores: 'sum', 'average', or 'max'
+    """
+    await _ensure_initialized()
+    from Core.AgentTools.relationship_tools import relationship_score_aggregator_tool
+    from Core.AgentSchema.tool_contracts import RelationshipScoreAggregatorInputs
+
+    inputs = RelationshipScoreAggregatorInputs(
+        entity_scores=entity_scores,
+        graph_reference_id=graph_reference_id,
+        top_k_relationships=top_k,
+        aggregation_method=aggregation_method,
+    )
+    result = await relationship_score_aggregator_tool(inputs, _state["context"])
+    return _format_result(result)
+
+
+@mcp.tool()
+async def relationship_agent(query_text: str, text_context: str,
+                              context_entity_names: list[str] = None,
+                              target_relationship_types: list[str] = None,
+                              max_relationships: int = 10) -> str:
+    """Use LLM to extract relationships from text context.
+
+    Args:
+        query_text: Query to guide extraction
+        text_context: Text to extract relationships from
+        context_entity_names: Known entity names for context
+        target_relationship_types: Relationship types to focus on
+        max_relationships: Maximum relationships to extract
+    """
+    await _ensure_initialized()
+    from Core.AgentTools.relationship_tools import relationship_agent_tool
+    from Core.AgentSchema.tool_contracts import RelationshipAgentInputs, ExtractedEntityData
+
+    # Build context_entities from names
+    context_entities = []
+    if context_entity_names:
+        for name in context_entity_names:
+            context_entities.append(ExtractedEntityData(
+                entity_name=name, source_id="mcp_input", entity_type="unknown"
+            ))
+
+    inputs = RelationshipAgentInputs(
+        query_text=query_text,
+        text_context=text_context,
+        context_entities=context_entities,
+        target_relationship_types=target_relationship_types,
+        max_relationships_to_extract=max_relationships,
+    )
+    result = await relationship_agent_tool(inputs, _state["context"])
+    return _format_result(result)
+
+
 # =============================================================================
 # CHUNK TOOLS
 # =============================================================================
+
+@mcp.tool()
+async def chunk_from_relationships(target_relationships: list[str],
+                                    document_collection_id: str,
+                                    top_k: int = 10) -> str:
+    """Retrieve text chunks associated with specified relationships.
+
+    Args:
+        target_relationships: List of relationship identifiers (e.g. 'entity1->entity2')
+        document_collection_id: Graph/collection ID to search
+        top_k: Maximum chunks to return
+    """
+    await _ensure_initialized()
+    from Core.AgentTools.chunk_tools import chunk_from_relationships_tool
+
+    input_data = {
+        "target_relationships": target_relationships,
+        "document_collection_id": document_collection_id,
+        "top_k_total": top_k,
+    }
+    result = await chunk_from_relationships_tool(input_data, _state["context"])
+    return _format_result(result)
+
+
+@mcp.tool()
+async def chunk_occurrence(target_entity_pairs: list[dict],
+                           document_collection_id: str,
+                           top_k: int = 5) -> str:
+    """Rank chunks by entity pair co-occurrence.
+
+    Args:
+        target_entity_pairs: List of dicts like {"entity1_id": "X", "entity2_id": "Y"}
+        document_collection_id: Graph ID to search
+        top_k: Number of top chunks to return
+    """
+    await _ensure_initialized()
+    from Core.AgentTools.chunk_tools import chunk_occurrence_tool
+    from Core.AgentSchema.tool_contracts import ChunkOccurrenceInputs
+
+    inputs = ChunkOccurrenceInputs(
+        target_entity_pairs_in_relationship=target_entity_pairs,
+        document_collection_id=document_collection_id,
+        top_k_chunks=top_k,
+    )
+    result = await chunk_occurrence_tool(inputs, _state["context"])
+    return _format_result(result)
+
 
 @mcp.tool()
 async def chunk_get_text(graph_reference_id: str, entity_ids: list[str],
@@ -444,6 +633,135 @@ async def graph_visualize(graph_id: str, output_format: str = "JSON_NODES_EDGES"
 
     inputs = {"graph_id": graph_id, "output_format": output_format}
     result = visualize_graph(inputs, _state["context"])
+    return _format_result(result)
+
+
+# =============================================================================
+# COMMUNITY TOOLS
+# =============================================================================
+
+@mcp.tool()
+async def community_detect_from_entities(graph_reference_id: str,
+                                          seed_entity_ids: list[str],
+                                          max_communities: int = 5) -> str:
+    """Find communities containing the given seed entities.
+
+    Args:
+        graph_reference_id: ID of the graph with community structure
+        seed_entity_ids: Entity IDs to find communities for
+        max_communities: Maximum communities to return
+    """
+    await _ensure_initialized()
+    from Core.AgentTools.community_tools import community_detect_from_entities_tool
+    from Core.AgentSchema.tool_contracts import CommunityDetectFromEntitiesInputs
+
+    inputs = CommunityDetectFromEntitiesInputs(
+        graph_reference_id=graph_reference_id,
+        seed_entity_ids=seed_entity_ids,
+        max_communities_to_return=max_communities,
+    )
+    result = await community_detect_from_entities_tool(inputs, _state["context"])
+    return _format_result(result)
+
+
+@mcp.tool()
+async def community_get_layer(community_hierarchy_reference_id: str,
+                               max_layer_depth: int = 1) -> str:
+    """Get all communities at or below a hierarchy layer depth.
+
+    Args:
+        community_hierarchy_reference_id: Graph ID with community hierarchy
+        max_layer_depth: Maximum layer depth to include (0=top level)
+    """
+    await _ensure_initialized()
+    from Core.AgentTools.community_tools import community_get_layer_tool
+    from Core.AgentSchema.tool_contracts import CommunityGetLayerInputs
+
+    inputs = CommunityGetLayerInputs(
+        community_hierarchy_reference_id=community_hierarchy_reference_id,
+        max_layer_depth=max_layer_depth,
+    )
+    result = await community_get_layer_tool(inputs, _state["context"])
+    return _format_result(result)
+
+
+# =============================================================================
+# SUBGRAPH TOOLS
+# =============================================================================
+
+@mcp.tool()
+async def subgraph_khop_paths(graph_reference_id: str,
+                               start_entity_ids: list[str],
+                               end_entity_ids: list[str] = None,
+                               k_hops: int = 2,
+                               max_paths: int = 10) -> str:
+    """Find k-hop paths between entities in a graph.
+
+    Args:
+        graph_reference_id: ID of the graph to search
+        start_entity_ids: Starting entity IDs
+        end_entity_ids: Target entity IDs (if None, explores k-hop neighborhood)
+        k_hops: Maximum number of hops
+        max_paths: Maximum paths to return
+    """
+    await _ensure_initialized()
+    from Core.AgentTools.subgraph_tools import subgraph_khop_paths_tool
+    from Core.AgentSchema.tool_contracts import SubgraphKHopPathsInputs
+
+    inputs = SubgraphKHopPathsInputs(
+        graph_reference_id=graph_reference_id,
+        start_entity_ids=start_entity_ids,
+        end_entity_ids=end_entity_ids,
+        k_hops=k_hops,
+        max_paths_to_return=max_paths,
+    )
+    result = await subgraph_khop_paths_tool(inputs, _state["context"])
+    return _format_result(result)
+
+
+@mcp.tool()
+async def subgraph_steiner_tree(graph_reference_id: str,
+                                 terminal_node_ids: list[str]) -> str:
+    """Compute a Steiner tree connecting the given terminal entities.
+
+    Args:
+        graph_reference_id: ID of the graph
+        terminal_node_ids: Entity IDs that must be connected (minimum 2)
+    """
+    await _ensure_initialized()
+    from Core.AgentTools.subgraph_tools import subgraph_steiner_tree_tool
+    from Core.AgentSchema.tool_contracts import SubgraphSteinerTreeInputs
+
+    inputs = SubgraphSteinerTreeInputs(
+        graph_reference_id=graph_reference_id,
+        terminal_node_ids=terminal_node_ids,
+    )
+    result = await subgraph_steiner_tree_tool(inputs, _state["context"])
+    return _format_result(result)
+
+
+@mcp.tool()
+async def subgraph_agent_path(user_question: str,
+                               candidate_paths_json: str,
+                               max_paths: int = 5) -> str:
+    """Use LLM to rank candidate paths by relevance to a question.
+
+    Args:
+        user_question: The question to evaluate path relevance against
+        candidate_paths_json: JSON string of candidate PathObject list
+        max_paths: Maximum relevant paths to return
+    """
+    await _ensure_initialized()
+    from Core.AgentTools.subgraph_tools import subgraph_agent_path_tool
+    from Core.AgentSchema.tool_contracts import SubgraphAgentPathInputs, PathObject
+
+    paths = [PathObject(**p) for p in json.loads(candidate_paths_json)]
+    inputs = SubgraphAgentPathInputs(
+        user_question=user_question,
+        candidate_paths=paths,
+        max_paths_to_return=max_paths,
+    )
+    result = await subgraph_agent_path_tool(inputs, _state["context"])
     return _format_result(result)
 
 

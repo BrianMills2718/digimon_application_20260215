@@ -182,15 +182,45 @@ All 5 stages completed successfully on 2025-06-05:
 - Working directory: /home/brian/digimon_cc
 - Python: 3.10+ with conda environment 'digimon'
 
-### Tool Registry (18 tools)
+### Tool Registry (32 tools)
 ```
+# Entity operators
 Entity.VDBSearch, Entity.VDB.Build, Entity.PPR, Entity.Onehop, Entity.RelNode,
+Entity.Agent, Entity.Link, Entity.TFIDF
+
+# Relationship operators
 Relationship.OneHopNeighbors, Relationship.VDB.Build, Relationship.VDB.Search,
+Relationship.ScoreAggregator, Relationship.Agent
+
+# Chunk operators
 Chunk.FromRelationships, Chunk.GetTextForEntities,
+Chunk.Occurrence, Chunk.Aggregator
+
+# Subgraph operators
+Subgraph.KHopPaths, Subgraph.SteinerTree, Subgraph.AgentPath
+
+# Community operators
+Community.DetectFromEntities, Community.GetLayer
+
+# Graph build/analysis
 graph.BuildERGraph, graph.BuildRKGraph, graph.BuildTreeGraph,
 graph.BuildTreeGraphBalanced, graph.BuildPassageGraph,
 corpus.PrepareFromDirectory, graph.Visualize, graph.Analyze
 ```
+
+### Operator Implementation Status (2025-02-13)
+All 12 missing operators now implemented. Integration test: **11/11 PASS**.
+
+Method compositions verified:
+- **FastGraphRAG**: Entity.PPR -> Relationship.ScoreAggregator -> Chunk.Aggregator
+- **GGraphRAG**: Community.DetectFromEntities -> Community.GetLayer
+- **ToG-lite**: Entity.TFIDF -> Subgraph.KHopPaths
+
+Known limitations:
+- Entity.PPR has pre-existing `string indices must be integers` error in EntityRetriever
+- Entity.Link needs an entity VDB built first (graceful degradation without one)
+- Community operators require Leiden clustering on graph (not run by default in ER build)
+- SteinerTree extracts connected component before running (NetworkX 3.3 workaround)
 
 ---
 

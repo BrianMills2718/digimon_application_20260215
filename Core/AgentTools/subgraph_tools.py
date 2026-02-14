@@ -1,35 +1,238 @@
 # Core/AgentTools/subgraph_tools.py
 
+import itertools
+import json
 import uuid
 from typing import List, Tuple, Optional, Any, Union, Dict, Literal
+
+import networkx as nx
 from pydantic import BaseModel, Field
 
+from Core.AgentSchema.context import GraphRAGContext
 from Core.AgentSchema.tool_contracts import (
-    SubgraphKHopPathsInputs, 
+    SubgraphKHopPathsInputs,
     SubgraphKHopPathsOutputs,
+    SubgraphSteinerTreeInputs,
+    SubgraphSteinerTreeOutputs,
+    SubgraphAgentPathInputs,
+    SubgraphAgentPathOutputs,
     PathObject,
-    PathSegment
+    PathSegment,
 )
+from Core.Common.Logger import logger
+
+
+def _get_nx_graph(graph_instance) -> Optional[nx.Graph]:
+    """Extract the underlying NetworkX graph from a graph instance."""
+    if hasattr(graph_instance, '_graph') and hasattr(graph_instance._graph, 'graph') and isinstance(graph_instance._graph.graph, nx.Graph):
+        return graph_instance._graph.graph
+    if hasattr(graph_instance, '_graph') and isinstance(graph_instance._graph, nx.Graph):
+        return graph_instance._graph
+    if isinstance(graph_instance, nx.Graph):
+        return graph_instance
+    return None
+
+
+def _path_to_path_object(nx_graph: nx.Graph, node_path: List[str]) -> PathObject:
+    """Convert a list of node IDs from nx.all_simple_paths into a PathObject
+    with alternating entity/relationship PathSegments."""
+    segments = []
+    for i, node_id in enumerate(node_path):
+        # Add entity segment
+        segments.append(PathSegment(
+            item_id=node_id,
+            item_type="entity",
+            label=node_id,
+        ))
+        # Add relationship segment between consecutive nodes
+        if i < len(node_path) - 1:
+            next_node = node_path[i + 1]
+            edge_data = nx_graph.get_edge_data(node_id, next_node) or {}
+            rel_name = edge_data.get("relation_name", edge_data.get("type", "related_to"))
+            segments.append(PathSegment(
+                item_id=f"{node_id}->{next_node}",
+                item_type="relationship",
+                label=str(rel_name),
+            ))
+
+    return PathObject(
+        path_id=f"path_{uuid.uuid4().hex[:8]}",
+        segments=segments,
+        start_node_id=node_path[0],
+        end_node_id=node_path[-1] if len(node_path) > 1 else None,
+        hop_count=len(node_path) - 1,
+    )
+
 
 # --- Tool Implementation for: K-Hop Paths ---
 # tool_id: "Subgraph.KHopPaths"
 
 async def subgraph_khop_paths_tool(
     params: SubgraphKHopPathsInputs,
-    graphrag_context: Optional[Any] = None # Placeholder for GraphRAG system context
+    graphrag_context: GraphRAGContext,
 ) -> SubgraphKHopPathsOutputs:
     """
-    Finds k-hop paths in a graph between sets of start and (optionally) end entities.
-    Wraps core GraphRAG logic for this operation.
+    Finds k-hop paths in a graph between start and end entity sets
+    using nx.all_simple_paths with a cutoff of k_hops.
+    If end_entity_ids is None, finds all paths of length k from start entities.
     """
-    print(f"Executing tool 'Subgraph.KHopPaths' with parameters: {params}")
+    logger.info(
+        f"Executing Subgraph.KHopPaths: starts={params.start_entity_ids}, "
+        f"ends={params.end_entity_ids}, k={params.k_hops}, graph='{params.graph_reference_id}'"
+    )
 
-    # 1. Extract parameters from 'params: SubgraphKHopPathsInputs'
-    #    - graph_reference_id: str
-    #    - start_entity_ids: List[str]
-    #    - end_entity_ids: Optional[List[str]]
-    #    - k_hops: int
-    #    - max_paths_to_return: Optional[int]
+    graph_instance = graphrag_context.get_graph_instance(params.graph_reference_id)
+    if graph_instance is None:
+        logger.error(f"Subgraph.KHopPaths: Graph '{params.graph_reference_id}' not found")
+        return SubgraphKHopPathsOutputs(discovered_paths=[])
+
+    nx_graph = _get_nx_graph(graph_instance)
+    if nx_graph is None:
+        logger.error("Subgraph.KHopPaths: Could not access NetworkX graph")
+        return SubgraphKHopPathsOutputs(discovered_paths=[])
+
+    max_paths = params.max_paths_to_return or 10
+    discovered_paths: List[PathObject] = []
+
+    if params.end_entity_ids:
+        # Find paths between each (start, end) pair
+        for start_id in params.start_entity_ids:
+            if start_id not in nx_graph:
+                logger.warning(f"Subgraph.KHopPaths: Start entity '{start_id}' not in graph")
+                continue
+            for end_id in params.end_entity_ids:
+                if end_id not in nx_graph:
+                    logger.warning(f"Subgraph.KHopPaths: End entity '{end_id}' not in graph")
+                    continue
+                if start_id == end_id:
+                    continue
+                try:
+                    paths_gen = nx.all_simple_paths(
+                        nx_graph, start_id, end_id, cutoff=params.k_hops
+                    )
+                    for path in itertools.islice(paths_gen, max_paths - len(discovered_paths)):
+                        discovered_paths.append(_path_to_path_object(nx_graph, path))
+                        if len(discovered_paths) >= max_paths:
+                            break
+                except nx.NetworkXError as e:
+                    logger.warning(f"Subgraph.KHopPaths: NetworkX error for {start_id}->{end_id}: {e}")
+                if len(discovered_paths) >= max_paths:
+                    break
+            if len(discovered_paths) >= max_paths:
+                break
+    else:
+        # No end entities: find k-hop ego neighborhoods
+        for start_id in params.start_entity_ids:
+            if start_id not in nx_graph:
+                continue
+            # Get all nodes within k hops
+            ego = nx.ego_graph(nx_graph, start_id, radius=params.k_hops)
+            # Find paths to all reachable nodes in the ego graph
+            for target in ego.nodes():
+                if target == start_id:
+                    continue
+                try:
+                    paths_gen = nx.all_simple_paths(
+                        nx_graph, start_id, target, cutoff=params.k_hops
+                    )
+                    for path in itertools.islice(paths_gen, 2):  # limit per target
+                        discovered_paths.append(_path_to_path_object(nx_graph, path))
+                        if len(discovered_paths) >= max_paths:
+                            break
+                except nx.NetworkXError:
+                    pass
+                if len(discovered_paths) >= max_paths:
+                    break
+            if len(discovered_paths) >= max_paths:
+                break
+
+    logger.info(f"Subgraph.KHopPaths: Found {len(discovered_paths)} paths")
+    return SubgraphKHopPathsOutputs(discovered_paths=discovered_paths)
+
+
+# --- Tool Implementation for: Subgraph Operator - SteinerTree ---
+# tool_id: "Subgraph.SteinerTree"
+
+async def subgraph_steiner_tree_tool(
+    params: SubgraphSteinerTreeInputs,
+    graphrag_context: GraphRAGContext,
+) -> SubgraphSteinerTreeOutputs:
+    """
+    Computes an approximate Steiner tree connecting the given terminal nodes.
+    Uses nx.algorithms.approximation.steiner_tree.
+    """
+    logger.info(
+        f"Executing Subgraph.SteinerTree: terminals={params.terminal_node_ids}, "
+        f"graph='{params.graph_reference_id}'"
+    )
+
+    graph_instance = graphrag_context.get_graph_instance(params.graph_reference_id)
+    if graph_instance is None:
+        logger.error(f"Subgraph.SteinerTree: Graph '{params.graph_reference_id}' not found")
+        return SubgraphSteinerTreeOutputs(steiner_tree_edges=[])
+
+    nx_graph = _get_nx_graph(graph_instance)
+    if nx_graph is None:
+        logger.error("Subgraph.SteinerTree: Could not access NetworkX graph")
+        return SubgraphSteinerTreeOutputs(steiner_tree_edges=[])
+
+    # Filter terminal nodes to those that exist in the graph
+    valid_terminals = [n for n in params.terminal_node_ids if n in nx_graph]
+    if len(valid_terminals) < 2:
+        logger.warning(f"Subgraph.SteinerTree: Need >= 2 valid terminal nodes, got {len(valid_terminals)}")
+        return SubgraphSteinerTreeOutputs(steiner_tree_edges=[])
+
+    try:
+        # NetworkX steiner_tree fails on disconnected graphs even if terminals
+        # are all in the same component. Extract the connected component first.
+        if not nx.is_connected(nx_graph):
+            # Find the component containing the first terminal
+            component_nodes = nx.node_connected_component(nx_graph, valid_terminals[0])
+            # Filter terminals to those in the same component
+            valid_terminals = [n for n in valid_terminals if n in component_nodes]
+            if len(valid_terminals) < 2:
+                logger.warning("Subgraph.SteinerTree: Terminals are in different components")
+                return SubgraphSteinerTreeOutputs(steiner_tree_edges=[])
+            work_graph = nx_graph.subgraph(component_nodes).copy()
+        else:
+            work_graph = nx_graph
+
+        # Use weight attribute if specified and present, otherwise use None (unweighted)
+        weight_attr = params.edge_weight_attribute
+        if not weight_attr:
+            # Check if edges have numeric 'weight' attribute
+            sample_edge = next(iter(work_graph.edges(data=True)), None)
+            if sample_edge:
+                w = sample_edge[2].get("weight")
+                if isinstance(w, (int, float)):
+                    weight_attr = "weight"
+                else:
+                    weight_attr = None
+            else:
+                weight_attr = None
+
+        steiner = nx.algorithms.approximation.steiner_tree(
+            work_graph, valid_terminals,
+            weight=weight_attr,
+        )
+    except Exception as e:
+        logger.error(f"Subgraph.SteinerTree: Algorithm error: {e}", exc_info=True)
+        return SubgraphSteinerTreeOutputs(steiner_tree_edges=[])
+
+    edges = []
+    for u, v, data in steiner.edges(data=True):
+        edge_dict = {"source": u, "target": v}
+        if params.edge_weight_attribute and params.edge_weight_attribute in data:
+            edge_dict["weight"] = data[params.edge_weight_attribute]
+        elif "weight" in data:
+            edge_dict["weight"] = data["weight"]
+        # Include relation name if available
+        if "relation_name" in data:
+            edge_dict["relation_name"] = data["relation_name"]
+        edges.append(edge_dict)
+
+    logger.info(f"Subgraph.SteinerTree: Steiner tree has {len(edges)} edges connecting {len(valid_terminals)} terminals")
+    return SubgraphSteinerTreeOutputs(steiner_tree_edges=edges)
 
 
 # --- Tool Implementation for: Subgraph Operator - AgentPath ---
@@ -37,80 +240,74 @@ async def subgraph_khop_paths_tool(
 
 async def subgraph_agent_path_tool(
     params: SubgraphAgentPathInputs,
-    graphrag_context: GraphRAGContext
+    graphrag_context: GraphRAGContext,
 ) -> SubgraphAgentPathOutputs:
     """
-    Identifies the most relevant k-hop paths from a list of candidates using an LLM, 
-    based on a given user question. Wraps core GraphRAG logic.
+    Uses an LLM to rank/filter candidate paths by relevance to a user question.
+    Formats paths as readable text, asks the LLM to pick the most relevant ones.
     """
-    print(f"Executing tool 'Subgraph.AgentPath' with parameters: {params}")
+    logger.info(
+        f"Executing Subgraph.AgentPath: question='{params.user_question[:80]}...', "
+        f"{len(params.candidate_paths)} candidate paths"
+    )
 
-    # 1. Extract parameters from 'params: SubgraphAgentPathInputs'
-    #    - user_question: str
-    #    - candidate_paths: List[PathObject]
-    #    - llm_config_override_patch: Optional[Dict[str, Any]]
-    #    - max_paths_to_return: Optional[int]
+    if not params.candidate_paths:
+        return SubgraphAgentPathOutputs(relevant_paths=[])
 
-    # Placeholder: Prepare prompt for LLM using user_question and candidate_paths representations.
-    # Placeholder: Get LLM instance.
-    # Placeholder: Make LLM call to filter/rank paths.
-    # Placeholder: Parse LLM response into a list of the most relevant PathObjects.
+    max_to_return = params.max_paths_to_return or 5
 
-    print(f"Placeholder: Would use LLM to filter/rank {len(params.candidate_paths)} candidate paths based on question: '{params.user_question}'.")
-
-    # Dummy results - return a subset of candidate paths or newly scored ones
-    num_to_return = params.max_paths_to_return if params.max_paths_to_return is not None else len(params.candidate_paths)
-    # For dummy data, just return the first few candidate paths, optionally adding a score
-    relevant_paths_data = params.candidate_paths[:num_to_return]
-
-    # If you wanted to simulate LLM adding relevance scores, you might modify them:
-    # scored_relevant_paths = []
-    # for i, path_obj in enumerate(relevant_paths_data):
-    #     # This assumes PathObject can store an additional score, or we wrap it
-    #     # For now, we're returning PathObject directly as per SubgraphAgentPathOutputs
-    #     # path_obj_dict = path_obj.model_dump()
-    #     # path_obj_dict["llm_relevance_score"] = 0.9 - (i * 0.1)
-    #     # scored_relevant_paths.append(PathObject(**path_obj_dict)) # Recreate if PathObject is immutable
-    #     pass # Just returning subset for now
-
-    return SubgraphAgentPathOutputs(relevant_paths=relevant_paths_data)
-
-    # Placeholder: Access graph instance
-    print(f"Placeholder: Would access graph '{params.graph_reference_id}'.")
-    print(f"Placeholder: Would find {params.k_hops}-hop paths between {params.start_entity_ids} and {params.end_entity_ids}.")
-
-    # 2. Call underlying GraphRAG logic for k-hop pathfinding
-    #    Logic could be in Core/Retriever/SubgraphRetriever.py
-    #    or graph algorithm libraries.
-
-    # Dummy results
-    dummy_paths_data = []
-    num_paths_to_return = params.max_paths_to_return if params.max_paths_to_return is not None else 1
-    for i in range(num_paths_to_return):
-        start_node = params.start_entity_ids[0] if params.start_entity_ids else f"start_node_{i}"
-        end_node = params.end_entity_ids[0] if params.end_entity_ids else f"end_node_{i}"
-
-        segments = [
-            PathSegment(item_id=start_node, item_type="entity", label=start_node),
-            PathSegment(item_id=f"rel_path_{i}_1", item_type="relationship", label="hop1_rel"),
-            PathSegment(item_id=f"mid_node_path_{i}", item_type="entity", label=f"mid_node_path_{i}"),
-            PathSegment(item_id=f"rel_path_{i}_2", item_type="relationship", label="hop2_rel"),
-            PathSegment(item_id=end_node, item_type="entity", label=end_node)
-        ] if params.k_hops >= 2 else [
-             PathSegment(item_id=start_node, item_type="entity", label=start_node),
-             PathSegment(item_id=f"rel_path_{i}_1", item_type="relationship", label="hop1_rel"),
-             PathSegment(item_id=end_node, item_type="entity", label=end_node)
-        ]
-
-        dummy_paths_data.append(
-            PathObject(
-                path_id=f"path_{uuid.uuid4().hex[:4]}",
-                segments=segments[:params.k_hops*2+1],
-                start_node_id=start_node,
-                end_node_id=end_node if params.end_entity_ids else None,
-                hop_count=params.k_hops
-            )
+    # Format paths as readable strings for the LLM
+    path_descriptions = []
+    for i, path_obj in enumerate(params.candidate_paths):
+        segments_str = " -> ".join(
+            seg.label or seg.item_id for seg in path_obj.segments
         )
+        path_descriptions.append(f"Path {i+1}: {segments_str}")
 
-    # 3. Transform results into 'SubgraphKHopPathsOutputs'
-    return SubgraphKHopPathsOutputs(discovered_paths=dummy_paths_data)
+    paths_text = "\n".join(path_descriptions)
+
+    prompt = f"""Given the following question, rank the paths below by relevance.
+Return a JSON array of path numbers (1-indexed) in order of relevance, most relevant first.
+Only include paths that are genuinely relevant to answering the question.
+Return at most {max_to_return} path numbers.
+
+Question: {params.user_question}
+
+Paths:
+{paths_text}
+
+Return ONLY a JSON array of integers, e.g. [3, 1, 5]. No other text."""
+
+    # Get LLM provider from context
+    llm = graphrag_context.llm_provider
+    if llm is None:
+        logger.warning("Subgraph.AgentPath: No LLM provider, returning all paths truncated")
+        return SubgraphAgentPathOutputs(relevant_paths=params.candidate_paths[:max_to_return])
+
+    try:
+        response = await llm.aask(prompt)
+        # Parse the JSON array from the response
+        # Handle cases where LLM wraps in markdown code blocks
+        resp_text = response.strip()
+        if resp_text.startswith("```"):
+            resp_text = resp_text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+        ranked_indices = json.loads(resp_text)
+
+        if not isinstance(ranked_indices, list):
+            raise ValueError(f"Expected list, got {type(ranked_indices)}")
+
+        relevant_paths = []
+        for idx in ranked_indices[:max_to_return]:
+            # Convert 1-indexed to 0-indexed
+            path_idx = int(idx) - 1
+            if 0 <= path_idx < len(params.candidate_paths):
+                relevant_paths.append(params.candidate_paths[path_idx])
+
+        logger.info(f"Subgraph.AgentPath: LLM selected {len(relevant_paths)} relevant paths")
+        return SubgraphAgentPathOutputs(relevant_paths=relevant_paths)
+
+    except Exception as e:
+        logger.error(f"Subgraph.AgentPath: LLM ranking failed: {e}", exc_info=True)
+        # Fallback: return first max_to_return paths
+        return SubgraphAgentPathOutputs(relevant_paths=params.candidate_paths[:max_to_return])
