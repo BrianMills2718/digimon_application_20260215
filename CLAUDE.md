@@ -188,6 +188,19 @@ med:           entity.vdb → subgraph.khop_paths → subgraph.steiner_tree → 
 
 ## Next Steps
 
-1. **Improve QA accuracy**: Tune retrieval parameters, benchmark all 10 methods on HotPotQA
-2. **Dynamic agent composition**: Let LLM agent select and compose operator chains at runtime (building on OperatorComposer + OperatorRegistry.find_chains_to_goal)
-3. **Multi-dataset workflows**: Cross-dataset queries, graph merging
+### Phase 11: Dynamic Agent Composition
+Let an LLM agent select and compose operator chains at runtime. The infrastructure is ready:
+- `OperatorRegistry.find_chains_to_goal()` discovers valid chains (95 at depth 3, 2054 at depth 4)
+- `OperatorDescriptor` provides machine-readable slot specs for each operator
+- `PipelineExecutor` validates slot names, types, and required inputs pre-dispatch with actionable error messages
+- `test_custom_chain.py` proves arbitrary (non-method) chains execute successfully
+- **What's needed**: An agent prompt/tool that takes a query, inspects the descriptor catalog, builds an `ExecutionPlan`, and executes it — replacing the 10 named methods with query-adaptive composition
+
+### Phase 12: Multi-Dataset Composition
+`OperatorContext` is monolithic — all operators share one graph, one VDB set. This blocks:
+- Cross-dataset queries (e.g., "compare entities in dataset A vs dataset B")
+- Graph merging / federation
+- **What's needed**: Either per-step context overrides in `ExecutionPlan`, or a multi-context executor that can bind different graphs to different steps
+
+### Phase 13: QA Benchmarking
+Tune retrieval parameters, benchmark operator chains (not just the 10 named methods) on HotPotQA and other datasets. Use `test_custom_chain.py` pattern to test novel chains against ground truth.
