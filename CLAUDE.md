@@ -60,16 +60,21 @@ The MCP server (`digimon_mcp_stdio_server.py`) is the toolbox — the calling ag
 - `Core/Composition/OperatorComposer.py` — method profiling, plan building, execution
 - `Option/Config2.py` — `agentic_model` field for separate LLM for meta operators
 
-**MCP tools (30 total)**:
+**MCP tools (31 total)**:
 - 5 graph build tools (er, rk, tree, tree_balanced, passage)
 - 1 corpus tool (prepare)
-- 24 operator/query tools (all 24 operators accessible)
+- 25 operator/query tools (all 24 operators + relationship_vdb_build)
 - 3 method-level tools (list_methods, list_graph_types, execute_method)
 - 1 context tool (list_available_resources)
 
 **Two execution modes**:
 1. Individual operator tools — calling agent composes the pipeline
-2. `execute_method("basic_local", query, dataset)` — one-call named pipeline
+2. `execute_method("basic_local", query, dataset, auto_build=True)` — one-call named pipeline
+
+**Auto-build** (`auto_build=True` on execute_method):
+- Automatically builds missing entity VDB and relationship VDB before running
+- Cannot auto-build sparse matrices or community structure (require graph rebuild)
+- Default: `False` (existing behavior unchanged)
 
 **Multi-model config** (optional):
 ```yaml
@@ -141,8 +146,8 @@ med:           entity.vdb → subgraph.khop_paths → subgraph.steiner_tree → 
 | Relation Description | | Y | Y |
 | Edge Weight | Y | Y | Y |
 
-- `extract_two_step=True` (default): NER + OpenIE JSON-based extraction (KG-level)
-- `extract_two_step=False`: ENTITY_EXTRACTION delimiter-based extraction (TKG-level)
+- `extract_two_step=False` (default): ENTITY_EXTRACTION delimiter-based extraction (TKG-level) — extracts entity types, descriptions, relation descriptions
+- `extract_two_step=True`: NER + OpenIE JSON-based extraction (KG-level) — names and relations only, no descriptions
 - `extract_two_step=False` + `enable_edge_keywords=True`: RKG-level with keywords
 
 **Shared code**: `DelimiterExtractionMixin` (Core/Graph/DelimiterExtraction.py) used by both ERGraph and RKGraph.

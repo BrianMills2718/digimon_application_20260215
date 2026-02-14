@@ -71,6 +71,13 @@ Call list_methods first to see all 10 available methods and their requirements.
 - Call list_available_resources to see what graphs and VDBs exist.
 - Graph building requires corpus_prepare first.
 - VDB building requires a graph to be built first.
+- Pass auto_build=True to execute_method to auto-build missing VDBs.
+  Auto-build can create entity and relationship VDBs, but NOT sparse matrices
+  or community structure (those require rebuilding the graph with different config).
+- Default graph build now uses single-step extraction (extract_two_step=false),
+  which extracts entity types, entity descriptions, and relation descriptions.
+  Graphs built with the old default (extract_two_step=true) have empty descriptions;
+  rebuild them to get descriptions.
 
 State is maintained between calls via GraphRAGContext.
 """)
@@ -208,7 +215,9 @@ async def corpus_prepare(input_directory: str, dataset_name: str) -> str:
 @mcp.tool()
 async def graph_build_er(dataset_name: str, force_rebuild: bool = False) -> str:
     """Build an Entity-Relationship (ER) knowledge graph from a prepared corpus.
-    Extracts entities and their relationships using LLM. Best for general-purpose KG.
+    Extracts entities (with types and descriptions) and relationships using LLM.
+    Best for general-purpose KG. Uses single-step delimiter extraction by default,
+    which produces entity types, entity descriptions, and relation descriptions.
 
     Args:
         dataset_name: Name of the dataset (must have corpus prepared first)
@@ -830,8 +839,30 @@ async def list_available_resources() -> str:
 
 
 # =============================================================================
-# RELATIONSHIP VDB SEARCH
+# RELATIONSHIP VDB BUILD + SEARCH
 # =============================================================================
+
+@mcp.tool()
+async def relationship_vdb_build(graph_reference_id: str, vdb_collection_name: str,
+                                  force_rebuild: bool = False) -> str:
+    """Build a vector database index from relationships in a graph. Required before relationship_vdb_search.
+
+    Args:
+        graph_reference_id: ID of the graph (e.g. 'Fictional_Test_ERGraph')
+        vdb_collection_name: Name for the VDB collection (e.g. 'Fictional_Test_relations')
+        force_rebuild: Force rebuild even if VDB exists
+    """
+    await _ensure_initialized()
+    from Core.AgentTools.relationship_tools import relationship_vdb_build_tool
+    from Core.AgentSchema.tool_contracts import RelationshipVDBBuildInputs
+
+    inputs = RelationshipVDBBuildInputs(
+        graph_reference_id=graph_reference_id,
+        vdb_collection_name=vdb_collection_name,
+        force_rebuild=force_rebuild,
+    )
+    result = await relationship_vdb_build_tool(inputs, _state["context"])
+    return _format_result(result)
 
 @mcp.tool()
 async def relationship_vdb_search(vdb_reference_id: str, query_text: str,
@@ -1117,7 +1148,8 @@ async def list_graph_types() -> str:
 
 @mcp.tool()
 async def execute_method(method_name: str, query: str, dataset_name: str,
-                          return_context_only: bool = False) -> str:
+                          return_context_only: bool = False,
+                          auto_build: bool = False) -> str:
     """Run a named retrieval method pipeline end-to-end.
 
     This executes a complete retrieval pipeline (e.g., basic_local runs:
@@ -1133,6 +1165,10 @@ async def execute_method(method_name: str, query: str, dataset_name: str,
         return_context_only: If True, return raw retrieved context instead of
                            a generated answer. Useful when the calling agent
                            wants to synthesize the answer itself.
+        auto_build: If True, automatically build missing entity/relationship VDBs
+                   before running the pipeline. Only builds VDBs (cheap, fast).
+                   Cannot auto-build sparse matrices or community structure —
+                   those require rebuilding the graph with different config.
     """
     await _ensure_initialized()
     _ensure_composer()
@@ -1148,12 +1184,93 @@ async def execute_method(method_name: str, query: str, dataset_name: str,
     )
 
     # Build OperatorContext for pipeline execution
-    op_ctx = _build_operator_context_for_dataset(dataset_name)
+    op_ctx = await _build_operator_context_for_dataset(dataset_name)
+
+    # Validate prerequisites before running
+    profile = composer.get_profile(method_name)
+    if profile:
+        missing = _check_prerequisites(profile, op_ctx, dataset_name)
+        if missing and auto_build:
+            built = await _auto_build_prerequisites(profile, op_ctx, dataset_name)
+            # Re-build context after auto-build
+            op_ctx = await _build_operator_context_for_dataset(dataset_name)
+            missing = _check_prerequisites(profile, op_ctx, dataset_name)
+            if missing:
+                return json.dumps({
+                    "error": f"Method '{method_name}' still missing prerequisites after auto-build",
+                    "built": built,
+                    "still_missing": missing,
+                    "hint": "Sparse matrices and community structure require rebuilding the graph with different config.",
+                }, indent=2)
+        elif missing:
+            return json.dumps({
+                "error": f"Method '{method_name}' cannot run: missing prerequisites",
+                "missing": missing,
+                "hint": "Build the required resources first, or pass auto_build=True to auto-build VDBs.",
+            }, indent=2)
 
     # Execute the plan
-    result = await composer.execute(plan, op_ctx)
+    from Core.Composition.PipelineExecutor import PipelineExecutionError
+    try:
+        result = await composer.execute(plan, op_ctx)
+    except PipelineExecutionError as e:
+        return json.dumps({
+            "error": f"Pipeline execution failed: {e}",
+            "method": method_name,
+            "dataset": dataset_name,
+        }, indent=2)
 
     return json.dumps(result, indent=2, default=str)
+
+
+async def _auto_build_prerequisites(profile, op_ctx, dataset_name: str) -> list[str]:
+    """Auto-build missing VDBs for a method. Returns list of what was built."""
+    built = []
+
+    if op_ctx.graph is None:
+        logger.warning(f"auto_build: No graph for '{dataset_name}' — cannot build VDBs")
+        return built
+
+    # Determine graph_id from context
+    ctx = _state["context"]
+    graph_id = None
+    if hasattr(ctx, "list_graphs"):
+        for gid in ctx.list_graphs():
+            if dataset_name in gid:
+                graph_id = gid
+                break
+    if not graph_id:
+        logger.warning(f"auto_build: Could not find graph_id for '{dataset_name}'")
+        return built
+
+    if profile.requires_entity_vdb and op_ctx.entities_vdb is None:
+        logger.info(f"auto_build: Building entity VDB for '{dataset_name}'")
+        from Core.AgentTools.entity_vdb_tools import entity_vdb_build_tool
+        from Core.AgentSchema.tool_contracts import EntityVDBBuildInputs
+        inputs = EntityVDBBuildInputs(
+            graph_reference_id=graph_id,
+            vdb_collection_name=f"{dataset_name}_entities",
+            force_rebuild=False,
+        )
+        await entity_vdb_build_tool(inputs, ctx)
+        built.append("entity_vdb")
+
+    if profile.requires_relationship_vdb and op_ctx.relations_vdb is None:
+        logger.info(f"auto_build: Building relationship VDB for '{dataset_name}'")
+        from Core.AgentTools.relationship_tools import relationship_vdb_build_tool
+        from Core.AgentSchema.tool_contracts import RelationshipVDBBuildInputs
+        inputs = RelationshipVDBBuildInputs(
+            graph_reference_id=graph_id,
+            vdb_collection_name=f"{dataset_name}_relations",
+            force_rebuild=False,
+        )
+        await relationship_vdb_build_tool(inputs, ctx)
+        built.append("relationship_vdb")
+
+    if built:
+        logger.info(f"auto_build: Built {built} for '{dataset_name}'")
+
+    return built
 
 
 def _ensure_composer() -> None:
@@ -1165,7 +1282,24 @@ def _ensure_composer() -> None:
         _state["composer"] = OperatorComposer(REGISTRY)
 
 
-def _build_operator_context_for_dataset(dataset_name: str) -> Any:
+class _ChunkLookup:
+    """Wraps ChunkFactory data as a key-value store for operators."""
+
+    def __init__(self, chunks_dict: dict):
+        self._chunks = chunks_dict
+
+    async def get_data_by_key(self, chunk_id: str):
+        return self._chunks.get(chunk_id)
+
+    async def get_data_by_indices(self, indices):
+        keys = list(self._chunks.keys())
+        return [
+            self._chunks[keys[i]] if i < len(keys) else None
+            for i in indices
+        ]
+
+
+async def _build_operator_context_for_dataset(dataset_name: str) -> Any:
     """Build a full OperatorContext for a specific dataset."""
     from Core.Operators._context import OperatorContext
 
@@ -1183,19 +1317,14 @@ def _build_operator_context_for_dataset(dataset_name: str) -> Any:
             if dataset_name in graph_id:
                 gi = ctx.get_graph_instance(graph_id)
                 if gi:
-                    graph = gi._graph if hasattr(gi, "_graph") else gi
-                    # Extract VDBs and chunks from the graph instance
-                    if hasattr(gi, "entities_vdb"):
-                        entities_vdb = gi.entities_vdb
-                    if hasattr(gi, "relations_vdb"):
-                        relations_vdb = gi.relations_vdb
-                    if hasattr(gi, "doc_chunks"):
-                        doc_chunks = gi.doc_chunks
+                    # Pass the full graph instance (ERGraph, etc.) — operators
+                    # need entity_metakey, which only the graph class has.
+                    graph = gi
                     if hasattr(gi, "sparse_matrices"):
                         sparse_matrices = gi.sparse_matrices or {}
                     break
 
-    # Also check context-level VDBs
+    # Check context-level VDBs
     if hasattr(ctx, "list_vdbs"):
         for vdb_id in ctx.list_vdbs():
             vdb_inst = ctx.get_vdb_instance(vdb_id)
@@ -1205,15 +1334,59 @@ def _build_operator_context_for_dataset(dataset_name: str) -> Any:
                 elif "relation" in vdb_id and relations_vdb is None:
                     relations_vdb = vdb_inst
 
+    # Build doc_chunks from ChunkFactory storage
+    chunk_storage = getattr(ctx, "chunk_storage_manager", None) or _state.get("chunk_factory")
+    if chunk_storage and doc_chunks is None:
+        try:
+            chunks_list = await chunk_storage.get_chunks_for_dataset(dataset_name)
+            chunks_dict = {}
+            for chunk_id, chunk_obj in chunks_list:
+                content = chunk_obj.content if hasattr(chunk_obj, "content") else str(chunk_obj)
+                chunks_dict[chunk_id] = content
+            if chunks_dict:
+                doc_chunks = _ChunkLookup(chunks_dict)
+        except Exception as e:
+            logger.warning(f"Could not load chunks for dataset '{dataset_name}': {e}")
+
+    # Operators expect RetrieverConfig (has top_k, max_token_*, etc.),
+    # not the top-level Config object.
+    full_config = _state["config"]
+    retriever_config = getattr(full_config, "retriever", full_config)
+
     return OperatorContext(
         graph=graph,
         entities_vdb=entities_vdb,
         relations_vdb=relations_vdb,
         doc_chunks=doc_chunks,
         llm=_state.get("agentic_llm") or _state["llm"],
-        config=_state["config"],
+        config=retriever_config,
         sparse_matrices=sparse_matrices,
     )
+
+
+def _check_prerequisites(profile, op_ctx, dataset_name: str) -> list[str]:
+    """Check if OperatorContext has what a method profile requires.
+
+    Returns list of missing prerequisite descriptions (empty = all good).
+    """
+    missing = []
+
+    if op_ctx.graph is None:
+        missing.append(f"No graph found for dataset '{dataset_name}'. Build one first (e.g., graph_build_er).")
+
+    if profile.requires_entity_vdb and op_ctx.entities_vdb is None:
+        missing.append("Entity VDB required but not built. Run entity_vdb_build first.")
+
+    if profile.requires_relationship_vdb and op_ctx.relations_vdb is None:
+        missing.append("Relationship VDB required but not built. Run relationship_vdb_build first.")
+
+    if profile.requires_community and op_ctx.community is None:
+        missing.append("Community structure required but not available. Run community detection on the graph first.")
+
+    if profile.requires_sparse_matrices and not op_ctx.sparse_matrices:
+        missing.append("Sparse matrices (entity_to_rel, rel_to_chunk) required but not built.")
+
+    return missing
 
 
 # =============================================================================

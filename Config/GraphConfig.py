@@ -7,7 +7,7 @@ class GraphConfig(YamlModel):
     type: str = Field(default="er_graph", description="Type of graph to build (e.g., 'er_graph', 'rkg_graph', 'tree_graph').")
     graph_type: str = "er_graph"
     # Building graph
-    extract_two_step: bool = True
+    extract_two_step: bool = False
     max_gleaning: int = 1
     force: bool = False
 

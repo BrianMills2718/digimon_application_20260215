@@ -12,6 +12,15 @@ from Core.Common.Logger import logger
 from Core.Schema.SlotTypes import SlotKind, SlotValue
 
 
+# Sentinel to mark a failed step (distinct from empty dict)
+_FAILED_STEP = "__FAILED__"
+
+
+class PipelineExecutionError(Exception):
+    """Raised when a pipeline step fails and fail_fast is True."""
+    pass
+
+
 class PipelineExecutor:
     def __init__(self, registry, ctx):
         """
@@ -23,8 +32,13 @@ class PipelineExecutor:
         self.ctx = ctx
         self.step_outputs: Dict[str, Dict[str, SlotValue]] = {}
 
-    async def execute(self, plan) -> Dict[str, SlotValue]:
+    async def execute(self, plan, fail_fast: bool = True) -> Dict[str, SlotValue]:
         """Execute all steps in an ExecutionPlan, resolving cross-step data flow.
+
+        Args:
+            plan: ExecutionPlan to execute
+            fail_fast: If True (default), stop on first operator failure
+                      instead of continuing with broken state.
 
         Returns the outputs of the final step (or all accumulated outputs).
         """
@@ -39,17 +53,17 @@ class PipelineExecutor:
 
         for step in plan.steps:
             if isinstance(step.action, DynamicToolChainConfig):
-                await self._execute_tool_chain(step, plan)
+                await self._execute_tool_chain(step, plan, fail_fast=fail_fast)
             elif isinstance(step.action, LoopConfig):
-                await self._execute_loop(step, step_map, plan)
+                await self._execute_loop(step, step_map, plan, fail_fast=fail_fast)
             elif isinstance(step.action, ConditionalBranch):
-                await self._execute_conditional(step, step_map, plan)
+                await self._execute_conditional(step, step_map, plan, fail_fast=fail_fast)
             else:
                 logger.warning(f"Skipping step {step.step_id}: unsupported action type {type(step.action)}")
 
         return self.step_outputs
 
-    async def _execute_tool_chain(self, step, plan) -> None:
+    async def _execute_tool_chain(self, step, plan, fail_fast: bool = True) -> None:
         """Execute a DynamicToolChainConfig step."""
         chain_outputs = {}
 
@@ -62,7 +76,11 @@ class PipelineExecutor:
                 logger.error(f"Operator {tool_call.tool_id} has no implementation")
                 continue
 
-            # Resolve inputs
+            # Make in-progress chain_outputs visible for intra-step references
+            # (e.g., second tool in a chain referencing first tool's output)
+            self.step_outputs[step.step_id] = chain_outputs
+
+            # Resolve inputs (will raise if a required input references a failed step)
             inputs = self._resolve_inputs(tool_call, step.step_id, plan)
 
             # Execute operator
@@ -73,8 +91,14 @@ class PipelineExecutor:
                     params=tool_call.parameters,
                 )
             except Exception as e:
-                logger.exception(f"Operator {tool_call.tool_id} failed: {e}")
-                result = {}
+                logger.exception(f"Operator {tool_call.tool_id} failed in step {step.step_id}: {e}")
+                if fail_fast:
+                    raise PipelineExecutionError(
+                        f"Operator '{tool_call.tool_id}' failed in step '{step.step_id}': {e}"
+                    ) from e
+                # Mark this step as failed so downstream steps get a clear error
+                chain_outputs = _FAILED_STEP
+                break
 
             # Store named outputs
             if tool_call.named_outputs:
@@ -82,17 +106,16 @@ class PipelineExecutor:
                     if out_name in result:
                         chain_outputs[out_name] = result[out_name]
                     else:
-                        # Try matching by position
-                        for key, val in result.items():
-                            if key not in chain_outputs:
-                                chain_outputs[out_name] = val
-                                break
+                        logger.warning(
+                            f"Operator {tool_call.tool_id} did not produce expected output '{out_name}'. "
+                            f"Available keys: {list(result.keys())}. Skipping."
+                        )
             else:
                 chain_outputs.update(result)
 
         self.step_outputs[step.step_id] = chain_outputs
 
-    async def _execute_loop(self, step, step_map, plan) -> None:
+    async def _execute_loop(self, step, step_map, plan, fail_fast: bool = True) -> None:
         """Execute a LoopConfig step."""
         loop = step.action
         accumulated = {}
@@ -107,7 +130,7 @@ class PipelineExecutor:
                     continue
                 from Core.AgentSchema.plan import DynamicToolChainConfig
                 if isinstance(body_step.action, DynamicToolChainConfig):
-                    await self._execute_tool_chain(body_step, plan)
+                    await self._execute_tool_chain(body_step, plan, fail_fast=fail_fast)
 
             # Check termination
             if self._evaluate_condition(loop.termination_condition):
@@ -117,6 +140,8 @@ class PipelineExecutor:
             # Carry forward outputs
             for output_key in loop.carry_forward_outputs:
                 for sid, outputs in self.step_outputs.items():
+                    if outputs is _FAILED_STEP:
+                        continue
                     if output_key in outputs:
                         if output_key not in accumulated:
                             accumulated[output_key] = []
@@ -130,7 +155,7 @@ class PipelineExecutor:
             for k, v in accumulated.items()
         }
 
-    async def _execute_conditional(self, step, step_map, plan) -> None:
+    async def _execute_conditional(self, step, step_map, plan, fail_fast: bool = True) -> None:
         """Execute a ConditionalBranch step."""
         branch = step.action
         condition_met = self._evaluate_condition(branch.condition)
@@ -143,7 +168,7 @@ class PipelineExecutor:
                 continue
             from Core.AgentSchema.plan import DynamicToolChainConfig
             if isinstance(sub_step.action, DynamicToolChainConfig):
-                await self._execute_tool_chain(sub_step, plan)
+                await self._execute_tool_chain(sub_step, plan, fail_fast=fail_fast)
 
     def _resolve_inputs(
         self, tool_call, current_step_id: str, plan
@@ -172,15 +197,28 @@ class PipelineExecutor:
                         producer="literal",
                     )
             elif hasattr(source, "from_step_id"):
-                # ToolInputSource
-                step_out = self.step_outputs.get(source.from_step_id, {})
+                # ToolInputSource — check if the referenced step failed
+                step_out = self.step_outputs.get(source.from_step_id)
+
+                if step_out is _FAILED_STEP:
+                    raise PipelineExecutionError(
+                        f"Cannot resolve input '{input_name}' for operator "
+                        f"'{tool_call.tool_id}' in step '{current_step_id}': "
+                        f"upstream step '{source.from_step_id}' failed."
+                    )
+
+                if step_out is None:
+                    step_out = {}
+
                 slot = step_out.get(source.named_output_key)
                 if slot is not None:
                     inputs[input_name] = slot
                 else:
-                    logger.warning(
-                        f"Could not resolve input {input_name} from "
-                        f"{source.from_step_id}.{source.named_output_key}"
+                    raise PipelineExecutionError(
+                        f"Cannot resolve input '{input_name}' for operator "
+                        f"'{tool_call.tool_id}' in step '{current_step_id}': "
+                        f"step '{source.from_step_id}' has no output '{source.named_output_key}'. "
+                        f"Available outputs: {list(step_out.keys())}"
                     )
             else:
                 # Literal value
@@ -203,6 +241,8 @@ class PipelineExecutor:
             # Build a simple namespace from step outputs
             ns = {}
             for step_id, outputs in self.step_outputs.items():
+                if outputs is _FAILED_STEP:
+                    continue
                 for slot_name, slot_val in outputs.items():
                     ns[slot_name] = slot_val
                     ns[f"{step_id}.{slot_name}"] = slot_val

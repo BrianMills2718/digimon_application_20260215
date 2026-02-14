@@ -213,28 +213,33 @@ async def entity_ppr_tool(
     logger.debug(f"Entity.PPR: Personalization vector created with {valid_seed_indices_count} active seed(s). Sum: {np.sum(personalization_vector)}")
 
     # 2. Call the graph's personalized_pagerank method
-    # The BaseGraph.personalized_pagerank expects a list of vectors.
-    # It should also accept alpha and max_iter from kwargs.
+    # BaseGraph.personalized_pagerank(reset_prob_chunk, damping) returns a numpy array
+    # indexed by node position, not a dict.
+    damping = params.personalization_weight_alpha or 0.15
     try:
-        logger.info(f"Entity.PPR: Calling graph.personalized_pagerank with alpha={params.personalization_weight_alpha}, max_iter={params.max_iterations}")
-        
-        # Assuming graph_instance.personalized_pagerank returns a dictionary: {node_id: score}
-        # This matches the NetworkXGraph implementation.
-        ppr_scores_dict: Dict[str, float] = await graph_instance.personalized_pagerank(
-            personalization_vector=[personalization_vector], # Pass as a list of vectors
-            alpha=params.personalization_weight_alpha,
-            max_iter=params.max_iterations
+        logger.info(f"Entity.PPR: Calling graph.personalized_pagerank with damping={damping}")
+
+        ppr_scores_array = await graph_instance.personalized_pagerank(
+            reset_prob_chunk=[personalization_vector],
+            damping=damping,
         )
-        logger.debug(f"Entity.PPR: Received {len(ppr_scores_dict)} scores from personalized_pagerank.")
+        logger.debug(f"Entity.PPR: Received score array of length {len(ppr_scores_array)}")
 
     except Exception as e:
         logger.error(f"Entity.PPR: Error during personalized_pagerank execution: {e}", exc_info=True)
         raise
 
-    # 3. Sort and truncate results
-    if not ppr_scores_dict:
-        logger.warning("Entity.PPR: personalized_pagerank returned empty or None scores_dict.")
+    # 3. Convert numpy array to {node_id: score} dict
+    if ppr_scores_array is None or len(ppr_scores_array) == 0:
+        logger.warning("Entity.PPR: personalized_pagerank returned empty or None scores.")
         return EntityPPROutputs(ranked_entities=[])
+
+    # Map node indices back to node IDs
+    node_list = list(graph_instance._graph.graph.nodes())
+    ppr_scores_dict: Dict[str, float] = {}
+    for idx, score in enumerate(ppr_scores_array):
+        if idx < len(node_list):
+            ppr_scores_dict[node_list[idx]] = float(score)
 
     # Sort by score in descending order
     sorted_ranked_entities = sorted(ppr_scores_dict.items(), key=lambda item: item[1], reverse=True)

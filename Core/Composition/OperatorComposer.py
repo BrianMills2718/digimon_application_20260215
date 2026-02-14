@@ -205,12 +205,13 @@ class OperatorComposer:
 
         return result.valid
 
-    async def execute(self, plan, ctx) -> Dict[str, Any]:
+    async def execute(self, plan, ctx, fail_fast: bool = True) -> Dict[str, Any]:
         """Validate plan, run through PipelineExecutor, format output.
 
         Args:
             plan: ExecutionPlan from build_plan()
             ctx: OperatorContext with graph, VDB, LLM, etc.
+            fail_fast: If True (default), stop on first operator failure.
 
         Returns:
             Dict with step outputs. Final step's outputs are the result.
@@ -223,7 +224,7 @@ class OperatorComposer:
             logger.warning("Plan has validation errors — executing anyway (best effort)")
 
         executor = PipelineExecutor(self.registry, ctx)
-        step_outputs = await executor.execute(plan)
+        step_outputs = await executor.execute(plan, fail_fast=fail_fast)
 
         # Extract the final step's output as the primary result
         result = {
@@ -231,7 +232,12 @@ class OperatorComposer:
             "final_output": {},
         }
 
+        from Core.Composition.PipelineExecutor import _FAILED_STEP
+
         for step_id, outputs in step_outputs.items():
+            if outputs is _FAILED_STEP:
+                result["all_step_outputs"][step_id] = {"__error__": "step failed"}
+                continue
             step_data = {}
             for slot_name, slot_val in outputs.items():
                 if hasattr(slot_val, "data"):
@@ -244,10 +250,11 @@ class OperatorComposer:
         if step_outputs:
             last_step_id = list(step_outputs.keys())[-1]
             last_outputs = step_outputs[last_step_id]
-            for slot_name, slot_val in last_outputs.items():
-                if hasattr(slot_val, "data"):
-                    result["final_output"][slot_name] = slot_val.data
-                else:
-                    result["final_output"][slot_name] = slot_val
+            if last_outputs is not _FAILED_STEP:
+                for slot_name, slot_val in last_outputs.items():
+                    if hasattr(slot_val, "data"):
+                        result["final_output"][slot_name] = slot_val.data
+                    else:
+                        result["final_output"][slot_name] = slot_val
 
         return result
