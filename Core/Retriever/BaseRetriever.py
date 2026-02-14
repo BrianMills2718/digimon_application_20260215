@@ -110,8 +110,12 @@ class BaseRetriever(ABC):
                     self.entity_chunk_count = np.ones(num_nodes)  # Default to 1 for all entities
 
             for entity in query_entities:
-    
-                entity_idx = await self.graph.get_node_index(entity["entity_name"])
+                # Handle both dict ({"entity_name": "..."}) and plain string entities
+                entity_name = entity["entity_name"] if isinstance(entity, dict) else str(entity)
+                entity_idx = await self.graph.get_node_index(entity_name)
+                if entity_idx is None:
+                    logger.warning(f"PPR: Seed entity '{entity_name}' not found in graph, skipping")
+                    continue
                 if self.config.node_specificity:
                     if self.entity_chunk_count[entity_idx] == 0:
                         weight = 1
