@@ -7,14 +7,16 @@ Old Retriever/Query classes have been deleted. The operator pipeline is the cano
 
 ### Operator Pipeline Status
 ```
-Phase 1: Type System        [DONE] SlotTypes, OperatorDescriptor, GraphCapabilities
-Phase 2: Operators (24)     [DONE] 7 entity + 4 relationship + 3 chunk + 3 subgraph + 2 community + 5 meta
-Phase 3: Registry           [DONE] OperatorRegistry with composition helpers
-Phase 4: Composition Engine [DONE] ChainValidator, PipelineExecutor, Adapters
-Phase 5: Method Plans (10)  [DONE] All 10 methods expressed as ExecutionPlans, all validate
-Phase 6: Graph Capabilities [DONE] BaseGraph.capabilities property
-Phase 7: QA Evaluation      [DONE] New pipeline 50% vs old 30% on HotPotQA (10 questions)
-Phase 8: Delete Old System  [DONE] Core/Retriever/ and Core/Query/ deleted, references cleaned up
+Phase 1:  Type System        [DONE] SlotTypes, OperatorDescriptor, GraphCapabilities
+Phase 2:  Operators (24)     [DONE] 7 entity + 4 relationship + 3 chunk + 3 subgraph + 2 community + 5 meta
+Phase 3:  Registry           [DONE] OperatorRegistry with composition helpers
+Phase 4:  Composition Engine [DONE] ChainValidator, PipelineExecutor, Adapters
+Phase 5:  Method Plans (10)  [DONE] All 10 methods expressed as ExecutionPlans, all validate
+Phase 6:  Graph Capabilities [DONE] BaseGraph.capabilities property
+Phase 7:  QA Evaluation      [DONE] New pipeline 50% vs old 30% on HotPotQA (10 questions)
+Phase 8:  Delete Old System  [DONE] Core/Retriever/ and Core/Query/ deleted, references cleaned up
+Phase 9:  MCP Composition    [DONE] 33 MCP tools, execute_method, auto_build for VDBs
+Phase 10: Full Auto-Build    [DONE] build_sparse_matrices + build_communities tools; 10/10 methods pass with auto_build=True
 ```
 
 ### Key Architecture: Operator Pipeline
@@ -85,10 +87,10 @@ agentic_model: "anthropic/claude-sonnet-4-5-20250929"  # for meta operators
 ```
 Graph building uses `llm` (cheap/fast), meta operators use `agentic_model` (quality).
 
-### Previous Work: MCP Integration (Phases 1-2 Complete)
+### Previous Work: MCP Integration
 
 MCP server, client manager, context store, and tool migration complete (checkpoints 1.1-2.3).
-Phase 3 (multi-agent) not started. See `MCP_INTEGRATION_DETAILED_PLAN.md`.
+Operator pipeline phases 1-10 complete. All 10 retrieval methods fully operational via MCP.
 
 ---
 
@@ -186,6 +188,6 @@ med:           entity.vdb → subgraph.khop_paths → subgraph.steiner_tree → 
 
 ## Next Steps
 
-1. **MCP Integration Phase 3** (multi-agent): See `MCP_INTEGRATION_DETAILED_PLAN.md`
-2. **Improve QA accuracy**: Tune retrieval parameters, test more method plans
-3. **Dynamic agent composition**: Let LLM agent select and compose operator chains at runtime (building on OperatorComposer + OperatorRegistry.find_chains_to_goal)
+1. **Improve QA accuracy**: Tune retrieval parameters, benchmark all 10 methods on HotPotQA
+2. **Dynamic agent composition**: Let LLM agent select and compose operator chains at runtime (building on OperatorComposer + OperatorRegistry.find_chains_to_goal)
+3. **Multi-dataset workflows**: Cross-dataset queries, graph merging
