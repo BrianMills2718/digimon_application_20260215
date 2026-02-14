@@ -12,6 +12,7 @@ Add to ~/.claude/mcp_servers.json to use with Claude Code.
 """
 
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -22,18 +23,54 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from mcp.server.fastmcp import FastMCP
 
+logger = logging.getLogger(__name__)
+
 # --- Initialize MCP Server ---
 mcp = FastMCP("digimon-kgrag", instructions="""
 DIGIMON KG-RAG Tools: Build knowledge graphs from documents and query them.
 
+## Two Execution Modes
+
+### Mode 1: Individual Operator Tools (fine-grained control)
+Call operators directly for custom pipelines. The calling agent decides the sequence.
+
 Typical workflow:
-1. corpus_prepare - Prepare text files into a corpus
-2. graph_build_er (or rk, tree, passage) - Build a knowledge graph
+1. corpus_prepare - Prepare .txt files into a corpus
+2. graph_build_er (or rk, tree, tree_balanced, passage) - Build a knowledge graph
 3. entity_vdb_build - Build a vector index of entities
-4. entity_vdb_search - Search for relevant entities
-5. chunk_get_text - Get source text for entities
-6. graph_analyze - Get graph statistics
-7. graph_visualize - Export graph structure
+4. entity_vdb_search / entity_ppr / entity_tfidf - Find relevant entities
+5. relationship_onehop / relationship_vdb_search - Find relationships
+6. chunk_get_text / chunk_from_relationships / chunk_occurrence - Get text chunks
+7. meta_generate_answer - Generate answer from retrieved context
+
+### Mode 2: Named Method Pipelines (one-call execution)
+Use execute_method to run a complete retrieval pipeline end-to-end.
+Call list_methods first to see all 10 available methods and their requirements.
+
+## Graph Types (call list_graph_types for details)
+- **er**: General-purpose entity-relationship graph. Works with all methods.
+- **rk**: Keyword-enriched relationships. Best for LightRAG.
+- **tree/tree_balanced**: Hierarchical clustering. Best for summarization.
+- **passage**: Passage-level nodes. Best for document-centric retrieval.
+
+## Retrieval Methods (call list_methods for details)
+- **basic_local**: VDB → one-hop → co-occurrence. Simple, fast.
+- **basic_global**: Community reports. For broad/thematic questions.
+- **lightrag**: Relationship VDB search. Needs RK graph.
+- **fastgraphrag**: PPR + sparse matrices. For multi-hop topology.
+- **hipporag**: LLM entity extraction → PPR. For out-of-vocabulary entities.
+- **tog**: Iterative LLM exploration. For complex multi-hop reasoning.
+- **gr**: Dual VDB + PCST optimization. For compact informative subgraphs.
+- **dalk**: Entity linking + path filtering. For specific knowledge paths.
+- **kgp**: TF-IDF + iterative reasoning. For rich text descriptions.
+- **med**: Steiner tree subgraph. For domain-specific connected subgraphs.
+
+## Tips
+- Use return_context_only=True in execute_method when you want to synthesize
+  the answer yourself instead of letting DIGIMON's LLM generate it.
+- Call list_available_resources to see what graphs and VDBs exist.
+- Graph building requires corpus_prepare first.
+- VDB building requires a graph to be built first.
 
 State is maintained between calls via GraphRAGContext.
 """)
@@ -80,6 +117,16 @@ async def _ensure_initialized():
     _state["encoder"] = encoder
     _state["chunk_factory"] = chunk_factory
     _state["context"] = context
+
+    # Optional: create agentic LLM via llm_client for meta operators
+    if getattr(config, "agentic_model", None):
+        try:
+            from Core.Provider.LLMClientAdapter import LLMClientAdapter
+            _state["agentic_llm"] = LLMClientAdapter(config.agentic_model)
+            logger.info(f"Agentic LLM initialized: {config.agentic_model}")
+        except ImportError:
+            logger.warning("llm_client not available — agentic_model ignored, using default LLM")
+
     _state["initialized"] = True
 
 
@@ -780,6 +827,393 @@ async def list_available_resources() -> str:
         "working_dir": str(_state["config"].working_dir),
         "data_root": str(_state["config"].data_root),
     }, indent=2)
+
+
+# =============================================================================
+# RELATIONSHIP VDB SEARCH
+# =============================================================================
+
+@mcp.tool()
+async def relationship_vdb_search(vdb_reference_id: str, query_text: str,
+                                   top_k: int = 10,
+                                   score_threshold: float = None) -> str:
+    """Search for relationships similar to a query using vector similarity.
+
+    Args:
+        vdb_reference_id: ID of the relationship VDB to search
+        query_text: Natural language search query
+        top_k: Number of results to return
+        score_threshold: Minimum similarity score (optional)
+    """
+    await _ensure_initialized()
+    from Core.AgentTools.relationship_tools import relationship_vdb_search_tool
+    from Core.AgentSchema.tool_contracts import RelationshipVDBSearchInputs
+
+    inputs = RelationshipVDBSearchInputs(
+        vdb_reference_id=vdb_reference_id,
+        query_text=query_text,
+        top_k=top_k,
+        score_threshold=score_threshold,
+    )
+    result = await relationship_vdb_search_tool(inputs, _state["context"])
+    return _format_result(result)
+
+
+# =============================================================================
+# CHUNK AGGREGATOR
+# =============================================================================
+
+@mcp.tool()
+async def chunk_aggregator(relationship_scores: dict,
+                            graph_reference_id: str,
+                            top_k: int = 10) -> str:
+    """Propagate relationship/PPR scores to chunks via sparse matrices.
+
+    Used in FastGraphRAG and HippoRAG pipelines. Requires sparse matrices
+    built during graph construction.
+
+    Args:
+        relationship_scores: Dict mapping relationship_id to score
+        graph_reference_id: Graph ID containing the chunks
+        top_k: Maximum chunks to return
+    """
+    await _ensure_initialized()
+    from Core.AgentTools.chunk_tools import chunk_aggregator_tool
+    from Core.AgentSchema.tool_contracts import ChunkRelationshipScoreAggregatorInputs
+
+    inputs = ChunkRelationshipScoreAggregatorInputs(
+        chunk_candidates=[],  # Will be populated from graph
+        relationship_scores=relationship_scores,
+        top_k_chunks=top_k,
+    )
+    result = await chunk_aggregator_tool(inputs, _state["context"])
+    return _format_result(result)
+
+
+# =============================================================================
+# META OPERATORS (LLM-powered)
+# =============================================================================
+
+@mcp.tool()
+async def meta_extract_entities(query_text: str) -> str:
+    """Use LLM to extract entity mentions from query text.
+
+    Useful when you need to identify entities in a question before linking
+    them to graph entities. Used in HippoRAG, ToG, and DALK pipelines.
+
+    Args:
+        query_text: The question or text to extract entities from
+    """
+    await _ensure_initialized()
+    from Core.Operators.meta.extract_entities import meta_extract_entities as _extract
+    from Core.Schema.SlotTypes import SlotKind, SlotValue
+
+    inputs = {"query": SlotValue(kind=SlotKind.QUERY_TEXT, data=query_text, producer="mcp")}
+    result = await _extract(inputs=inputs, ctx=_build_operator_context(), params={})
+
+    # Convert SlotValue result to serializable format
+    entities = result.get("entities")
+    if entities and hasattr(entities, "data"):
+        return json.dumps({
+            "entities": [
+                {"entity_name": e.entity_name, "score": e.score}
+                for e in entities.data
+            ]
+        }, indent=2)
+    return json.dumps({"entities": []})
+
+
+@mcp.tool()
+async def meta_generate_answer(query_text: str, context_chunks: list[str],
+                                system_prompt: str = None) -> str:
+    """Generate an answer from query + retrieved text chunks using LLM.
+
+    Terminal operator in most retrieval pipelines. Pass retrieved chunks
+    as context for the LLM to synthesize an answer.
+
+    Args:
+        query_text: The question to answer
+        context_chunks: List of text strings providing context
+        system_prompt: Optional custom system prompt (supports {context_data} placeholder)
+    """
+    await _ensure_initialized()
+    from Core.Operators.meta.generate_answer import meta_generate_answer as _generate
+    from Core.Schema.SlotTypes import ChunkRecord, SlotKind, SlotValue
+
+    chunk_records = [ChunkRecord(chunk_id=f"mcp_{i}", text=t) for i, t in enumerate(context_chunks)]
+    inputs = {
+        "query": SlotValue(kind=SlotKind.QUERY_TEXT, data=query_text, producer="mcp"),
+        "chunks": SlotValue(kind=SlotKind.CHUNK_SET, data=chunk_records, producer="mcp"),
+    }
+    params = {}
+    if system_prompt:
+        params["system_prompt"] = system_prompt
+
+    result = await _generate(inputs=inputs, ctx=_build_operator_context(), params=params)
+
+    answer = result.get("answer")
+    if answer and hasattr(answer, "data"):
+        return answer.data
+    return "Failed to generate answer."
+
+
+@mcp.tool()
+async def meta_pcst_optimize(entity_ids: list[str], entity_scores: dict,
+                               relationship_triples: list[dict],
+                               graph_reference_id: str) -> str:
+    """Optimize entity+relationship sets into a compact subgraph using PCST.
+
+    Prize-Collecting Steiner Tree selects the most informative nodes and
+    edges based on scores. Used in the GR method pipeline.
+
+    Args:
+        entity_ids: List of entity names/IDs
+        entity_scores: Dict mapping entity_id to score (prize)
+        relationship_triples: List of dicts with src_id, tgt_id, weight keys
+        graph_reference_id: Graph ID for context
+    """
+    await _ensure_initialized()
+    from Core.Operators.meta.pcst_optimize import meta_pcst_optimize as _pcst
+    from Core.Schema.SlotTypes import EntityRecord, RelationshipRecord, SlotKind, SlotValue
+
+    entities = [
+        EntityRecord(entity_name=eid, score=entity_scores.get(eid, 1.0))
+        for eid in entity_ids
+    ]
+    rels = [
+        RelationshipRecord(
+            src_id=r["src_id"], tgt_id=r["tgt_id"],
+            weight=r.get("weight", 1.0),
+            description=r.get("description", ""),
+        )
+        for r in relationship_triples
+    ]
+
+    inputs = {
+        "entities": SlotValue(kind=SlotKind.ENTITY_SET, data=entities, producer="mcp"),
+        "relationships": SlotValue(kind=SlotKind.RELATIONSHIP_SET, data=rels, producer="mcp"),
+    }
+    result = await _pcst(inputs=inputs, ctx=_build_operator_context(), params={})
+
+    sg = result.get("subgraph")
+    if sg and hasattr(sg, "data"):
+        sg_data = sg.data
+        return json.dumps({
+            "nodes": list(sg_data.nodes) if sg_data.nodes else [],
+            "edges": [(e[0], e[1]) if isinstance(e, tuple) else e for e in (sg_data.edges or [])],
+        }, indent=2, default=str)
+    return json.dumps({"nodes": [], "edges": []})
+
+
+def _build_operator_context() -> Any:
+    """Build an OperatorContext from the global MCP state for meta operator calls."""
+    from Core.Operators._context import OperatorContext
+
+    ctx = _state["context"]
+
+    # Extract the first available graph and its resources
+    graph = None
+    entities_vdb = None
+    relations_vdb = None
+    doc_chunks = None
+
+    if hasattr(ctx, "list_graphs"):
+        graphs = ctx.list_graphs()
+        if graphs:
+            graph_id = graphs[0]
+            gi = ctx.get_graph_instance(graph_id)
+            if gi:
+                graph = gi._graph if hasattr(gi, "_graph") else gi
+
+    return OperatorContext(
+        graph=graph,
+        entities_vdb=entities_vdb,
+        relations_vdb=relations_vdb,
+        doc_chunks=doc_chunks,
+        llm=_state.get("agentic_llm") or _state["llm"],
+        config=_state["config"],
+    )
+
+
+# =============================================================================
+# METHOD-LEVEL TOOLS
+# =============================================================================
+
+@mcp.tool()
+async def list_methods() -> str:
+    """List all 10 available retrieval methods with rich metadata.
+
+    Returns profiles including operator chains, requirements (VDB, community,
+    sparse matrices), cost tiers, and guidance on when to use each method.
+    Use this to decide which method to pass to execute_method.
+    """
+    await _ensure_initialized()
+    _ensure_composer()
+
+    profiles = _state["composer"].get_method_profiles()
+    return json.dumps([
+        {
+            "name": p.name,
+            "description": p.description,
+            "operator_chain": p.operator_chain,
+            "requires_entity_vdb": p.requires_entity_vdb,
+            "requires_relationship_vdb": p.requires_relationship_vdb,
+            "requires_community": p.requires_community,
+            "requires_sparse_matrices": p.requires_sparse_matrices,
+            "cost_tier": p.cost_tier,
+            "has_loop": p.has_loop,
+            "uses_llm_operators": p.uses_llm_operators,
+            "good_for": p.good_for,
+        }
+        for p in profiles
+    ], indent=2)
+
+
+@mcp.tool()
+async def list_graph_types() -> str:
+    """List all 5 available graph types with descriptions and guidance.
+
+    Returns information about each graph type to help decide which to build.
+    """
+    graph_types = [
+        {
+            "name": "er",
+            "build_tool": "graph_build_er",
+            "description": "Entity-Relationship graph. Extracts entities and relationships using LLM.",
+            "best_for": "General-purpose knowledge graphs. Works with all retrieval methods.",
+            "capabilities": "Entities, relationships, source_ids for chunk lookup. Supports VDB, PPR, community detection.",
+        },
+        {
+            "name": "rk",
+            "build_tool": "graph_build_rk",
+            "description": "Relationship-Keyword graph. Like ER but enriches edges with keywords.",
+            "best_for": "Keyword-based retrieval (LightRAG). When relationship descriptions matter.",
+            "capabilities": "All ER capabilities plus keyword-enriched edges for better relationship VDB search.",
+        },
+        {
+            "name": "tree",
+            "build_tool": "graph_build_tree",
+            "description": "Hierarchical Tree graph (RAPTOR-style). Clusters chunks into summaries.",
+            "best_for": "Summarization tasks. When you need multi-level abstraction of documents.",
+            "capabilities": "Hierarchical clustering with summary nodes. Supports community-based retrieval.",
+        },
+        {
+            "name": "tree_balanced",
+            "build_tool": "graph_build_tree_balanced",
+            "description": "Balanced Tree using K-Means clustering for uniform cluster sizes.",
+            "best_for": "Same as tree but when more uniform cluster sizes are desired.",
+            "capabilities": "Same as tree with better-balanced clusters.",
+        },
+        {
+            "name": "passage",
+            "build_tool": "graph_build_passage",
+            "description": "Passage graph. Nodes are text passages linked by shared entities.",
+            "best_for": "Document-centric retrieval. When passages themselves are the primary units.",
+            "capabilities": "Passage-level nodes with entity-based edges. Good for passage retrieval.",
+        },
+    ]
+    return json.dumps(graph_types, indent=2)
+
+
+@mcp.tool()
+async def execute_method(method_name: str, query: str, dataset_name: str,
+                          return_context_only: bool = False) -> str:
+    """Run a named retrieval method pipeline end-to-end.
+
+    This executes a complete retrieval pipeline (e.g., basic_local runs:
+    entity VDB search -> relationship one-hop -> chunk co-occurrence -> answer).
+
+    Use list_methods to see all available methods and their requirements.
+
+    Args:
+        method_name: One of: basic_local, basic_global, lightrag, fastgraphrag,
+                     hipporag, tog, gr, dalk, kgp, med
+        query: The question to answer
+        dataset_name: Name of the dataset (must have graph + VDB built)
+        return_context_only: If True, return raw retrieved context instead of
+                           a generated answer. Useful when the calling agent
+                           wants to synthesize the answer itself.
+    """
+    await _ensure_initialized()
+    _ensure_composer()
+
+    composer = _state["composer"]
+
+    # Build the execution plan
+    plan = composer.build_plan(
+        method_name=method_name,
+        query=query,
+        return_context_only=return_context_only,
+        dataset=dataset_name,
+    )
+
+    # Build OperatorContext for pipeline execution
+    op_ctx = _build_operator_context_for_dataset(dataset_name)
+
+    # Execute the plan
+    result = await composer.execute(plan, op_ctx)
+
+    return json.dumps(result, indent=2, default=str)
+
+
+def _ensure_composer() -> None:
+    """Lazily initialize the OperatorComposer."""
+    if "composer" not in _state:
+        from Core.Operators.registry import REGISTRY
+        from Core.Composition.OperatorComposer import OperatorComposer
+
+        _state["composer"] = OperatorComposer(REGISTRY)
+
+
+def _build_operator_context_for_dataset(dataset_name: str) -> Any:
+    """Build a full OperatorContext for a specific dataset."""
+    from Core.Operators._context import OperatorContext
+
+    ctx = _state["context"]
+
+    graph = None
+    entities_vdb = None
+    relations_vdb = None
+    doc_chunks = None
+    sparse_matrices = {}
+
+    # Find the graph for this dataset
+    if hasattr(ctx, "list_graphs"):
+        for graph_id in ctx.list_graphs():
+            if dataset_name in graph_id:
+                gi = ctx.get_graph_instance(graph_id)
+                if gi:
+                    graph = gi._graph if hasattr(gi, "_graph") else gi
+                    # Extract VDBs and chunks from the graph instance
+                    if hasattr(gi, "entities_vdb"):
+                        entities_vdb = gi.entities_vdb
+                    if hasattr(gi, "relations_vdb"):
+                        relations_vdb = gi.relations_vdb
+                    if hasattr(gi, "doc_chunks"):
+                        doc_chunks = gi.doc_chunks
+                    if hasattr(gi, "sparse_matrices"):
+                        sparse_matrices = gi.sparse_matrices or {}
+                    break
+
+    # Also check context-level VDBs
+    if hasattr(ctx, "list_vdbs"):
+        for vdb_id in ctx.list_vdbs():
+            vdb_inst = ctx.get_vdb_instance(vdb_id)
+            if vdb_inst:
+                if "entities" in vdb_id and entities_vdb is None:
+                    entities_vdb = vdb_inst
+                elif "relation" in vdb_id and relations_vdb is None:
+                    relations_vdb = vdb_inst
+
+    return OperatorContext(
+        graph=graph,
+        entities_vdb=entities_vdb,
+        relations_vdb=relations_vdb,
+        doc_chunks=doc_chunks,
+        llm=_state.get("agentic_llm") or _state["llm"],
+        config=_state["config"],
+        sparse_matrices=sparse_matrices,
+    )
 
 
 # =============================================================================

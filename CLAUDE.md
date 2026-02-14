@@ -48,6 +48,35 @@ meta:         extract_entities, reason_step, rerank, generate_answer, pcst_optim
 - `REGISTRY.find_chains_to_goal({QUERY_TEXT}, CHUNK_SET)` — 95 valid chains at depth 3
 - `ChainValidator.validate(plan)` — validates all I/O connections in an ExecutionPlan
 
+### MCP Agent Composition (2026-02-14)
+
+**Status**: Complete. All 24 operators + 10 method pipelines accessible via MCP.
+
+The MCP server (`digimon_mcp_stdio_server.py`) is the toolbox — the calling agent
+(Claude Code, Codex, custom) decides what graph to build and what retrieval method to use.
+
+**New components**:
+- `Core/Provider/LLMClientAdapter.py` — wraps `llm_client.acall_llm` behind BaseLLM interface
+- `Core/Composition/OperatorComposer.py` — method profiling, plan building, execution
+- `Option/Config2.py` — `agentic_model` field for separate LLM for meta operators
+
+**MCP tools (30 total)**:
+- 5 graph build tools (er, rk, tree, tree_balanced, passage)
+- 1 corpus tool (prepare)
+- 24 operator/query tools (all 24 operators accessible)
+- 3 method-level tools (list_methods, list_graph_types, execute_method)
+- 1 context tool (list_available_resources)
+
+**Two execution modes**:
+1. Individual operator tools — calling agent composes the pipeline
+2. `execute_method("basic_local", query, dataset)` — one-call named pipeline
+
+**Multi-model config** (optional):
+```yaml
+agentic_model: "anthropic/claude-sonnet-4-5-20250929"  # for meta operators
+```
+Graph building uses `llm` (cheap/fast), meta operators use `agentic_model` (quality).
+
 ### Previous Work: MCP Integration (Phases 1-2 Complete)
 
 MCP server, client manager, context store, and tool migration complete (checkpoints 1.1-2.3).
@@ -132,7 +161,7 @@ med:           entity.vdb → subgraph.khop_paths → subgraph.steiner_tree → 
 - **Type System**: `Core/Schema/SlotTypes.py`, `OperatorDescriptor.py`, `GraphCapabilities.py`
 - **24 Operators**: `Core/Operators/{entity,relationship,chunk,subgraph,community,meta}/`
 - **Registry**: `Core/Operators/registry.py` — OperatorRegistry with composition helpers
-- **Composition**: `Core/Composition/` — ChainValidator, PipelineExecutor, Adapters
+- **Composition**: `Core/Composition/` — ChainValidator, PipelineExecutor, Adapters, OperatorComposer
 - **Method Plans**: `Core/Methods/` — 10 method plans as ExecutionPlan factories
 - **Plan Extensions**: `Core/AgentSchema/plan.py` — LoopConfig, ConditionalBranch
 
@@ -149,6 +178,6 @@ med:           entity.vdb → subgraph.khop_paths → subgraph.steiner_tree → 
 
 ## Next Steps
 
-1. **MCP Integration** (deferred): See `MCP_INTEGRATION_DETAILED_PLAN.md`
+1. **MCP Integration Phase 3** (multi-agent): See `MCP_INTEGRATION_DETAILED_PLAN.md`
 2. **Improve QA accuracy**: Tune retrieval parameters, test more method plans
-3. **Agent composition**: Let LLM agent select and compose operator chains dynamically
+3. **Dynamic agent composition**: Let LLM agent select and compose operator chains at runtime (building on OperatorComposer + OperatorRegistry.find_chains_to_goal)

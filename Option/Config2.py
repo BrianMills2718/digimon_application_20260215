@@ -47,6 +47,11 @@ class Config(WorkingParams, YamlModel):
     # RAG Embedding
     embedding: EmbeddingConfig = EmbeddingConfig()
 
+    # Optional: separate model for agentic/meta operators (via llm_client)
+    # When set, meta operators (extract_entities, generate_answer, etc.) use
+    # this model via LLMClientAdapter while graph building uses the default llm.
+    agentic_model: Optional[str] = None
+
     # Basic Config
     use_entities_vdb: bool = True
     use_relations_vdb: bool = True  # Only set True for LightRAG
