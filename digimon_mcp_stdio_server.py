@@ -14,9 +14,10 @@ Add to ~/.claude/mcp_servers.json to use with Claude Code.
 import json
 import logging
 import os
+import pickle
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional, Tuple
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -71,9 +72,9 @@ Call list_methods first to see all 10 available methods and their requirements.
 - Call list_available_resources to see what graphs and VDBs exist.
 - Graph building requires corpus_prepare first.
 - VDB building requires a graph to be built first.
-- Pass auto_build=True to execute_method to auto-build missing VDBs.
-  Auto-build can create entity and relationship VDBs, but NOT sparse matrices
-  or community structure (those require rebuilding the graph with different config).
+- Pass auto_build=True to execute_method to auto-build all missing prerequisites:
+  entity VDB, relationship VDB, sparse matrices, and community structure.
+  Community building calls LLM (most expensive auto-build step).
 - Default graph build now uses single-step extraction (extract_two_step=false),
   which extracts entity types, entity descriptions, and relation descriptions.
   Graphs built with the old default (extract_two_step=true) have empty descriptions;
@@ -697,6 +698,81 @@ async def graph_visualize(graph_id: str, output_format: str = "JSON_NODES_EDGES"
 # =============================================================================
 
 @mcp.tool()
+async def build_communities(dataset_name: str, force_rebuild: bool = False) -> str:
+    """Run Leiden clustering on an existing graph and generate community reports.
+
+    Required by basic_global method. This calls LLM to generate community summaries,
+    so it's more expensive than VDB builds but much cheaper than graph rebuilds.
+
+    Args:
+        dataset_name: Name of the dataset (must have graph built)
+        force_rebuild: Force rebuild even if community data exists on disk
+    """
+    await _ensure_initialized()
+    ctx = _state["context"]
+    config = _state["config"]
+    llm = _state.get("agentic_llm") or _state["llm"]
+
+    # Find the graph for this dataset
+    gi = None
+    if hasattr(ctx, "list_graphs"):
+        for gid in ctx.list_graphs():
+            if dataset_name in gid:
+                gi = ctx.get_graph_instance(gid)
+                break
+
+    if gi is None:
+        return json.dumps({"error": f"No graph found for dataset '{dataset_name}'. Build one first."})
+
+    # Get largest connected component for clustering
+    lcc = await gi.stable_largest_cc()
+    if lcc is None:
+        return json.dumps({"error": "Could not compute largest connected component"})
+
+    # Build community namespace using Workspace/NameSpace pattern
+    from Core.Storage.NameSpace import Workspace
+    workspace = Workspace(config.working_dir, dataset_name)
+    community_ns = workspace.make_for("community_storage")
+
+    # Instantiate Leiden community
+    from Core.Community.ClusterFactory import get_community
+    community = get_community(
+        "leiden",
+        enforce_sub_communities=False,
+        llm=llm,
+        namespace=community_ns,
+    )
+
+    # Cluster
+    logger.info(f"Running Leiden clustering for '{dataset_name}'")
+    await community.cluster(
+        largest_cc=lcc,
+        max_cluster_size=getattr(config.graph, "max_graph_cluster_size", 10),
+        random_seed=getattr(config.graph, "graph_cluster_seed", 0xDEADBEEF),
+        force=force_rebuild,
+    )
+
+    # Generate community reports (calls LLM)
+    logger.info(f"Generating community reports for '{dataset_name}'")
+    await community.generate_community_report(gi, force=force_rebuild)
+
+    # Store in _state for _build_operator_context_for_dataset to find
+    _state.setdefault("communities", {})[dataset_name] = community
+
+    # Count communities from the reports
+    report_data = community.community_reports.json_data if hasattr(community, "community_reports") else {}
+    num_communities = len(report_data) if report_data else 0
+
+    logger.info(f"Community detection complete for '{dataset_name}': {num_communities} communities")
+
+    return json.dumps({
+        "status": "success",
+        "dataset": dataset_name,
+        "num_communities": num_communities,
+    }, indent=2)
+
+
+@mcp.tool()
 async def community_detect_from_entities(graph_reference_id: str,
                                           seed_entity_ids: list[str],
                                           max_communities: int = 5) -> str:
@@ -888,6 +964,91 @@ async def relationship_vdb_search(vdb_reference_id: str, query_text: str,
     )
     result = await relationship_vdb_search_tool(inputs, _state["context"])
     return _format_result(result)
+
+
+# =============================================================================
+# SPARSE MATRIX BUILD
+# =============================================================================
+
+@mcp.tool()
+async def build_sparse_matrices(dataset_name: str, force_rebuild: bool = False) -> str:
+    """Build sparse CSR matrices mapping entities→relationships→chunks for a graph.
+
+    Required by fastgraphrag and hipporag methods. Persists matrices to disk.
+
+    Args:
+        dataset_name: Name of the dataset (must have graph built)
+        force_rebuild: Force rebuild even if matrices exist on disk
+    """
+    await _ensure_initialized()
+    ctx = _state["context"]
+    config = _state["config"]
+    chunk_factory = _state.get("chunk_factory")
+
+    # Find the graph for this dataset
+    graph_id = None
+    gi = None
+    if hasattr(ctx, "list_graphs"):
+        for gid in ctx.list_graphs():
+            if dataset_name in gid:
+                graph_id = gid
+                gi = ctx.get_graph_instance(gid)
+                break
+
+    if gi is None:
+        return json.dumps({"error": f"No graph found for dataset '{dataset_name}'. Build one first."})
+
+    # Check if already built (unless force)
+    e2r_path, r2c_path = _sparse_matrix_paths(dataset_name)
+    if not force_rebuild and e2r_path.exists() and r2c_path.exists():
+        matrices = _try_load_sparse_matrices(dataset_name)
+        if matrices:
+            gi.sparse_matrices = matrices
+            e2r = matrices["entity_to_rel"]
+            r2c = matrices["rel_to_chunk"]
+            return json.dumps({
+                "status": "loaded_from_disk",
+                "dataset": dataset_name,
+                "entity_to_rel_shape": list(e2r.shape),
+                "rel_to_chunk_shape": list(r2c.shape),
+            }, indent=2)
+
+    # Build entity_to_rel matrix
+    logger.info(f"Building entity_to_rel sparse matrix for '{dataset_name}'")
+    e2r = await gi.get_entities_to_relationships_map(is_directed=False)
+
+    # Build rel_to_chunk matrix via _DocChunkAdapter
+    logger.info(f"Building rel_to_chunk sparse matrix for '{dataset_name}'")
+    if chunk_factory is None:
+        return json.dumps({"error": "ChunkFactory not available"})
+
+    chunks_list = await chunk_factory.get_chunks_for_dataset(dataset_name)
+    if not chunks_list:
+        return json.dumps({"error": f"No chunks found for dataset '{dataset_name}'"})
+
+    adapter = _DocChunkAdapter(chunks_list)
+    r2c = await gi.get_relationships_to_chunks_map(adapter)
+
+    # Stash on graph instance
+    matrices = {"entity_to_rel": e2r, "rel_to_chunk": r2c}
+    gi.sparse_matrices = matrices
+
+    # Persist to disk
+    e2r_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(e2r_path, "wb") as f:
+        pickle.dump(e2r, f)
+    with open(r2c_path, "wb") as f:
+        pickle.dump(r2c, f)
+
+    logger.info(f"Sparse matrices built and persisted for '{dataset_name}': "
+                f"e2r={e2r.shape}, r2c={r2c.shape}")
+
+    return json.dumps({
+        "status": "success",
+        "dataset": dataset_name,
+        "entity_to_rel_shape": list(e2r.shape),
+        "rel_to_chunk_shape": list(r2c.shape),
+    }, indent=2)
 
 
 # =============================================================================
@@ -1165,10 +1326,9 @@ async def execute_method(method_name: str, query: str, dataset_name: str,
         return_context_only: If True, return raw retrieved context instead of
                            a generated answer. Useful when the calling agent
                            wants to synthesize the answer itself.
-        auto_build: If True, automatically build missing entity/relationship VDBs
-                   before running the pipeline. Only builds VDBs (cheap, fast).
-                   Cannot auto-build sparse matrices or community structure —
-                   those require rebuilding the graph with different config.
+        auto_build: If True, automatically build all missing prerequisites before
+                   running: entity VDB, relationship VDB, sparse matrices, and
+                   community structure. Community building calls LLM (most expensive).
     """
     await _ensure_initialized()
     _ensure_composer()
@@ -1200,7 +1360,7 @@ async def execute_method(method_name: str, query: str, dataset_name: str,
                     "error": f"Method '{method_name}' still missing prerequisites after auto-build",
                     "built": built,
                     "still_missing": missing,
-                    "hint": "Sparse matrices and community structure require rebuilding the graph with different config.",
+                    "hint": "Check logs for build errors. You can also try building prerequisites individually.",
                 }, indent=2)
         elif missing:
             return json.dumps({
@@ -1267,6 +1427,24 @@ async def _auto_build_prerequisites(profile, op_ctx, dataset_name: str) -> list[
         await relationship_vdb_build_tool(inputs, ctx)
         built.append("relationship_vdb")
 
+    if profile.requires_sparse_matrices and not op_ctx.sparse_matrices:
+        logger.info(f"auto_build: Building sparse matrices for '{dataset_name}'")
+        result_json = await build_sparse_matrices(dataset_name, force_rebuild=False)
+        result = json.loads(result_json)
+        if result.get("status") in ("success", "loaded_from_disk"):
+            built.append("sparse_matrices")
+        else:
+            logger.warning(f"auto_build: Failed to build sparse matrices: {result.get('error')}")
+
+    if profile.requires_community and op_ctx.community is None:
+        logger.info(f"auto_build: Building communities for '{dataset_name}'")
+        result_json = await build_communities(dataset_name, force_rebuild=False)
+        result = json.loads(result_json)
+        if result.get("status") == "success":
+            built.append("community")
+        else:
+            logger.warning(f"auto_build: Failed to build communities: {result.get('error')}")
+
     if built:
         logger.info(f"auto_build: Built {built} for '{dataset_name}'")
 
@@ -1299,6 +1477,57 @@ class _ChunkLookup:
         ]
 
 
+class _DocChunkAdapter:
+    """Adapter to make ChunkFactory data look like a DocChunk for sparse matrix building.
+
+    BaseGraph.get_relationships_to_chunks_map() needs an object with:
+      - async get_index_by_merge_key(source_id_str) -> list[Optional[int]]
+      - async size -> int
+    """
+
+    def __init__(self, chunks: List[Tuple[str, Any]]):
+        from Core.Common.Utils import split_string_by_multi_markers
+        from Core.Common.Constants import GRAPH_FIELD_SEP
+        self._split_markers = [GRAPH_FIELD_SEP]
+        self._split_fn = split_string_by_multi_markers
+        self._key_to_index: dict[str, int] = {}
+        for i, (chunk_id, _) in enumerate(chunks):
+            self._key_to_index[chunk_id] = i
+        self._size = len(chunks)
+
+    @property
+    async def size(self) -> int:
+        return self._size
+
+    async def get_index_by_merge_key(self, merge_chunk_id: str) -> List[Optional[int]]:
+        """Map a merged chunk ID string (separated by GRAPH_FIELD_SEP) to indices."""
+        key_list = self._split_fn(merge_chunk_id, self._split_markers)
+        return [self._key_to_index.get(cid) for cid in key_list]
+
+
+def _sparse_matrix_paths(dataset_name: str) -> Tuple[Path, Path]:
+    """Return (e2r_path, r2c_path) for persisted sparse matrices."""
+    config = _state["config"]
+    base = Path(config.working_dir) / dataset_name / "er_graph"
+    return base / "sparse_e2r.pkl", base / "sparse_r2c.pkl"
+
+
+def _try_load_sparse_matrices(dataset_name: str) -> dict:
+    """Try to load sparse matrices from persisted pickle files."""
+    e2r_path, r2c_path = _sparse_matrix_paths(dataset_name)
+    if e2r_path.exists() and r2c_path.exists():
+        try:
+            with open(e2r_path, "rb") as f:
+                e2r = pickle.load(f)
+            with open(r2c_path, "rb") as f:
+                r2c = pickle.load(f)
+            logger.info(f"Loaded sparse matrices from disk for '{dataset_name}'")
+            return {"entity_to_rel": e2r, "rel_to_chunk": r2c}
+        except Exception as e:
+            logger.warning(f"Failed to load sparse matrices from disk: {e}")
+    return {}
+
+
 async def _build_operator_context_for_dataset(dataset_name: str) -> Any:
     """Build a full OperatorContext for a specific dataset."""
     from Core.Operators._context import OperatorContext
@@ -1317,12 +1546,15 @@ async def _build_operator_context_for_dataset(dataset_name: str) -> Any:
             if dataset_name in graph_id:
                 gi = ctx.get_graph_instance(graph_id)
                 if gi:
-                    # Pass the full graph instance (ERGraph, etc.) — operators
-                    # need entity_metakey, which only the graph class has.
                     graph = gi
-                    if hasattr(gi, "sparse_matrices"):
-                        sparse_matrices = gi.sparse_matrices or {}
+                    # Check graph instance for in-memory sparse matrices
+                    if hasattr(gi, "sparse_matrices") and gi.sparse_matrices:
+                        sparse_matrices = gi.sparse_matrices
                     break
+
+    # Fallback: try loading sparse matrices from persisted pickle files
+    if not sparse_matrices:
+        sparse_matrices = _try_load_sparse_matrices(dataset_name)
 
     # Check context-level VDBs
     if hasattr(ctx, "list_vdbs"):
@@ -1348,6 +1580,9 @@ async def _build_operator_context_for_dataset(dataset_name: str) -> Any:
         except Exception as e:
             logger.warning(f"Could not load chunks for dataset '{dataset_name}': {e}")
 
+    # Look up community from _state (set by build_communities tool)
+    community = _state.get("communities", {}).get(dataset_name)
+
     # Operators expect RetrieverConfig (has top_k, max_token_*, etc.),
     # not the top-level Config object.
     full_config = _state["config"]
@@ -1358,6 +1593,7 @@ async def _build_operator_context_for_dataset(dataset_name: str) -> Any:
         entities_vdb=entities_vdb,
         relations_vdb=relations_vdb,
         doc_chunks=doc_chunks,
+        community=community,
         llm=_state.get("agentic_llm") or _state["llm"],
         config=retriever_config,
         sparse_matrices=sparse_matrices,

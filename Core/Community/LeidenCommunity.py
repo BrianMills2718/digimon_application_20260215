@@ -114,9 +114,16 @@ class LeidenCommunity(BaseCommunity):
         describe = await self._pack_single_community_describe(er_graph, community, already_reports=already_reports)
         prompt = CommunityPrompt.COMMUNITY_REPORT.format(input_text=describe)
 
-        response = await self.llm.aask(prompt, format = "json")
-        # data = prase_json_from_response(response)
+        response = await self.llm.aask(prompt, format="json")
 
+        # Parse JSON response — LLM returns a string even with format="json"
+        if isinstance(response, str):
+            import json as _json
+            try:
+                return _json.loads(response)
+            except _json.JSONDecodeError:
+                logger.warning(f"Failed to parse community report JSON, using fallback: {response[:200]}")
+                return {"title": "Community Report", "summary": response, "findings": []}
         return response
 
     @staticmethod

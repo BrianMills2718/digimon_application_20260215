@@ -82,12 +82,14 @@ async def setup():
     return mcp_srv
 
 
-async def run_method(mcp_srv, method_name: str, tier: str) -> None:
+async def run_method(mcp_srv, method_name: str, tier: str,
+                     auto_build: bool = False) -> None:
     """Run a single method plan and record results."""
     t0 = time.time()
     try:
         result_json = await mcp_srv.execute_method(
-            method_name, QUERY, DATASET, return_context_only=True
+            method_name, QUERY, DATASET, return_context_only=True,
+            auto_build=auto_build,
         )
         elapsed = time.time() - t0
         result = json.loads(result_json)
@@ -148,28 +150,28 @@ async def main():
     for method in ["basic_local", "med"]:
         await run_method(mcp_srv, method, "T1")
 
-    # hipporag and dalk need LLM for meta.extract_entities
-    for method in ["hipporag", "dalk"]:
-        await run_method(mcp_srv, method, "T1-LLM")
+    # dalk needs LLM for meta.extract_entities (hipporag moved to T4 with auto_build)
+    await run_method(mcp_srv, "dalk", "T1-LLM")
 
     # ================================================================
-    # TIER 2: Relationship VDB required
+    # TIER 2: Relationship VDB required (auto_build=True)
     # ================================================================
-    print("\n--- Tier 2: Relationship VDB methods ---")
+    print("\n--- Tier 2: Relationship VDB methods (auto_build) ---")
     for method in ["lightrag", "gr"]:
-        await run_method(mcp_srv, method, "T2")
+        await run_method(mcp_srv, method, "T2", auto_build=True)
 
     # ================================================================
-    # TIER 3: Community structure required
+    # TIER 3: Community structure required (auto_build=True)
     # ================================================================
-    print("\n--- Tier 3: Community methods ---")
-    await run_method(mcp_srv, "basic_global", "T3")
+    print("\n--- Tier 3: Community methods (auto_build) ---")
+    await run_method(mcp_srv, "basic_global", "T3", auto_build=True)
 
     # ================================================================
-    # TIER 4: Sparse matrices required
+    # TIER 4: Sparse matrices required (auto_build=True)
     # ================================================================
-    print("\n--- Tier 4: Sparse matrix methods ---")
-    await run_method(mcp_srv, "fastgraphrag", "T4")
+    print("\n--- Tier 4: Sparse matrix methods (auto_build) ---")
+    await run_method(mcp_srv, "fastgraphrag", "T4", auto_build=True)
+    await run_method(mcp_srv, "hipporag", "T4", auto_build=True)
 
     # ================================================================
     # TIER 5: Loop-based methods (most complex)

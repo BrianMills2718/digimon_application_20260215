@@ -76,6 +76,8 @@ class FaissIndex(BaseIndex):
                 if nodes_data and scores_from_vdb:
                     logger.debug(f"  Lookup for '{target_query}' found {len(nodes_data)} nodes.")
                     for i, node_data_item in enumerate(nodes_data):
+                        if node_data_item is None:
+                            continue
                         entity_name = node_data_item.get(graph.entity_metakey)
                         if entity_name:
                             node_idx = await graph.get_node_index(entity_name)

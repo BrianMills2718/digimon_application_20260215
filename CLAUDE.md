@@ -60,10 +60,11 @@ The MCP server (`digimon_mcp_stdio_server.py`) is the toolbox — the calling ag
 - `Core/Composition/OperatorComposer.py` — method profiling, plan building, execution
 - `Option/Config2.py` — `agentic_model` field for separate LLM for meta operators
 
-**MCP tools (31 total)**:
+**MCP tools (33 total)**:
 - 5 graph build tools (er, rk, tree, tree_balanced, passage)
 - 1 corpus tool (prepare)
 - 25 operator/query tools (all 24 operators + relationship_vdb_build)
+- 2 prerequisite build tools (build_sparse_matrices, build_communities)
 - 3 method-level tools (list_methods, list_graph_types, execute_method)
 - 1 context tool (list_available_resources)
 
@@ -72,9 +73,11 @@ The MCP server (`digimon_mcp_stdio_server.py`) is the toolbox — the calling ag
 2. `execute_method("basic_local", query, dataset, auto_build=True)` — one-call named pipeline
 
 **Auto-build** (`auto_build=True` on execute_method):
-- Automatically builds missing entity VDB and relationship VDB before running
-- Cannot auto-build sparse matrices or community structure (require graph rebuild)
+- Automatically builds all missing prerequisites: entity VDB, relationship VDB,
+  sparse matrices, and community structure
+- Community building calls LLM (most expensive auto-build step)
 - Default: `False` (existing behavior unchanged)
+- All 10 methods work with `auto_build=True` given a built graph
 
 **Multi-model config** (optional):
 ```yaml
@@ -120,7 +123,7 @@ med:           entity.vdb → subgraph.khop_paths → subgraph.steiner_tree → 
 ### Known Limitations
 - Entity.PPR: The operator implementation uses direct graph PPR (not the old EntityRetriever path)
 - Entity.Link needs an entity VDB built first (graceful degradation without one)
-- Community operators require Leiden clustering on graph (not run by default in ER build)
+- Community operators require `build_communities` to be run first (or `auto_build=True`)
 - SteinerTree extracts connected component before running (NetworkX 3.3 workaround)
 
 ### Graph Building Pipeline Fix (2026-02-14)
