@@ -83,6 +83,9 @@ class PipelineExecutor:
             # Resolve inputs (will raise if a required input references a failed step)
             inputs = self._resolve_inputs(tool_call, step.step_id, plan)
 
+            # Pre-dispatch validation: check slot names and types match the operator descriptor
+            self._validate_inputs_against_descriptor(op_desc, inputs, tool_call, step.step_id)
+
             # Execute operator
             try:
                 result = await op_desc.implementation(
@@ -169,6 +172,52 @@ class PipelineExecutor:
             from Core.AgentSchema.plan import DynamicToolChainConfig
             if isinstance(sub_step.action, DynamicToolChainConfig):
                 await self._execute_tool_chain(sub_step, plan, fail_fast=fail_fast)
+
+    def _validate_inputs_against_descriptor(
+        self, op_desc, inputs: Dict[str, SlotValue], tool_call, step_id: str
+    ) -> None:
+        """Validate resolved inputs match operator descriptor before dispatch.
+
+        Checks two things:
+        1. Slot names: every resolved input key must be a known input slot name
+        2. Slot types: the SlotKind of each resolved input must match the descriptor
+        3. Required slots: every required input slot must be present
+
+        Raises PipelineExecutionError with actionable messages for agents.
+        """
+        expected_slots = {s.name: s for s in op_desc.input_slots}
+        resolved_names = set(inputs.keys())
+        expected_names = set(expected_slots.keys())
+
+        # Check for unknown input names (likely slot name typo)
+        unknown = resolved_names - expected_names
+        if unknown:
+            raise PipelineExecutionError(
+                f"Slot name mismatch in step '{step_id}', operator '{op_desc.operator_id}': "
+                f"plan provides input(s) {sorted(unknown)} but operator expects {sorted(expected_names)}. "
+                f"Fix the input key names in the plan to match the operator descriptor."
+            )
+
+        # Check required slots are present
+        for slot_spec in op_desc.input_slots:
+            if slot_spec.required and slot_spec.name not in resolved_names:
+                raise PipelineExecutionError(
+                    f"Missing required input in step '{step_id}', operator '{op_desc.operator_id}': "
+                    f"slot '{slot_spec.name}' ({slot_spec.kind.value}) is required but not provided. "
+                    f"Available inputs: {sorted(resolved_names)}."
+                )
+
+        # Check type compatibility
+        for input_name, slot_val in inputs.items():
+            if input_name in expected_slots:
+                expected_kind = expected_slots[input_name].kind
+                if slot_val.kind != expected_kind:
+                    raise PipelineExecutionError(
+                        f"Type mismatch in step '{step_id}', operator '{op_desc.operator_id}': "
+                        f"input '{input_name}' has kind '{slot_val.kind.value}' but operator "
+                        f"expects '{expected_kind.value}'. Insert a compatible operator between "
+                        f"the source and this operator."
+                    )
 
     def _resolve_inputs(
         self, tool_call, current_step_id: str, plan
