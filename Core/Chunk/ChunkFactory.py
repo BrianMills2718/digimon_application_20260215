@@ -179,7 +179,7 @@ class ChunkFactory:
                 # Extract document properties - format may vary
                 doc_id = doc.get("doc_id", f"doc_{i}")
                 title = doc.get("title", f"Document {doc_id}")
-                content = doc.get("content", "")
+                content = doc.get("content", "") or doc.get("context", "")
                 
                 # Use a hash-based chunk_id if none is provided
                 chunk_id = doc.get("chunk_id", f"chunk_{doc_id}")

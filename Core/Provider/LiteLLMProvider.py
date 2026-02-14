@@ -52,6 +52,9 @@ class LiteLLMProvider(BaseLLM):
 
     def _prepare_litellm_kwargs(self, messages: List[Dict[str, str]], stream: bool = False, **kwargs) -> Dict[str, Any]:
         """Prepares common arguments for LiteLLM calls."""
+        # Extract format param before it gets passed to LiteLLM
+        format_param = kwargs.pop("format", "text")
+
         # Calculate dynamic max_tokens if not explicitly provided
         max_tokens = kwargs.get("max_tokens")
         if max_tokens is None:
@@ -59,12 +62,12 @@ class LiteLLMProvider(BaseLLM):
             from Core.Common.TokenBudgetManager import TokenBudgetManager
             operation = kwargs.get("operation", "default")
             max_tokens = TokenBudgetManager.calculate_safe_tokens(
-                messages, 
-                self.model, 
+                messages,
+                self.model,
                 operation,
                 self.config.max_token
             )
-        
+
         params = {
             "model": self.model,
             "messages": messages,
@@ -75,6 +78,12 @@ class LiteLLMProvider(BaseLLM):
             "base_url": self.base_url, # Pass if available
             "timeout": self.get_timeout(kwargs.get("timeout", USE_CONFIG_TIMEOUT)),
         }
+
+        # Set response_format for JSON mode when requested.
+        # LiteLLM's drop_params=True handles models that don't support response_format.
+        if format_param == "json":
+            params["response_format"] = {"type": "json_object"}
+
         # Add other relevant params from self.config if LiteLLM supports them directly
         if self.config.top_p != 1.0: # Default for top_p is often 1.0
             params["top_p"] = self.config.top_p

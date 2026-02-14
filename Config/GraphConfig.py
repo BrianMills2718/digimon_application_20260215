@@ -48,6 +48,7 @@ class GraphConfig(YamlModel):
     size_of_clusters: int = 10
 
     # For Custom Ontology
+    auto_generate_ontology: bool = False  # When True, auto-generate ontology from corpus before extraction
     custom_ontology_path: Optional[str] = "Config/custom_ontology.json"  # Default path for the custom ontology file
     loaded_custom_ontology: Optional[Dict[str, Any]] = None  # Populated at runtime after loading
 

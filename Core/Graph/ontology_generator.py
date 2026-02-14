@@ -70,21 +70,20 @@ async def generate_custom_ontology(context: str, llm_instance: Any) -> Optional[
         
         # Parse response - handle various response formats
         if isinstance(response, str):
-            # Clean up the response string
-            cleaned = response.strip()
-            # Remove markdown code blocks if present
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("```")[1]
-                if cleaned.startswith("json"):
-                    cleaned = cleaned[4:]
-            cleaned = cleaned.strip()
-            
+            # Use robust markdown fence stripping
+            from Core.Common.Utils import _strip_markdown_fences
+            cleaned = _strip_markdown_fences(response)
+
             # Try to parse JSON
             try:
                 ontology = json.loads(cleaned)
             except json.JSONDecodeError:
-                logger.error(f"Failed to parse JSON from string response: {cleaned[:200]}...")
-                return None
+                # Fallback: try the full prase_json_from_response utility
+                from Core.Common.Utils import prase_json_from_response
+                ontology = prase_json_from_response(response)
+                if not ontology:
+                    logger.error(f"Failed to parse JSON from string response: {cleaned[:200]}...")
+                    return None
         elif isinstance(response, dict):
             ontology = response
         else:

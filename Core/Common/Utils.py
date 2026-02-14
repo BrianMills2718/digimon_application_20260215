@@ -162,60 +162,114 @@ def parse_value_from_string(value: str):
         return value
 
 
+def _strip_markdown_fences(text: str) -> str:
+    """Strip markdown code fences (```json ... ``` or ``` ... ```) from text."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        # Remove opening fence
+        first_newline = stripped.find("\n")
+        if first_newline != -1:
+            stripped = stripped[first_newline + 1:]
+        else:
+            # No newline after opening fence — just remove the fence marker
+            stripped = stripped[3:]
+            if stripped.startswith("json"):
+                stripped = stripped[4:]
+    if stripped.rstrip().endswith("```"):
+        stripped = stripped.rstrip()[:-3]
+    return stripped.strip()
+
+
 def prase_json_from_response(response: str) -> dict:
     """
     Extract JSON data from a string response.
 
-    This function attempts to extract the first complete JSON object from the response.
-    If that fails, it tries to extract key-value pairs from a potentially malformed JSON string.
+    Tries multiple strategies in order:
+    1. Strip markdown code fences and attempt json.loads directly
+    2. Stack-based brace/bracket matching to find first JSON object or array
+    3. Regex key-value fallback for malformed JSON
 
     Args:
         response: The string response containing JSON data.
     Returns:
-        A dictionary containing the extracted JSON data.
+        A dictionary (or list) containing the extracted JSON data.
     """
+    # Strategy 1: Strip markdown fences and try direct parse
+    cleaned = _strip_markdown_fences(response)
+    try:
+        result = json.loads(cleaned)
+        if isinstance(result, (dict, list)):
+            return result
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Strategy 2: Stack-based extraction for the first complete JSON object or array
     stack = []
     first_json_start = None
+    open_brackets = {'{', '['}
+    close_brackets = {'}', ']'}
+    matching = {'{': '}', '[': ']'}
+    in_string = False
+    escape_next = False
 
-    # Attempt to extract the first complete JSON object using a stack to track braces
-    for i, char in enumerate(response):
-        if char == '{':
-            stack.append(i)
+    for i, char in enumerate(cleaned):
+        if escape_next:
+            escape_next = False
+            continue
+        if char == '\\' and in_string:
+            escape_next = True
+            continue
+        if char == '"' and not escape_next:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+
+        if char in open_brackets:
+            stack.append(char)
             if first_json_start is None:
                 first_json_start = i
-        elif char == '}':
-            if stack:
-                start = stack.pop()
-                if not stack:
-                    first_json_str = response[first_json_start:i + 1]
+        elif char in close_brackets:
+            if stack and matching.get(stack[-1]) == char:
+                stack.pop()
+                if not stack and first_json_start is not None:
+                    json_str = cleaned[first_json_start:i + 1]
                     try:
-                        # Attempt to parse the JSON string
-                        return json.loads(first_json_str.replace("\n", ""))
+                        result = json.loads(json_str)
+                        if isinstance(result, (dict, list)):
+                            return result
                     except json.JSONDecodeError as e:
-                        logger.error(f"JSON decoding failed: {e}. Attempted string: {first_json_str[:50]}...")
-                        break
-                    finally:
-                        first_json_start = None
+                        logger.error(f"JSON decoding failed: {e}. Attempted string: {json_str[:100]}...")
+                    # Reset and keep scanning
+                    first_json_start = None
+            else:
+                # Mismatched bracket — reset
+                stack.clear()
+                first_json_start = None
 
-    # If extraction of complete JSON failed, try extracting key-value pairs from a non-standard JSON string
+    # Strategy 3: Regex key-value fallback for malformed JSON
     extracted_values = {}
-    regex_pattern = r'(?P<key>"?\w+"?)\s*:\s*(?P<value>{[^}]*}|".*?"|[^,}]+)'
+    # Improved regex that handles arrays, nested objects, quoted strings, and simple values
+    regex_pattern = r'(?P<key>"?\w+"?)\s*:\s*(?P<value>\[.*?\]|\{[^}]*\}|"(?:[^"\\]|\\.)*"|[^,}\]\n]+)'
 
     for match in re.finditer(regex_pattern, response, re.DOTALL):
-        key = match.group('key').strip('"')  # Strip quotes from key
+        key = match.group('key').strip('"')
         value = match.group('value').strip()
 
-        # If the value is another nested JSON (starts with '{' and ends with '}'), recursively parse it
         if value.startswith('{') and value.endswith('}'):
             extracted_values[key] = prase_json_from_response(value)
+        elif value.startswith('[') and value.endswith(']'):
+            try:
+                extracted_values[key] = json.loads(value)
+            except json.JSONDecodeError:
+                extracted_values[key] = parse_value_from_string(value)
         else:
-            # Parse the value into the appropriate type (int, float, bool, etc.)
             extracted_values[key] = parse_value_from_string(value)
 
     if not extracted_values:
         logger.warning("No values could be extracted from the string.")
     else:
-        logger.info("JSON data successfully extracted.")
+        logger.info("JSON data successfully extracted via regex fallback.")
 
     return extracted_values
 

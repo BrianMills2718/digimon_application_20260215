@@ -222,6 +222,41 @@ Known limitations:
 - Community operators require Leiden clustering on graph (not run by default in ER build)
 - SteinerTree extracts connected component before running (NetworkX 3.3 workaround)
 
+### Graph Building Pipeline Fix (2026-02-14)
+
+**Status**: Fixed and verified. ERGraph now produces 640 nodes, 578 edges on HotPotQA (was 0/0).
+
+**Root causes fixed**:
+1. **LiteLLMProvider JSON mode**: `format="json"` now sets `response_format: {"type": "json_object"}` so GPT-4o-mini returns clean JSON
+2. **JSON parsing**: `prase_json_from_response` rewritten with 3 strategies (fence stripping, stack-based matching, regex fallback)
+3. **Corpus loading**: ChunkFactory now reads both `"content"` and `"context"` keys from corpus JSONL
+4. **Ontology generation**: Now opt-in via `auto_generate_ontology: bool = False` in GraphConfig
+5. **Encoder/tokenizer mismatch**: ERGraph wraps embedding models with TokenizerWrapper when they lack `.decode()`
+
+**Architecture: Three attribute levels**:
+
+| Attribute | KG (two-step) | TKG (delimiter) | RKG (delimiter+kw) |
+|-----------|:---:|:---:|:---:|
+| Entity Name | Y | Y | Y |
+| Entity Type | | Y | Y |
+| Entity Description | | Y | Y |
+| Relation Name | Y | Y | Y |
+| Relation Keywords | | | Y |
+| Relation Description | | Y | Y |
+| Edge Weight | Y | Y | Y |
+
+- `extract_two_step=True` (default): NER + OpenIE JSON-based extraction (KG-level)
+- `extract_two_step=False`: ENTITY_EXTRACTION delimiter-based extraction (TKG-level)
+- `extract_two_step=False` + `enable_edge_keywords=True`: RKG-level with keywords
+
+**Shared code**: `DelimiterExtractionMixin` (Core/Graph/DelimiterExtraction.py) used by both ERGraph and RKGraph.
+
+**Test results**:
+- `test_hotpotqa.py`: 8/9 PASS (640 nodes, 578 edges)
+- `test_operators.py`: 11/11 PASS (no regressions)
+- `test_llm_operators.py`: 4/4 PASS (no regressions)
+- TKG extraction verified: 55 nodes, 52 edges from 5 chunks
+
 ---
 
 ## Development Protocol
