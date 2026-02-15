@@ -110,11 +110,7 @@ DIGIMON_MCP_SERVERS = {
     "digimon-kgrag": {
         "command": "/home/brian/miniconda3/envs/digimon/bin/python",
         "args": ["-u", str(Path(__file__).parent.parent / "digimon_mcp_stdio_server.py")],
-        "env": {
-            "CLAUDECODE": "",
-            # Use direct API model for mid-pipeline LLM calls (not codex — avoids recursive agent spawn)
-            "DIGIMON_AGENTIC_MODEL": "deepseek/deepseek-chat",
-        },
+        "env": {"CLAUDECODE": ""},
     },
 }
 

@@ -89,17 +89,8 @@ class LLMConfig(YamlModel):
     @classmethod
     def check_llm_key(cls, v):
         if v in ["", None, "YOUR_API_KEY"]:
-            repo_config_path = GRAPHRAG_ROOT / "Option/Config2.yaml"
-            root_config_path = CONFIG_ROOT / "Config2.yaml"
-            if root_config_path.exists():
-                raise ValueError(
-                    f"Please set your API key in {root_config_path}. If you also set your config in {repo_config_path}, \n"
-                    f"the former will overwrite the latter. This may cause unexpected result.\n"
-                )
-            elif repo_config_path.exists():
-                raise ValueError(f"Please set your API key in {repo_config_path}")
-            else:
-                raise ValueError("Please set your API key in config2.yaml")
+            # Empty api_key is OK — litellm reads from env vars (loaded by llm_client)
+            return v or ""
         return v
 
     @field_validator("timeout")
