@@ -30,10 +30,10 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP("digimon-kgrag", instructions="""
 DIGIMON KG-RAG Tools: Build knowledge graphs from documents and query them.
 
-## Core: 24 Typed Operators
+## Core: 26 Typed Operators
 
-DIGIMON's core value is 24 composable operators across 6 categories:
-entity (7), relationship (4), chunk (3), subgraph (3), community (2), meta (5).
+DIGIMON's core value is 26 composable operators across 6 categories:
+entity (7), relationship (4), chunk (3), subgraph (3), community (2), meta (7).
 Each operator has typed I/O slots, cost tiers, and prerequisite flags.
 Call `list_operators` for the full catalog, `get_compatible_successors` to explore chains.
 
@@ -70,7 +70,8 @@ Two model roles: `llm.model` (graph building, cheap) vs `agentic_model`
 - Use `return_context_only=True` in execute_method when you want to synthesize
   the answer yourself instead of letting DIGIMON's LLM generate it.
 - Call `list_available_resources` to see what graphs and VDBs exist.
-- Graph building requires `corpus_prepare` first. VDB building requires a graph.
+- Graph building auto-prepares corpus if you pass `input_directory` (supports .txt, .md, .json, .jsonl, .csv, .pdf).
+  Or call `corpus_prepare` manually first. VDB building requires a graph.
 - Default graph build uses single-step extraction (entity types + descriptions).
 
 State is maintained between calls via GraphRAGContext.
@@ -141,6 +142,34 @@ def _format_result(result: Any) -> str:
     return str(result)
 
 
+async def _ensure_corpus(dataset_name: str, input_directory: str | None) -> None:
+    """Auto-prepare corpus if Corpus.json doesn't exist and input_directory is given."""
+    config = _state["config"]
+    corpus_paths = [
+        Path(config.working_dir) / dataset_name / "Corpus.json",
+        Path(config.working_dir) / dataset_name / "corpus" / "Corpus.json",
+    ]
+    if hasattr(config, "data_root"):
+        corpus_paths.append(Path(config.data_root) / dataset_name / "Corpus.json")
+
+    if any(p.exists() for p in corpus_paths):
+        return
+
+    if input_directory is None:
+        raise RuntimeError(
+            f"No Corpus.json found for dataset '{dataset_name}'. "
+            f"Run corpus_prepare first, or pass input_directory to auto-prepare. "
+            f"Searched: {[str(p) for p in corpus_paths]}"
+        )
+
+    logger.info(f"Auto-preparing corpus for '{dataset_name}' from '{input_directory}'")
+    result_str = await corpus_prepare(input_directory, dataset_name)
+    result = json.loads(result_str)
+    if result.get("status") != "success":
+        raise RuntimeError(f"Auto corpus_prepare failed: {result.get('message', 'unknown')}")
+    logger.info(f"Auto-prepared corpus: {result.get('document_count', 0)} documents")
+
+
 async def _register_graph_if_built(result: Any) -> None:
     """Register a successfully built graph into the GraphRAGContext.
 
@@ -176,11 +205,17 @@ async def _register_graph_if_built(result: Any) -> None:
 
 @mcp.tool()
 async def corpus_prepare(input_directory: str, dataset_name: str) -> str:
-    """Prepare .txt files from a directory into a Corpus.json for DIGIMON processing.
+    """Prepare documents from a directory into a Corpus.json for DIGIMON processing.
+
+    Supported formats: .txt, .md, .json, .jsonl, .csv, .pdf
+    For structured formats (JSON, CSV), auto-detects content and title fields.
 
     Args:
-        input_directory: Path to directory containing .txt files (relative to project root or absolute)
+        input_directory: Path to directory containing source files (relative to project root or absolute)
         dataset_name: Name for this dataset (used to namespace all artifacts)
+
+    Returns:
+        status: str, corpus_path: str, num_documents: int
     """
     await _ensure_initialized()
     from Core.AgentTools.corpus_tools import prepare_corpus_from_directory
@@ -207,17 +242,25 @@ async def corpus_prepare(input_directory: str, dataset_name: str) -> str:
 # =============================================================================
 
 @mcp.tool()
-async def graph_build_er(dataset_name: str, force_rebuild: bool = False) -> str:
+async def graph_build_er(dataset_name: str, force_rebuild: bool = False,
+                          input_directory: str = None) -> str:
     """Build an Entity-Relationship (ER) knowledge graph from a prepared corpus.
     Extracts entities (with types and descriptions) and relationships using LLM.
     Best for general-purpose KG. Uses single-step delimiter extraction by default,
     which produces entity types, entity descriptions, and relation descriptions.
 
+    If no Corpus.json exists and input_directory is provided, auto-prepares the corpus first.
+
     Args:
-        dataset_name: Name of the dataset (must have corpus prepared first)
+        dataset_name: Name of the dataset (must have corpus prepared, or pass input_directory)
         force_rebuild: Force rebuild even if graph exists
+        input_directory: Path to source files for auto corpus preparation (optional)
+
+    Returns:
+        graph_id: str, status: str, num_nodes: int, num_edges: int
     """
     await _ensure_initialized()
+    await _ensure_corpus(dataset_name, input_directory)
     from Core.AgentTools.graph_construction_tools import build_er_graph
     from Core.AgentSchema.graph_construction_tool_contracts import BuildERGraphInputs
 
@@ -232,14 +275,22 @@ async def graph_build_er(dataset_name: str, force_rebuild: bool = False) -> str:
 
 
 @mcp.tool()
-async def graph_build_rk(dataset_name: str, force_rebuild: bool = False) -> str:
+async def graph_build_rk(dataset_name: str, force_rebuild: bool = False,
+                          input_directory: str = None) -> str:
     """Build an RK (Relationship-Keyword) graph. Like ER but with keyword-enriched edges.
 
+    If no Corpus.json exists and input_directory is provided, auto-prepares the corpus first.
+
     Args:
-        dataset_name: Name of the dataset
+        dataset_name: Name of the dataset (must have corpus prepared, or pass input_directory)
         force_rebuild: Force rebuild even if graph exists
+        input_directory: Path to source files for auto corpus preparation (optional)
+
+    Returns:
+        graph_id: str, status: str, num_nodes: int, num_edges: int
     """
     await _ensure_initialized()
+    await _ensure_corpus(dataset_name, input_directory)
     from Core.AgentTools.graph_construction_tools import build_rk_graph
     from Core.AgentSchema.graph_construction_tool_contracts import BuildRKGraphInputs
 
@@ -254,14 +305,22 @@ async def graph_build_rk(dataset_name: str, force_rebuild: bool = False) -> str:
 
 
 @mcp.tool()
-async def graph_build_tree(dataset_name: str, force_rebuild: bool = False) -> str:
+async def graph_build_tree(dataset_name: str, force_rebuild: bool = False,
+                            input_directory: str = None) -> str:
     """Build a hierarchical Tree graph (RAPTOR-style). Clusters chunks and creates summaries at multiple levels.
 
+    If no Corpus.json exists and input_directory is provided, auto-prepares the corpus first.
+
     Args:
-        dataset_name: Name of the dataset
+        dataset_name: Name of the dataset (must have corpus prepared, or pass input_directory)
         force_rebuild: Force rebuild even if graph exists
+        input_directory: Path to source files for auto corpus preparation (optional)
+
+    Returns:
+        graph_id: str, status: str, num_nodes: int, num_edges: int
     """
     await _ensure_initialized()
+    await _ensure_corpus(dataset_name, input_directory)
     from Core.AgentTools.graph_construction_tools import build_tree_graph
     from Core.AgentSchema.graph_construction_tool_contracts import BuildTreeGraphInputs
 
@@ -276,14 +335,22 @@ async def graph_build_tree(dataset_name: str, force_rebuild: bool = False) -> st
 
 
 @mcp.tool()
-async def graph_build_tree_balanced(dataset_name: str, force_rebuild: bool = False) -> str:
+async def graph_build_tree_balanced(dataset_name: str, force_rebuild: bool = False,
+                                     input_directory: str = None) -> str:
     """Build a balanced Tree graph using K-Means clustering for more uniform cluster sizes.
 
+    If no Corpus.json exists and input_directory is provided, auto-prepares the corpus first.
+
     Args:
-        dataset_name: Name of the dataset
+        dataset_name: Name of the dataset (must have corpus prepared, or pass input_directory)
         force_rebuild: Force rebuild even if graph exists
+        input_directory: Path to source files for auto corpus preparation (optional)
+
+    Returns:
+        graph_id: str, status: str, num_nodes: int, num_edges: int
     """
     await _ensure_initialized()
+    await _ensure_corpus(dataset_name, input_directory)
     from Core.AgentTools.graph_construction_tools import build_tree_graph_balanced
     from Core.AgentSchema.graph_construction_tool_contracts import BuildTreeGraphBalancedInputs
 
@@ -298,14 +365,22 @@ async def graph_build_tree_balanced(dataset_name: str, force_rebuild: bool = Fal
 
 
 @mcp.tool()
-async def graph_build_passage(dataset_name: str, force_rebuild: bool = False) -> str:
+async def graph_build_passage(dataset_name: str, force_rebuild: bool = False,
+                               input_directory: str = None) -> str:
     """Build a Passage graph where nodes are text passages linked by shared entities.
 
+    If no Corpus.json exists and input_directory is provided, auto-prepares the corpus first.
+
     Args:
-        dataset_name: Name of the dataset
+        dataset_name: Name of the dataset (must have corpus prepared, or pass input_directory)
         force_rebuild: Force rebuild even if graph exists
+        input_directory: Path to source files for auto corpus preparation (optional)
+
+    Returns:
+        graph_id: str, status: str, num_nodes: int, num_edges: int
     """
     await _ensure_initialized()
+    await _ensure_corpus(dataset_name, input_directory)
     from Core.AgentTools.graph_construction_tools import build_passage_graph
     from Core.AgentSchema.graph_construction_tool_contracts import BuildPassageGraphInputs
 
@@ -332,6 +407,9 @@ async def entity_vdb_build(graph_reference_id: str, vdb_collection_name: str,
         graph_reference_id: ID of the graph (e.g. 'Fictional_Test_ERGraph')
         vdb_collection_name: Name for the VDB collection (e.g. 'Fictional_Test_entities')
         force_rebuild: Force rebuild even if VDB exists
+
+    Returns:
+        status: str, vdb_id: str, num_entities_indexed: int
     """
     await _ensure_initialized()
     from Core.AgentTools.entity_vdb_tools import entity_vdb_build_tool
@@ -355,6 +433,9 @@ async def entity_vdb_search(vdb_reference_id: str, query_text: str,
         vdb_reference_id: ID of the entity VDB to search
         query_text: Natural language search query
         top_k: Number of results to return
+
+    Returns:
+        similar_entities: list of {entity_name: str, score: float, node_id: str}
     """
     await _ensure_initialized()
     from Core.AgentTools.entity_tools import entity_vdb_search_tool
@@ -376,6 +457,9 @@ async def entity_onehop(entity_ids: list[str], graph_reference_id: str) -> str:
     Args:
         entity_ids: List of entity IDs to find neighbors for
         graph_reference_id: ID of the graph to search
+
+    Returns:
+        neighbors: {entity_id: [{...}]}, total_neighbors_found: int, message: str
     """
     await _ensure_initialized()
     from Core.AgentTools.entity_onehop_tools import entity_onehop_neighbors_tool
@@ -397,6 +481,9 @@ async def entity_ppr(graph_reference_id: str, seed_entity_ids: list[str],
         graph_reference_id: ID of the graph
         seed_entity_ids: Starting entity IDs for PPR
         top_k: Number of top-ranked entities to return
+
+    Returns:
+        ranked_entities: list of [entity_id: str, score: float]
     """
     await _ensure_initialized()
     from Core.AgentTools.entity_tools import entity_ppr_tool
@@ -426,6 +513,9 @@ async def entity_agent(query_text: str, text_context: str,
         text_context: Text content to extract entities from
         target_entity_types: Entity types to focus on (e.g. ['person', 'organization'])
         max_entities: Maximum entities to extract
+
+    Returns:
+        extracted_entities: list of {entity_name: str, entity_type: str, description?: str, extraction_confidence?: float}
     """
     await _ensure_initialized()
     from Core.AgentTools.entity_tools import entity_agent_tool
@@ -450,6 +540,9 @@ async def entity_link(source_entities: list[str], vdb_reference_id: str,
         source_entities: Entity mention strings to link
         vdb_reference_id: VDB to search for canonical matches
         similarity_threshold: Minimum score to consider a match
+
+    Returns:
+        linked_entities_results: list of {source_entity_mention: str, linked_entity_id?: str, similarity_score?: float, link_status: str}
     """
     await _ensure_initialized()
     from Core.AgentTools.entity_tools import entity_link_tool
@@ -474,6 +567,9 @@ async def entity_tfidf(candidate_entity_ids: list[str], query_text: str,
         query_text: Query to compare against
         graph_reference_id: Graph containing the entities
         top_k: Number of top results
+
+    Returns:
+        ranked_entities: list of [entity_id: str, score: float]
     """
     await _ensure_initialized()
     from Core.AgentTools.entity_tools import entity_tfidf_tool
@@ -500,6 +596,9 @@ async def relationship_onehop(entity_ids: list[str], graph_reference_id: str) ->
     Args:
         entity_ids: Entity IDs to find relationships for
         graph_reference_id: ID of the graph
+
+    Returns:
+        one_hop_relationships: list of {relationship_id: str, source_node_id: str, target_node_id: str, type: str, description?: str}
     """
     await _ensure_initialized()
     from Core.AgentTools.relationship_tools import relationship_one_hop_neighbors_tool
@@ -525,6 +624,9 @@ async def relationship_score_aggregator(
         graph_reference_id: ID of the graph
         top_k: Number of top relationships to return
         aggregation_method: How to combine scores: 'sum', 'average', or 'max'
+
+    Returns:
+        scored_relationships: list of [{relationship_id: str, source_node_id: str, target_node_id: str, type: str}, score: float]
     """
     await _ensure_initialized()
     from Core.AgentTools.relationship_tools import relationship_score_aggregator_tool
@@ -553,6 +655,9 @@ async def relationship_agent(query_text: str, text_context: str,
         context_entity_names: Known entity names for context
         target_relationship_types: Relationship types to focus on
         max_relationships: Maximum relationships to extract
+
+    Returns:
+        extracted_relationships: list of {relationship_id: str, source_node_id: str, target_node_id: str, type: str}
     """
     await _ensure_initialized()
     from Core.AgentTools.relationship_tools import relationship_agent_tool
@@ -591,6 +696,9 @@ async def chunk_from_relationships(target_relationships: list[str],
         target_relationships: List of relationship identifiers (e.g. 'entity1->entity2')
         document_collection_id: Graph/collection ID to search
         top_k: Maximum chunks to return
+
+    Returns:
+        relevant_chunks: list of {chunk_id: str, content: str, relevance_score?: float}
     """
     await _ensure_initialized()
     from Core.AgentTools.chunk_tools import chunk_from_relationships_tool
@@ -614,6 +722,9 @@ async def chunk_occurrence(target_entity_pairs: list[dict],
         target_entity_pairs: List of dicts like {"entity1_id": "X", "entity2_id": "Y"}
         document_collection_id: Graph ID to search
         top_k: Number of top chunks to return
+
+    Returns:
+        ranked_occurrence_chunks: list of {chunk_id: str, content: str, relevance_score?: float}
     """
     await _ensure_initialized()
     from Core.AgentTools.chunk_tools import chunk_occurrence_tool
@@ -637,6 +748,9 @@ async def chunk_get_text(graph_reference_id: str, entity_ids: list[str],
         graph_reference_id: ID of the graph containing the entities
         entity_ids: List of entity names/IDs to get text for
         max_chunks_per_entity: Max chunks per entity
+
+    Returns:
+        retrieved_chunks: list of {entity_id?: str, chunk_id: str, text_content: str}, status_message: str
     """
     await _ensure_initialized()
     from Core.AgentTools.chunk_tools import chunk_get_text_for_entities_tool
@@ -661,6 +775,9 @@ async def graph_analyze(graph_id: str) -> str:
 
     Args:
         graph_id: ID of the graph to analyze
+
+    Returns:
+        node_count: int, edge_count: int, density: float, avg_degree: float, centrality_stats: {...}, clustering_coefficient: float
     """
     await _ensure_initialized()
     from Core.AgentTools.graph_analysis_tools import analyze_graph
@@ -677,6 +794,9 @@ async def graph_visualize(graph_id: str, output_format: str = "JSON_NODES_EDGES"
     Args:
         graph_id: ID of the graph to export
         output_format: Format - 'JSON_NODES_EDGES' or 'GML'
+
+    Returns:
+        nodes: list of {id: str, label: str, ...}, edges: list of {source: str, target: str, ...}
     """
     await _ensure_initialized()
     from Core.AgentTools.graph_visualization_tools import visualize_graph
@@ -700,6 +820,9 @@ async def build_communities(dataset_name: str, force_rebuild: bool = False) -> s
     Args:
         dataset_name: Name of the dataset (must have graph built)
         force_rebuild: Force rebuild even if community data exists on disk
+
+    Returns:
+        status: str, dataset: str, num_communities: int
     """
     await _ensure_initialized()
     ctx = _state["context"]
@@ -775,6 +898,9 @@ async def community_detect_from_entities(graph_reference_id: str,
         graph_reference_id: ID of the graph with community structure
         seed_entity_ids: Entity IDs to find communities for
         max_communities: Maximum communities to return
+
+    Returns:
+        relevant_communities: list of {community_id: str, level?: int, title?: str, nodes?: list, description?: str}
     """
     await _ensure_initialized()
     from Core.AgentTools.community_tools import community_detect_from_entities_tool
@@ -797,6 +923,9 @@ async def community_get_layer(community_hierarchy_reference_id: str,
     Args:
         community_hierarchy_reference_id: Graph ID with community hierarchy
         max_layer_depth: Maximum layer depth to include (0=top level)
+
+    Returns:
+        communities_in_layers: list of {community_id: str, level?: int, title?: str, nodes?: list, description?: str}
     """
     await _ensure_initialized()
     from Core.AgentTools.community_tools import community_get_layer_tool
@@ -828,6 +957,9 @@ async def subgraph_khop_paths(graph_reference_id: str,
         end_entity_ids: Target entity IDs (if None, explores k-hop neighborhood)
         k_hops: Maximum number of hops
         max_paths: Maximum paths to return
+
+    Returns:
+        discovered_paths: list of {path_id: str, segments: [{item_id: str, item_type: str, label?: str}], start_node_id: str, hop_count: int}
     """
     await _ensure_initialized()
     from Core.AgentTools.subgraph_tools import subgraph_khop_paths_tool
@@ -852,6 +984,9 @@ async def subgraph_steiner_tree(graph_reference_id: str,
     Args:
         graph_reference_id: ID of the graph
         terminal_node_ids: Entity IDs that must be connected (minimum 2)
+
+    Returns:
+        steiner_tree_edges: list of {source: str, target: str, weight?: float}
     """
     await _ensure_initialized()
     from Core.AgentTools.subgraph_tools import subgraph_steiner_tree_tool
@@ -875,6 +1010,9 @@ async def subgraph_agent_path(user_question: str,
         user_question: The question to evaluate path relevance against
         candidate_paths_json: JSON string of candidate PathObject list
         max_paths: Maximum relevant paths to return
+
+    Returns:
+        relevant_paths: list of {path_id: str, segments: [{item_id: str, item_type: str, label?: str}]}
     """
     await _ensure_initialized()
     from Core.AgentTools.subgraph_tools import subgraph_agent_path_tool
@@ -1069,6 +1207,9 @@ async def relationship_vdb_build(graph_reference_id: str, vdb_collection_name: s
         graph_reference_id: ID of the graph (e.g. 'Fictional_Test_ERGraph')
         vdb_collection_name: Name for the VDB collection (e.g. 'Fictional_Test_relations')
         force_rebuild: Force rebuild even if VDB exists
+
+    Returns:
+        status: str, vdb_id: str, num_relationships_indexed: int
     """
     await _ensure_initialized()
     from Core.AgentTools.relationship_tools import relationship_vdb_build_tool
@@ -1093,6 +1234,9 @@ async def relationship_vdb_search(vdb_reference_id: str, query_text: str,
         query_text: Natural language search query
         top_k: Number of results to return
         score_threshold: Minimum similarity score (optional)
+
+    Returns:
+        similar_relationships: list of [relationship_id: str, description: str, score: float]
     """
     await _ensure_initialized()
     from Core.AgentTools.relationship_tools import relationship_vdb_search_tool
@@ -1121,6 +1265,9 @@ async def build_sparse_matrices(dataset_name: str, force_rebuild: bool = False) 
     Args:
         dataset_name: Name of the dataset (must have graph built)
         force_rebuild: Force rebuild even if matrices exist on disk
+
+    Returns:
+        status: str, dataset: str, entity_to_rel_shape: [int, int], rel_to_chunk_shape: [int, int]
     """
     await _ensure_initialized()
     ctx = _state["context"]
@@ -1210,6 +1357,9 @@ async def chunk_aggregator(relationship_scores: dict,
         relationship_scores: Dict mapping relationship_id to score
         graph_reference_id: Graph ID containing the chunks
         top_k: Maximum chunks to return
+
+    Returns:
+        ranked_aggregated_chunks: list of {chunk_id: str, content: str, relevance_score?: float}
     """
     await _ensure_initialized()
     from Core.AgentTools.chunk_tools import chunk_aggregator_tool
@@ -1237,6 +1387,9 @@ async def meta_extract_entities(query_text: str) -> str:
 
     Args:
         query_text: The question or text to extract entities from
+
+    Returns:
+        entities: list of {entity_name: str, score: float}
     """
     await _ensure_initialized()
     from Core.Operators.meta.extract_entities import meta_extract_entities as _extract
@@ -1269,6 +1422,9 @@ async def meta_generate_answer(query_text: str, context_chunks: list[str],
         query_text: The question to answer
         context_chunks: List of text strings providing context
         system_prompt: Optional custom system prompt (supports {context_data} placeholder)
+
+    Returns:
+        Plain text string (LLM-generated answer)
     """
     await _ensure_initialized()
     from Core.Operators.meta.generate_answer import meta_generate_answer as _generate
@@ -1305,6 +1461,9 @@ async def meta_pcst_optimize(entity_ids: list[str], entity_scores: dict,
         entity_scores: Dict mapping entity_id to score (prize)
         relationship_triples: List of dicts with src_id, tgt_id, weight keys
         graph_reference_id: Graph ID for context
+
+    Returns:
+        nodes: list of str, edges: list of [source: str, target: str]
     """
     await _ensure_initialized()
     from Core.Operators.meta.pcst_optimize import meta_pcst_optimize as _pcst
@@ -1337,6 +1496,71 @@ async def meta_pcst_optimize(entity_ids: list[str], entity_scores: dict,
             "edges": [(e[0], e[1]) if isinstance(e, tuple) else e for e in (sg_data.edges or [])],
         }, indent=2, default=str)
     return json.dumps({"nodes": [], "edges": []})
+
+
+@mcp.tool()
+async def meta_decompose_question(query_text: str, max_questions: int = 5) -> str:
+    """Decompose a complex question into independent sub-questions (AoT-style).
+
+    Breaks a multi-hop question into focused sub-questions that can each be
+    answered via separate retrieval chains, then combined with meta_synthesize_answers.
+
+    Args:
+        query_text: The complex question to decompose
+        max_questions: Maximum number of sub-questions to generate
+
+    Returns:
+        sub_questions: list of {entity_name: str (sub-question text), entity_type: "sub_question", score: float}
+    """
+    await _ensure_initialized()
+    from Core.Operators.meta.decompose_question import meta_decompose_question as _decompose
+    from Core.Schema.SlotTypes import SlotKind, SlotValue
+
+    inputs = {"query": SlotValue(kind=SlotKind.QUERY_TEXT, data=query_text, producer="mcp")}
+    result = await _decompose(inputs=inputs, ctx=_build_operator_context(), params={"max_questions": max_questions})
+
+    sub_qs = result.get("sub_questions")
+    if sub_qs and hasattr(sub_qs, "data"):
+        return json.dumps({
+            "sub_questions": [
+                {"entity_name": e.entity_name, "entity_type": e.entity_type, "score": e.score}
+                for e in sub_qs.data
+            ]
+        }, indent=2)
+    return json.dumps({"sub_questions": []})
+
+
+@mcp.tool()
+async def meta_synthesize_answers(query_text: str, sub_answers: list[str],
+                                   synthesis_style: str = "concise") -> str:
+    """Synthesize sub-answers into a final coherent answer.
+
+    Combines answers from parallel retrieval chains (e.g., from decomposed
+    sub-questions) into a single answer addressing the original question.
+
+    Args:
+        query_text: The original question
+        sub_answers: List of sub-answer strings to synthesize
+        synthesis_style: Style of synthesis: 'concise', 'detailed', or 'bullet_points'
+
+    Returns:
+        Plain text string (synthesized answer)
+    """
+    await _ensure_initialized()
+    from Core.Operators.meta.synthesize_answers import meta_synthesize_answers as _synthesize
+    from Core.Schema.SlotTypes import ChunkRecord, SlotKind, SlotValue
+
+    chunk_records = [ChunkRecord(chunk_id=f"sub_{i}", text=t) for i, t in enumerate(sub_answers)]
+    inputs = {
+        "query": SlotValue(kind=SlotKind.QUERY_TEXT, data=query_text, producer="mcp"),
+        "chunks": SlotValue(kind=SlotKind.CHUNK_SET, data=chunk_records, producer="mcp"),
+    }
+    result = await _synthesize(inputs=inputs, ctx=_build_operator_context(), params={"synthesis_style": synthesis_style})
+
+    answer = result.get("answer")
+    if answer and hasattr(answer, "data"):
+        return answer.data
+    return "Failed to synthesize answer."
 
 
 def _build_operator_context() -> Any:

@@ -2,11 +2,11 @@
 
 ## One-liner
 
-Point Claude Code at a folder of text files, and it builds a knowledge graph, indexes it, and answers questions grounded in your source material.
+Point Claude Code at a folder of documents, and it builds a knowledge graph, indexes it, and answers questions grounded in your source material.
 
 ## How It Works
 
-You give Claude Code a goal and a folder of `.txt` files. Claude Code calls DIGIMON's tools in the right order to:
+You give Claude Code a goal and a folder of documents (.txt, .md, .json, .jsonl, .csv, .pdf). Claude Code calls DIGIMON's tools in the right order to:
 
 1. **Ingest** your documents into a structured corpus
 2. **Build a knowledge graph** — extracting entities (people, orgs, places, concepts) and the relationships between them
@@ -19,9 +19,11 @@ You don't manage any of this. You state what you want to know, Claude Code figur
 ## What's in the Toolbox
 
 ### Corpus Preparation
-- **corpus_prepare**: Turns a directory of `.txt` files into a structured corpus
+- **corpus_prepare**: Turns a directory of documents into a structured corpus. Supports .txt, .md, .json, .jsonl, .csv, .pdf. Auto-detects text/title fields in structured formats.
 
 ### Graph Construction (5 types)
+All graph_build tools accept an optional `input_directory` parameter — if no corpus exists yet, they auto-prepare it first. One-call workflow: `graph_build_er(dataset_name="my_kg", input_directory="/path/to/data/")`.
+
 - **graph_build_er**: Entity-Relationship graph. Best general-purpose option — extracts named entities and how they relate.
 - **graph_build_rk**: Relationship-Keyword graph. Like ER but enriches edges with keywords for better retrieval.
 - **graph_build_tree**: Hierarchical summary tree (RAPTOR-style). Clusters and summarizes chunks at multiple levels.
@@ -48,8 +50,8 @@ You: "I have 50 news articles about defense contracting in ~/data/defense/.
       Who are the key players and how are they connected?"
 
 Claude Code:
-  1. corpus_prepare(~/data/defense/, "defense_contracts")
-  2. graph_build_er("defense_contracts")          → 500 entities, 380 edges
+  1. graph_build_er("defense_contracts", input_directory="~/data/defense/")
+     → auto-prepares corpus, then builds graph: 500 entities, 380 edges
   3. entity_vdb_build("defense_contracts_ERGraph") → 500 entities indexed
   4. entity_vdb_search("key defense contractors")  → Lockheed Martin, Raytheon, ...
   5. relationship_onehop(["lockheed martin"])       → contracts with, lobbies, partners...

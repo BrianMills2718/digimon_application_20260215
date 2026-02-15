@@ -1,0 +1,18 @@
+name: synthesize_answers
+version: "1.0"
+description: "Synthesize sub-answers into a single coherent final answer."
+messages:
+  - role: system
+    content: |
+      You synthesize sub-answers into a single coherent answer.
+      Combine the information without repetition. Be accurate and {{ synthesis_style }}.
+  - role: user
+    content: |
+      Original question: {{ query }}
+
+      Sub-answers:
+      {% for answer in sub_answers %}
+      - {{ answer }}
+      {% endfor %}
+
+      Synthesize a {{ synthesis_style }} final answer.

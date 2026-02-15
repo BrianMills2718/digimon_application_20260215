@@ -1,6 +1,6 @@
 # CLAUDE.md - DIGIMON Implementation Guide
 
-## CURRENT STATE: Modular Operator Pipeline (2026-02-14)
+## CURRENT STATE: Modular Operator Pipeline (2026-02-15)
 
 Branch `modular-operator-pipeline` implements a typed, composable operator system.
 Old Retriever/Query classes have been deleted. The operator pipeline is the canonical system.
@@ -8,7 +8,7 @@ Old Retriever/Query classes have been deleted. The operator pipeline is the cano
 ### Operator Pipeline Status
 ```
 Phase 1:  Type System        [DONE] SlotTypes, OperatorDescriptor, GraphCapabilities
-Phase 2:  Operators (24)     [DONE] 7 entity + 4 relationship + 3 chunk + 3 subgraph + 2 community + 5 meta
+Phase 2:  Operators (26)     [DONE] 7 entity + 4 relationship + 3 chunk + 3 subgraph + 2 community + 7 meta
 Phase 3:  Registry           [DONE] OperatorRegistry with composition helpers
 Phase 4:  Composition Engine [DONE] ChainValidator, PipelineExecutor, Adapters
 Phase 5:  Method Plans (10)  [DONE] All 10 methods expressed as ExecutionPlans, all validate
@@ -19,12 +19,15 @@ Phase 9:  MCP Composition    [DONE] MCP tools, execute_method, auto_build for VD
 Phase 10: Full Auto-Build    [DONE] build_sparse_matrices + build_communities tools; 10/10 methods pass with auto_build=True
 Phase 11: Auto-Compose       [DONE] auto_compose MCP tool — LLM picks best method from 10 based on query + resources
 Phase 12: Config + Operators [DONE] get_config, set_agentic_model, list_operators, get_compatible_successors; operator-centric MCP framing
-Phase 13: Recursive Trace    [DESIGN] docs/RECURSIVE_REASONING_TRACE.md — reasoning trace as ER graph, recursive DIGIMON-on-DIGIMON
+Phase 13: Output Schemas     [DONE] Returns: section added to all MCP tool docstrings
+Phase 14: Eval Harness       [DONE] eval/ directory — BenchmarkRunner, EM/F1 scoring, CLI entry point
+Phase 15: AoT Operators      [DONE] meta.decompose_question + meta.synthesize_answers — AoT-style reasoning
+Phase 16: Recursive Trace    [DESIGN] docs/RECURSIVE_REASONING_TRACE.md — reasoning trace as ER graph, recursive DIGIMON-on-DIGIMON
 ```
 
 ### Key Architecture: Operator Pipeline
 
-**Uniform operator signature** (all 24 operators):
+**Uniform operator signature** (all 26 operators):
 ```python
 async def op(inputs: Dict[str, SlotValue], ctx: OperatorContext, params: Dict) -> Dict[str, SlotValue]
 ```
@@ -32,20 +35,20 @@ async def op(inputs: Dict[str, SlotValue], ctx: OperatorContext, params: Dict) -
 **Key files**:
 - `Core/Schema/SlotTypes.py` — 7 SlotKinds + typed records (EntityRecord, RelationshipRecord, etc.)
 - `Core/Schema/OperatorDescriptor.py` — Machine-readable operator metadata
-- `Core/Operators/` — 24 operators in entity/, relationship/, chunk/, subgraph/, community/, meta/
+- `Core/Operators/` — 26 operators in entity/, relationship/, chunk/, subgraph/, community/, meta/
 - `Core/Operators/registry.py` — OperatorRegistry with composition helpers
 - `Core/Composition/` — ChainValidator, PipelineExecutor, Adapters, auto_compose
 - `Core/Methods/` — 10 reference pipelines as ExecutionPlan factories (convenience shortcuts, not the core abstraction)
 - `Core/AgentSchema/plan.py` — Extended with LoopConfig, ConditionalBranch
 
-**Operator registry** (24 operators across 6 categories):
+**Operator registry** (26 operators across 6 categories):
 ```
 entity:       vdb, ppr, onehop, link, tfidf, agent, rel_node
 relationship: onehop, vdb, score_agg, agent
 chunk:        from_relation, occurrence, aggregator
 subgraph:     khop_paths, steiner_tree, agent_path
 community:    from_entity, from_level
-meta:         extract_entities, reason_step, rerank, generate_answer, pcst_optimize
+meta:         extract_entities, reason_step, rerank, generate_answer, pcst_optimize, decompose_question, synthesize_answers
 ```
 
 **Composition helpers**:
@@ -55,7 +58,7 @@ meta:         extract_entities, reason_step, rerank, generate_answer, pcst_optim
 
 ### MCP Agent Composition (2026-02-15)
 
-**Status**: Complete. All 24 operators accessible individually via MCP. Agents compose
+**Status**: Complete. All 26 operators accessible individually via MCP. Agents compose
 arbitrary retrieval DAGs by calling operators sequentially, using `list_operators` +
 `get_compatible_successors` for discovery. 10 reference pipelines also available as
 shortcuts via `execute_method`.
@@ -71,15 +74,16 @@ directly via individual operators or execute_method. Both are always available.
 - `Core/Composition/auto_compose.py` — LLM-driven method selection (CompositionDecision, select_method)
 - `prompts/auto_compose.yaml` — Jinja2 template for method selection prompt
 - `Option/Config2.py` — `agentic_model` field for separate LLM for meta operators
+- `Core/AgentTools/corpus_format_parsers.py` — multi-format file parsers for corpus_prepare
 
-**MCP tools (43 total)**:
+**MCP tools (45 total)**:
 - 5 graph build (er, rk, tree, tree_balanced, passage) + 1 corpus (prepare)
 - 7 entity (vdb_build, vdb_search, onehop, ppr, agent, link, tfidf)
 - 5 relationship (onehop, score_agg, agent, vdb_build, vdb_search)
 - 4 chunk (from_relationships, occurrence, get_text, aggregator)
 - 2 graph analysis (analyze, visualize) + 3 subgraph (khop_paths, steiner_tree, agent_path)
 - 3 community (build_communities, detect_from_entities, get_layer)
-- 3 meta (extract_entities, generate_answer, pcst_optimize)
+- 5 meta (extract_entities, generate_answer, pcst_optimize, decompose_question, synthesize_answers)
 - 1 prerequisite build (build_sparse_matrices)
 - 2 config (get_config, set_agentic_model)
 - 2 operator discovery (list_operators, get_compatible_successors)
@@ -90,6 +94,13 @@ directly via individual operators or execute_method. Both are always available.
 1. **Operator composition** (primary) — client composes arbitrary retrieval DAGs by calling operators directly. Use `list_operators` + `get_compatible_successors` for discovery, `ChainValidator` to verify. Tested via `test_custom_chain.py`.
 2. **Reference pipelines** — `execute_method("basic_local", query, dataset, auto_build=True)` runs one of 10 pre-composed pipelines. Convenience shortcuts for known-good patterns.
 3. **Full auto** — `auto_compose(query, dataset, auto_build=True)` — LLM picks a reference pipeline based on query characteristics and available resources.
+
+**Auto-corpus** (`input_directory` on graph_build_* tools):
+- All 5 graph_build tools accept `input_directory` parameter
+- If no Corpus.json exists, auto-calls `corpus_prepare` before building
+- `corpus_prepare` supports .txt, .md, .json, .jsonl, .csv, .pdf
+- For structured formats (JSON, CSV), auto-detects text/title fields
+- One-call workflow: `graph_build_er(dataset_name="my_kg", input_directory="/path/to/data/")`
 
 **Auto-build** (`auto_build=True` on execute_method):
 - Automatically builds all missing prerequisites: entity VDB, relationship VDB,
@@ -110,15 +121,14 @@ In Mode 2/3, the inner agent does all the reasoning within the pipeline. This is
 
 **Multi-model config**:
 ```yaml
-agentic_model: "codex/gpt-5.3-codex-spark"  # fast, text-only, via Codex SDK
+agentic_model: "codex/gpt-5.3-codex"  # most capable, via Codex SDK
 ```
-Valid values via llm_client: `"codex/gpt-5.3-codex-spark"`, `"codex/gpt-5.3-codex"`, `"claude-code"`, or any litellm model string (e.g. `"gemini/gemini-2.0-flash"`).
+Valid values via llm_client: `"codex/gpt-5.3-codex"`, `"claude-code"`, or any litellm model string (e.g. `"deepseek/deepseek-chat"`).
 
 **Agentic model tradeoffs** (for mid-pipeline reasoning):
-- `codex/gpt-5.3-codex-spark` — default. Fast, text-only, good for bulk benchmark runs.
-- `codex/gpt-5.3-codex` — max capability, slower. Use for complex decomposition/reasoning.
+- `codex/gpt-5.3-codex` — default. Most capable coding/reasoning model. Requires ChatGPT Plus.
 - `claude-code` — Claude Agent SDK. Premium quality, highest latency/cost.
-- `gemini/gemini-2.0-flash` — cheapest. Use for high-volume runs where quality is secondary.
+- `deepseek/deepseek-chat` — $0.28/M. Use for high-volume benchmark runs where cost matters.
 
 Graph building uses `llm` (gpt-4o-mini, cheap/fast). Use `get_config` to inspect, `set_agentic_model` to override at runtime.
 
@@ -167,9 +177,8 @@ med:           entity.vdb → subgraph.khop_paths → subgraph.steiner_tree → 
 **Status**: Works. Agent calls individual operator tools, parses JSON output, constructs
 inputs for the next tool. Standard MCP pattern — agent is the composition layer.
 
-**Known gap**: MCP tool docstrings document inputs only, not output schemas. An agent
-calling `entity_vdb_search` doesn't know the output has `similar_entities[].entity_name`
-until it calls it. This is friction for first-time composition.
+**Output schemas**: All MCP tool docstrings now include `Returns:` sections documenting
+output JSON structure. Agents can plan operator chains by reading docstrings alone.
 
 **Common output-to-input mappings** (for agents composing chains):
 - `entity_vdb_search` → outputs `similar_entities[].entity_name` → feed as `seed_entity_ids` to `entity_ppr`
@@ -178,8 +187,13 @@ until it calls it. This is friction for first-time composition.
 - `meta_extract_entities` → outputs `entities[].entity_name` → feed as `source_entities` to `entity_link`
 - chunk tools → outputs `text_content` fields → feed as `context_chunks: list[str]` to `meta_generate_answer`
 
-**TODO**: Add output schema documentation to MCP tool docstrings so agents can compose
-without trial-and-error.
+**AoT-style composition** (using new decompose/synthesize operators):
+```
+meta_decompose_question("Who founded the company that employed Jane Doe?")
+→ ["Who is Jane Doe?", "Which company employed her?", "Who founded that company?"]
+→ For each sub-question: entity_vdb_search → relationship_onehop → chunk_occurrence → meta_generate_answer
+→ meta_synthesize_answers(original_question, sub_answers)
+```
 
 ### Known Limitations
 - Entity.PPR: The operator implementation uses direct graph PPR (not the old EntityRetriever path)
@@ -228,11 +242,13 @@ without trial-and-error.
 
 ### Operator Pipeline (canonical system):
 - **Type System**: `Core/Schema/SlotTypes.py`, `OperatorDescriptor.py`, `GraphCapabilities.py`
-- **24 Operators**: `Core/Operators/{entity,relationship,chunk,subgraph,community,meta}/`
+- **26 Operators**: `Core/Operators/{entity,relationship,chunk,subgraph,community,meta}/`
 - **Registry**: `Core/Operators/registry.py` — OperatorRegistry with composition helpers
 - **Composition**: `Core/Composition/` — ChainValidator, PipelineExecutor, Adapters, OperatorComposer
 - **Reference Pipelines**: `Core/Methods/` — 10 pre-composed operator chains as ExecutionPlan factories
 - **Plan Extensions**: `Core/AgentSchema/plan.py` — LoopConfig, ConditionalBranch
+- **Eval Harness**: `eval/` — BenchmarkRunner, EM/F1 scoring, CLI entry point
+- **Prompt Templates**: `prompts/` — auto_compose.yaml, decompose_question.yaml, synthesize_answers.yaml
 
 ### Key Components:
 - **Orchestrator**: `Core/AgentOrchestrator/orchestrator.py`
@@ -247,11 +263,40 @@ without trial-and-error.
 
 ## Next Steps
 
-### Phase 13: Recursive Reasoning Trace (DESIGN)
+### Eval Harness (DONE)
+
+**Two benchmark modes:**
+
+1. **Agent benchmark** (`eval/run_agent_benchmark.py`) — Codex agent freely composes operators via MCP
+   - Uses `acall_llm("codex", ...)` from llm_client (Codex SDK, not subprocess)
+   - Agent discovers and calls digimon-kgrag MCP tools autonomously
+   - Structured `McpToolCallItem` extraction from `Turn.items` (exact tool tracking)
+   - Real token counts and cost from SDK `Usage` object
+   - CLI: `python eval/run_agent_benchmark.py --dataset HotpotQAsmallest --n 10`
+   - Options: `--model codex` `--effort high` `--timeout 120`
+   - Output: `results/{dataset}_agent_benchmark.json` + `.log`
+
+2. **Fixed pipeline benchmark** (`eval/run_benchmark.py`) — runs named methods via OperatorComposer
+   - Calls Python directly (no MCP overhead) for batch runs
+   - `CountingLLMWrapper` tracks LLM calls and tokens per question
+   - CLI: `python eval/run_benchmark.py --dataset HotpotQAsmallest --methods basic_local --n 10`
+   - Output: `results/{dataset}_benchmark.json`
+
+**Shared infrastructure:**
+- `eval/benchmark.py` — EM/F1 scoring, BenchmarkRunner, QuestionResult/MethodResult dataclasses
+- `eval/data_prep.py` — Dataset loading from Question.json (JSONL)
+- `eval/_llm_counter.py` — CountingLLMWrapper for fixed pipeline token tracking
+- `eval/_chunk_lookup.py` — ChunkLookup adapter for OperatorContext
+
+**Existing baselines** (from `test_qa_evaluation_pipeline.py`):
+- basic_local pipeline: 50% accuracy on HotPotQAsmallest (10 questions, 2-5s/question)
+- Uses LLM judge for flexible answer matching (handles verbose answers)
+
+### Phase 16: Recursive Reasoning Trace (DESIGN)
 See `docs/RECURSIVE_REASONING_TRACE.md`. Reasoning traces stored as DIGIMON-compatible ER
 graphs, enabling recursive meta-analysis. Priority order:
-1. **Eval harness** — benchmark arbitrary operator compositions on HotPotQA/MuSiQue/2Wiki
-2. **decompose + synthesize operators** — two LLM prompt templates for AoT-style reasoning
+1. **Run baselines** — benchmark all 10 methods on HotPotQA (50+ questions) to establish EM/F1 baselines
+2. **Add MuSiQue + 2Wiki** — download, convert to DIGIMON corpus format, add to data_prep.py
 3. **Trace writer + trace-to-graph converter** — instrument operator calls, produce ER graphs
 4. **Recursive application** — apply DIGIMON operators to trace graphs
 

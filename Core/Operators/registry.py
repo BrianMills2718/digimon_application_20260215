@@ -138,7 +138,7 @@ REGISTRY = OperatorRegistry()
 
 
 def _register_all():
-    """Register all 21 operators with their descriptors."""
+    """Register all 26 operators with their descriptors."""
     from Core.Operators.entity.vdb import entity_vdb
     from Core.Operators.entity.ppr import entity_ppr
     from Core.Operators.entity.onehop import entity_onehop
@@ -163,6 +163,8 @@ def _register_all():
     from Core.Operators.meta.rerank import meta_rerank
     from Core.Operators.meta.generate_answer import meta_generate_answer
     from Core.Operators.meta.pcst_optimize import meta_pcst_optimize
+    from Core.Operators.meta.decompose_question import meta_decompose_question
+    from Core.Operators.meta.synthesize_answers import meta_synthesize_answers
 
     descriptors = [
         # === Entity operators ===
@@ -464,6 +466,31 @@ def _register_all():
             cost_tier=CostTier.CHEAP,
             when_to_use="Optimize entity+relationship sets into a compact informative subgraph. Used in GR method.",
             implementation=meta_pcst_optimize,
+        ),
+        OperatorDescriptor(
+            operator_id="meta.decompose_question",
+            display_name="LLM Question Decomposition",
+            category="meta",
+            input_slots=[SlotSpec("query", SlotKind.QUERY_TEXT)],
+            output_slots=[SlotSpec("sub_questions", SlotKind.ENTITY_SET)],
+            cost_tier=CostTier.MODERATE,
+            requires_llm=True,
+            when_to_use="Decompose a complex multi-hop question into independent sub-questions (AoT-style). Use before parallel retrieval chains.",
+            implementation=meta_decompose_question,
+        ),
+        OperatorDescriptor(
+            operator_id="meta.synthesize_answers",
+            display_name="LLM Answer Synthesis",
+            category="meta",
+            input_slots=[
+                SlotSpec("query", SlotKind.QUERY_TEXT),
+                SlotSpec("chunks", SlotKind.CHUNK_SET, required=False, description="Sub-answers as chunk text"),
+            ],
+            output_slots=[SlotSpec("answer", SlotKind.QUERY_TEXT)],
+            cost_tier=CostTier.MODERATE,
+            requires_llm=True,
+            when_to_use="Synthesize sub-answers into a final coherent answer. Use after parallel AoT-style retrieval.",
+            implementation=meta_synthesize_answers,
         ),
     ]
 

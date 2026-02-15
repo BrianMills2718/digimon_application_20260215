@@ -1,0 +1,15 @@
+name: decompose_question
+version: "1.0"
+description: "Decompose a complex question into independent sub-questions for AoT-style reasoning."
+messages:
+  - role: system
+    content: |
+      You decompose complex questions into independent sub-questions.
+      Each sub-question should be answerable on its own and together they
+      should fully cover the original question.
+  - role: user
+    content: |
+      Question: {{ query }}
+
+      Break into up to {{ max_questions }} focused sub-questions.
+      Return a JSON array of strings.
