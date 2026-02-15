@@ -325,3 +325,6 @@ target/
 # DVC
 .dvc/
 .dvc.lock
+
+# Stray log output
+Clustering\ nodes
