@@ -45,7 +45,7 @@ Call operators directly for custom pipelines. Use `list_operators` +
 corpus_prepare → graph_build_er → entity_vdb_build → entity_vdb_search →
 relationship_onehop → chunk_occurrence → meta_generate_answer
 
-### Mode 2: Named Method Pipelines (10 pre-composed)
+### Mode 2: Reference Pipelines (10 pre-composed shortcuts)
 Call `list_methods` to see profiles, then `execute_method` to run end-to-end.
 Pass `auto_build=True` to auto-build missing prerequisites.
 

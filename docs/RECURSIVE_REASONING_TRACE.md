@@ -8,9 +8,9 @@
 
 ## Motivation
 
-DIGIMON has 24 typed operators, 10 method pipelines, and an operator-centric MCP interface
-that lets capable agents (Claude Code, Codex) compose operators dynamically. The question:
-can we beat StepChain GraphRAG (current SOTA on multi-hop QA benchmarks, ~57.7 avg EM)?
+DIGIMON has 24 typed, composable operators that agents (Claude Code, Codex) compose into
+arbitrary retrieval DAGs via MCP. The question: can we beat StepChain GraphRAG (current
+SOTA on multi-hop QA benchmarks, ~57.7 avg EM)?
 
 StepChain decomposes questions into sub-questions, does BFS on an on-the-fly graph, synthesizes.
 It's CoT-level reasoning. DIGIMON's operator pipeline is already a Graph-of-Thought architecture —
@@ -220,9 +220,9 @@ The trace writer captures what happened regardless of who drove it.
   Intuitively yes (similar sub-questions), but the mechanism isn't designed yet.
   This is where VDB search on the trace graph would help.
 
-- **Benchmark competitiveness**: We don't have baseline numbers yet for DIGIMON's 10 existing
-  methods on standard benchmarks. The recursive trace system might not be needed to beat
-  StepChain — one of the existing methods might already be competitive. Need eval harness first.
+- **Benchmark competitiveness**: We don't have baseline numbers yet for DIGIMON's operators
+  on standard benchmarks. The recursive trace system might not be needed to beat StepChain —
+  an existing operator composition might already be competitive. Need eval harness first.
 
 - **Contradiction detection automation**: The real AoT trace required 6 rounds of human-driven
   correction to find contradictions. Can DIGIMON operators (community detection, PPR) surface
@@ -264,9 +264,10 @@ DIGIMON already has all four capabilities. The gap is composition + evaluation.
 
 ## Next Steps (Priority Order)
 
-1. **Build eval harness** — Run existing 10 methods on HotPotQA/MuSiQue/2Wiki.
-   Get baseline numbers. This tells us if we even need the recursive system to compete,
-   or if an existing method is already close.
+1. **Build eval harness** — Benchmark operator compositions on HotPotQA/MuSiQue/2Wiki.
+   Test the 10 reference pipelines as baselines, then novel operator chains.
+   This tells us if we even need the recursive system to compete,
+   or if an existing composition is already close.
 
 2. **Add decompose + synthesize operators** — Two LLM prompt templates. Unlocks AoT-style
    reasoning regardless of whether we build the full trace system.
