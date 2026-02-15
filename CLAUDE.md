@@ -316,6 +316,8 @@ meta_decompose_question("Who founded the company that employed Jane Doe?")
 
 **Round-trip validation**: `validate_conversion(format_sequence="graph,table,graph")` measures entity/edge preservation.
 
+**E2E tests**: `test_cross_modal.py` — 75 tests on real Fictional_Test ERGraph (104 nodes, 84 edges). No mocks.
+
 ### Phase 16: Recursive Reasoning Trace (DESIGN)
 See `docs/RECURSIVE_REASONING_TRACE.md`. Reasoning traces stored as DIGIMON-compatible ER
 graphs, enabling recursive meta-analysis. Priority order:
