@@ -23,6 +23,7 @@ Phase 13: Output Schemas     [DONE] Returns: section added to all MCP tool docst
 Phase 14: Eval Harness       [DONE] eval/ directory — BenchmarkRunner, EM/F1 scoring, CLI entry point
 Phase 15: AoT Operators      [DONE] meta.decompose_question + meta.synthesize_answers — AoT-style reasoning
 Phase 16: Recursive Trace    [DESIGN] docs/RECURSIVE_REASONING_TRACE.md — reasoning trace as ER graph, recursive DIGIMON-on-DIGIMON
+Phase 17: Cross-Modal MCP   [DONE] 4 tools: convert_modality, validate_conversion, select_analysis_mode, list_modality_conversions
 ```
 
 ### Key Architecture: Operator Pipeline
@@ -76,7 +77,7 @@ directly via individual operators or execute_method. Both are always available.
 - `Option/Config2.py` — `agentic_model` field for separate LLM for meta operators
 - `Core/AgentTools/corpus_format_parsers.py` — multi-format file parsers for corpus_prepare
 
-**MCP tools (45 total)**:
+**MCP tools (49 total)**:
 - 5 graph build (er, rk, tree, tree_balanced, passage) + 1 corpus (prepare)
 - 7 entity (vdb_build, vdb_search, onehop, ppr, agent, link, tfidf)
 - 5 relationship (onehop, score_agg, agent, vdb_build, vdb_search)
@@ -89,6 +90,7 @@ directly via individual operators or execute_method. Both are always available.
 - 2 operator discovery (list_operators, get_compatible_successors)
 - 4 method-level (list_methods, list_graph_types, execute_method, auto_compose)
 - 1 context (list_available_resources)
+- 4 cross-modal (convert_modality, validate_conversion, select_analysis_mode, list_modality_conversions)
 
 **Three execution modes** (increasing autonomy):
 1. **Operator composition** (primary) — client composes arbitrary retrieval DAGs by calling operators directly. Use `list_operators` + `get_compatible_successors` for discovery, `ChainValidator` to verify. Tested via `test_custom_chain.py`.
@@ -248,7 +250,8 @@ meta_decompose_question("Who founded the company that employed Jane Doe?")
 - **Reference Pipelines**: `Core/Methods/` — 10 pre-composed operator chains as ExecutionPlan factories
 - **Plan Extensions**: `Core/AgentSchema/plan.py` — LoopConfig, ConditionalBranch
 - **Eval Harness**: `eval/` — BenchmarkRunner, EM/F1 scoring, CLI entry point
-- **Prompt Templates**: `prompts/` — auto_compose.yaml, decompose_question.yaml, synthesize_answers.yaml
+- **Prompt Templates**: `prompts/` — auto_compose.yaml, decompose_question.yaml, synthesize_answers.yaml, select_analysis_mode.yaml
+- **Cross-Modal**: `Core/AgentTools/cross_modal_tools.py` — 15 conversion paths, embedding providers, round-trip validation
 
 ### Key Components:
 - **Orchestrator**: `Core/AgentOrchestrator/orchestrator.py`
@@ -268,7 +271,8 @@ meta_decompose_question("Who founded the company that employed Jane Doe?")
 **Two benchmark modes:**
 
 1. **Agent benchmark** (`eval/run_agent_benchmark.py`) — Codex agent freely composes operators via MCP
-   - Uses `acall_llm("codex", ...)` from llm_client (Codex SDK, not subprocess)
+   - Uses `acall_llm("codex", ..., mcp_servers=...)` from llm_client (Codex SDK, not subprocess)
+   - **Only loads `digimon-kgrag` MCP server** (not all 17 global servers) via `mcp_servers` kwarg
    - Agent discovers and calls digimon-kgrag MCP tools autonomously
    - Structured `McpToolCallItem` extraction from `Turn.items` (exact tool tracking)
    - Real token counts and cost from SDK `Usage` object
@@ -291,6 +295,26 @@ meta_decompose_question("Who founded the company that employed Jane Doe?")
 **Existing baselines** (from `test_qa_evaluation_pipeline.py`):
 - basic_local pipeline: 50% accuracy on HotPotQAsmallest (10 questions, 2-5s/question)
 - Uses LLM judge for flexible answer matching (handles verbose answers)
+
+### Phase 17: Cross-Modal MCP Tools (DONE)
+
+**Key files**:
+- `Core/AgentTools/cross_modal_tools.py` — Conversion logic, embedding providers, validation
+- `prompts/select_analysis_mode.yaml` — Jinja2 prompt for modality recommendation
+
+**4 MCP tools**: convert_modality, validate_conversion, select_analysis_mode, list_modality_conversions
+
+**15 conversion paths** across 6 format pairs (graph/table/vector):
+- graph→table: nodes, edges, adjacency
+- table→graph: entity_rel, adjacency, auto (heuristic)
+- graph→vector: node_embed (via embedding model), features (static stats)
+- table→vector: stats (descriptive), row_embed (via embedding model)
+- vector→graph: similarity (cosine threshold), clustering (KMeans/DBSCAN)
+- vector→table: direct, pca, similarity matrix
+
+**3 embedding providers**: `local` (sentence-transformers, default), `digimon` (configured model), `hash` (testing)
+
+**Round-trip validation**: `validate_conversion(format_sequence="graph,table,graph")` measures entity/edge preservation.
 
 ### Phase 16: Recursive Reasoning Trace (DESIGN)
 See `docs/RECURSIVE_REASONING_TRACE.md`. Reasoning traces stored as DIGIMON-compatible ER

@@ -66,6 +66,13 @@ Two model roles: `llm.model` (graph building, cheap) vs `agentic_model`
 - **tree/tree_balanced**: Hierarchical clustering. Best for summarization.
 - **passage**: Passage-level nodes. Best for document-centric retrieval.
 
+## Cross-Modal Analysis
+Convert between graph, table, and vector representations:
+- `list_modality_conversions` — discover all 15 conversion paths
+- `convert_modality` — convert data between modalities (graph/table/vector)
+- `validate_conversion` — measure round-trip preservation quality
+- `select_analysis_mode` — LLM recommends best modality for a research question
+
 ## Tips
 - Use `return_context_only=True` in execute_method when you want to synthesize
   the answer yourself instead of letting DIGIMON's LLM generate it.
@@ -121,11 +128,14 @@ async def _ensure_initialized():
     _state["context"] = context
 
     # Optional: create agentic LLM via llm_client for meta operators
-    if getattr(config, "agentic_model", None):
+    # Env var override: DIGIMON_AGENTIC_MODEL (useful for benchmarks to avoid recursive agent spawning)
+    agentic_model = os.environ.get("DIGIMON_AGENTIC_MODEL") or getattr(config, "agentic_model", None)
+    if agentic_model:
+        config.agentic_model = agentic_model
         try:
             from Core.Provider.LLMClientAdapter import LLMClientAdapter
-            _state["agentic_llm"] = LLMClientAdapter(config.agentic_model)
-            logger.info(f"Agentic LLM initialized: {config.agentic_model}")
+            _state["agentic_llm"] = LLMClientAdapter(agentic_model)
+            logger.info(f"Agentic LLM initialized: {agentic_model}")
         except ImportError:
             logger.warning("llm_client not available — agentic_model ignored, using default LLM")
 
@@ -1820,12 +1830,29 @@ async def execute_method(method_name: str, query: str, dataset_name: str,
 
 
 async def _auto_build_prerequisites(profile, op_ctx, dataset_name: str) -> list[str]:
-    """Auto-build missing VDBs for a method. Returns list of what was built."""
+    """Auto-build missing prerequisites for a method. Returns list of what was built."""
     built = []
 
     if op_ctx.graph is None:
-        logger.warning(f"auto_build: No graph for '{dataset_name}' — cannot build VDBs")
-        return built
+        # Try to load/build graph from disk (graph_build_er detects existing artifacts)
+        logger.info(f"auto_build: No graph in context for '{dataset_name}' — attempting graph_build_er")
+        try:
+            result_json = await graph_build_er(dataset_name=dataset_name)
+            result = json.loads(result_json)
+            if result.get("status") == "success":
+                built.append("graph")
+                logger.info(f"auto_build: Graph loaded/built for '{dataset_name}' ({result.get('node_count')} nodes)")
+            else:
+                logger.warning(f"auto_build: graph_build_er failed: {result}")
+                return built
+        except Exception as e:
+            logger.warning(f"auto_build: graph_build_er raised: {e}")
+            return built
+        # Re-derive op_ctx now that graph is loaded
+        op_ctx = await _build_operator_context_for_dataset(dataset_name)
+        if op_ctx.graph is None:
+            logger.warning(f"auto_build: Graph still None after build — giving up")
+            return built
 
     # Determine graph_id from context
     ctx = _state["context"]
@@ -2059,6 +2086,299 @@ def _check_prerequisites(profile, op_ctx, dataset_name: str) -> list[str]:
         missing.append("Sparse matrices (entity_to_rel, rel_to_chunk) required but not built.")
 
     return missing
+
+
+# =============================================================================
+# CROSS-MODAL CONVERSION TOOLS
+# =============================================================================
+
+@mcp.tool()
+async def convert_modality(
+    source_format: str,
+    target_format: str,
+    graph_reference_id: str = "",
+    table_path: str = "",
+    table_json: str = "",
+    vector_json: str = "",
+    mode: str = "auto",
+    embedding_provider: str = "local",
+    similarity_threshold: float = 0.5,
+) -> str:
+    """Convert data between graph, table, and vector modalities.
+
+    Supported conversion paths (call list_modality_conversions for full details):
+      graph -> table: modes = nodes, edges, adjacency
+      table -> graph: modes = entity_rel, adjacency, auto
+      graph -> vector: modes = node_embed, features
+      table -> vector: modes = stats, row_embed
+      vector -> graph: modes = similarity, clustering
+      vector -> table: modes = direct, pca, similarity
+
+    Args:
+        source_format: "graph", "table", or "vector"
+        target_format: "graph", "table", or "vector"
+        graph_reference_id: Graph ID from context (for graph source)
+        table_path: CSV file path (for table source)
+        table_json: Inline JSON array of rows (for table source)
+        vector_json: Inline JSON 2D array (for vector source)
+        mode: Conversion strategy, or "auto" for default
+        embedding_provider: "local" (sentence-transformers), "digimon" (configured model), or "hash" (testing)
+        similarity_threshold: For vector->graph similarity mode (0.0-1.0)
+
+    Returns:
+        data: converted data (JSON rows for table, node/edge dict for graph, nested array for vector),
+        format: str, mode: str, shape: [rows, cols], conversion_time_ms: float
+    """
+    await _ensure_initialized()
+
+    from Core.AgentTools.cross_modal_tools import (
+        _extract_networkx_graph as extract_nx, _graph_to_dict, _dict_to_networkx,
+        convert, get_embedding_provider, serialize_conversion_result,
+    )
+    import numpy as np
+    import pandas as pd
+
+    # --- Resolve source data ---
+    source_data: Any = None
+
+    if source_format == "graph":
+        if not graph_reference_id:
+            return json.dumps({"error": "graph_reference_id is required for graph source"})
+        ctx = _state["context"]
+        graph_instance = ctx.get_graph_instance(graph_reference_id)
+        if graph_instance is None:
+            return json.dumps({"error": f"Graph '{graph_reference_id}' not found in context"})
+        nx_graph = extract_nx(graph_instance)
+        if nx_graph is None:
+            return json.dumps({"error": f"Could not extract NetworkX graph from '{graph_reference_id}'"})
+        source_data = _graph_to_dict(nx_graph)
+
+    elif source_format == "table":
+        if table_path:
+            source_data = pd.read_csv(table_path)
+        elif table_json:
+            source_data = pd.DataFrame(json.loads(table_json))
+        else:
+            return json.dumps({"error": "table_path or table_json required for table source"})
+
+    elif source_format == "vector":
+        if not vector_json:
+            return json.dumps({"error": "vector_json required for vector source"})
+        source_data = np.array(json.loads(vector_json), dtype=np.float32)
+
+    else:
+        return json.dumps({"error": f"Unknown source_format: {source_format!r}"})
+
+    # --- Get embedding provider if needed ---
+    provider = None
+    try:
+        provider = get_embedding_provider(embedding_provider, _state)
+    except ValueError:
+        pass  # Will fail later if actually needed
+
+    # --- Run conversion ---
+    try:
+        kwargs: Dict[str, Any] = {}
+        if source_format == "vector" and target_format == "graph" and mode in ("similarity", "auto"):
+            kwargs["threshold"] = similarity_threshold
+        result = await convert(source_data, source_format, target_format,
+                               mode=mode, provider=provider, **kwargs)
+    except Exception as e:
+        logger.error(f"convert_modality: {e}", exc_info=True)
+        return json.dumps({"error": str(e)})
+
+    # --- Register graph in context if output is graph ---
+    if target_format == "graph" and isinstance(result["data"], dict) and "nodes" in result["data"]:
+        nx_graph = _dict_to_networkx(result["data"])
+        ref_id = f"converted_{source_format}_to_graph"
+        if graph_reference_id:
+            ref_id = f"{graph_reference_id}_as_graph"
+        from types import SimpleNamespace
+        wrapper = SimpleNamespace(_graph=SimpleNamespace(graph=nx_graph))
+        _state["context"].add_graph_instance(ref_id, wrapper)
+        result["graph_reference_id"] = ref_id
+
+    serialized = serialize_conversion_result(result)
+    if "graph_reference_id" in result:
+        serialized["graph_reference_id"] = result["graph_reference_id"]
+    return json.dumps(serialized, indent=2, default=str)
+
+
+@mcp.tool()
+async def validate_conversion(
+    format_sequence: str,
+    graph_reference_id: str = "",
+    table_json: str = "",
+    vector_json: str = "",
+    mode_sequence: str = "",
+    embedding_provider: str = "local",
+) -> str:
+    """Validate round-trip conversion quality by converting through a sequence of formats.
+
+    Example: format_sequence="graph,table,graph" converts graph->table->graph and
+    measures how much structure is preserved.
+
+    Args:
+        format_sequence: Comma-separated format sequence (e.g. "graph,table,graph")
+        graph_reference_id: Graph ID if starting from graph
+        table_json: JSON rows if starting from table
+        vector_json: JSON 2D array if starting from vector
+        mode_sequence: Comma-separated modes for each step (optional, defaults to "auto")
+        embedding_provider: "local", "digimon", or "hash"
+
+    Returns:
+        preservation_score: float (0-1), entity_preservation: float,
+        edge_preservation: float, warnings: list[str], steps: list[{from, to, mode, shape, time_ms}]
+    """
+    await _ensure_initialized()
+
+    from Core.AgentTools.cross_modal_tools import (
+        _extract_networkx_graph as extract_nx, _graph_to_dict, validate_round_trip,
+        get_embedding_provider,
+    )
+    import numpy as np
+    import pandas as pd
+
+    formats = [f.strip() for f in format_sequence.split(",")]
+    if len(formats) < 2:
+        return json.dumps({"error": "format_sequence must have at least 2 formats"})
+
+    modes = None
+    if mode_sequence:
+        modes = [m.strip() for m in mode_sequence.split(",")]
+
+    # Resolve starting data
+    start_format = formats[0]
+    data: Any = None
+
+    if start_format == "graph":
+        if not graph_reference_id:
+            return json.dumps({"error": "graph_reference_id required when starting from graph"})
+        ctx = _state["context"]
+        gi = ctx.get_graph_instance(graph_reference_id)
+        if gi is None:
+            return json.dumps({"error": f"Graph '{graph_reference_id}' not found"})
+        nx_graph = extract_nx(gi)
+        if nx_graph is None:
+            return json.dumps({"error": f"Could not extract NetworkX graph from '{graph_reference_id}'"})
+        data = _graph_to_dict(nx_graph)
+    elif start_format == "table":
+        if not table_json:
+            return json.dumps({"error": "table_json required when starting from table"})
+        data = pd.DataFrame(json.loads(table_json))
+    elif start_format == "vector":
+        if not vector_json:
+            return json.dumps({"error": "vector_json required when starting from vector"})
+        data = np.array(json.loads(vector_json), dtype=np.float32)
+    else:
+        return json.dumps({"error": f"Unknown starting format: {start_format!r}"})
+
+    provider = None
+    try:
+        provider = get_embedding_provider(embedding_provider, _state)
+    except ValueError:
+        pass
+
+    try:
+        result = await validate_round_trip(data, formats, mode_sequence=modes, provider=provider)
+    except Exception as e:
+        logger.error(f"validate_conversion: {e}", exc_info=True)
+        return json.dumps({"error": str(e)})
+
+    return json.dumps(result, indent=2, default=str)
+
+
+@mcp.tool()
+async def select_analysis_mode(
+    research_question: str,
+    dataset_name: str = "",
+) -> str:
+    """Recommend the best analysis modality (graph, table, vector, or cross-modal) for a research question.
+
+    Uses an LLM to analyze the question type and recommend the optimal data modality
+    plus a suggested workflow of DIGIMON tool calls.
+
+    Args:
+        research_question: The question to analyze
+        dataset_name: Name of the dataset to check available resources
+
+    Returns:
+        recommended_mode: str, confidence: float, reasoning: str,
+        suggested_steps: list[str]
+    """
+    await _ensure_initialized()
+
+    from llm_client import render_prompt, acall_llm_structured
+    from pydantic import BaseModel, Field
+
+    class AnalysisModeDecision(BaseModel):
+        recommended_mode: str = Field(description="One of: graph, table, vector, cross_modal")
+        confidence: float = Field(ge=0.0, le=1.0)
+        reasoning: str = Field(description="Why this mode fits the question")
+        suggested_steps: list[str] = Field(description="2-5 workflow steps")
+
+    # Get available resources for context
+    resources = "{}"
+    if dataset_name:
+        try:
+            resources = await list_available_resources()
+        except Exception:
+            pass
+
+    prompt_path = str(Path(__file__).parent / "prompts" / "select_analysis_mode.yaml")
+
+    try:
+        messages = render_prompt(
+            prompt_path,
+            question=research_question,
+            dataset_name=dataset_name or "(not specified)",
+            resources=resources,
+        )
+    except Exception as e:
+        logger.error(f"select_analysis_mode: prompt render failed: {e}")
+        return json.dumps({
+            "recommended_mode": "graph",
+            "confidence": 0.1,
+            "reasoning": f"Fallback: prompt render failed: {e}",
+            "suggested_steps": ["Use graph_analyze to inspect the graph structure"],
+        })
+
+    # Use agentic LLM if available, else fall back to default LLM
+    llm = _state.get("agentic_llm")
+    model = llm.model if llm else _state["config"].llm.model
+
+    try:
+        decision, meta = await acall_llm_structured(
+            model, messages, response_model=AnalysisModeDecision,
+        )
+        logger.info(
+            f"select_analysis_mode: recommended '{decision.recommended_mode}' "
+            f"(confidence={decision.confidence:.2f})"
+        )
+    except Exception as e:
+        logger.error(f"select_analysis_mode: LLM call failed: {e}")
+        return json.dumps({
+            "recommended_mode": "graph",
+            "confidence": 0.1,
+            "reasoning": f"Fallback: LLM call failed: {e}",
+            "suggested_steps": ["Use graph_analyze to inspect the graph structure"],
+        })
+
+    return json.dumps(decision.model_dump(), indent=2)
+
+
+@mcp.tool()
+async def list_modality_conversions() -> str:
+    """List all supported cross-modal conversion paths with their modes and descriptions.
+
+    Discovery tool for agents. Shows what conversions are available, which modes
+    each supports, and whether embeddings are required.
+
+    Returns:
+        list of {source_format, target_format, mode, description, requires_embedding}
+    """
+    from Core.AgentTools.cross_modal_tools import list_all_conversions
+    return json.dumps(list_all_conversions(), indent=2)
 
 
 # =============================================================================
