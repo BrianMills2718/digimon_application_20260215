@@ -18,6 +18,8 @@ Phase 8:  Delete Old System  [DONE] Core/Retriever/ and Core/Query/ deleted, ref
 Phase 9:  MCP Composition    [DONE] MCP tools, execute_method, auto_build for VDBs
 Phase 10: Full Auto-Build    [DONE] build_sparse_matrices + build_communities tools; 10/10 methods pass with auto_build=True
 Phase 11: Auto-Compose       [DONE] auto_compose MCP tool — LLM picks best method from 10 based on query + resources
+Phase 12: Config + Operators [DONE] get_config, set_agentic_model, list_operators, get_compatible_successors; operator-centric MCP framing
+Phase 13: Recursive Trace    [DESIGN] docs/RECURSIVE_REASONING_TRACE.md — reasoning trace as ER graph, recursive DIGIMON-on-DIGIMON
 ```
 
 ### Key Architecture: Operator Pipeline
