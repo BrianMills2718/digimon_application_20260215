@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Agent-driven benchmark: Codex freely composes operators per question via MCP.
+"""Agent-driven benchmark: any LLM composes operators per question via MCP.
 
-Uses llm_client's Codex SDK integration (not subprocess). The agent sees
-digimon-kgrag MCP tools and autonomously composes operator chains.
+Supports two agent backends (selected by --model):
+- Codex SDK: model="codex" or "codex/gpt-5" — Codex CLI spawns MCP servers
+- MCP agent loop: any litellm model (e.g. "gemini/gemini-3-flash-preview") —
+  llm_client starts MCP servers and runs a tool-calling loop
 
 Saves results incrementally (partial runs preserved on Ctrl+C).
 
 Usage:
     python eval/run_agent_benchmark.py --dataset HotpotQAsmallest --num 10
-    python eval/run_agent_benchmark.py --dataset HotpotQA --num 50 --resume
+    python eval/run_agent_benchmark.py --dataset HotpotQA --num 50 --model gemini/gemini-3-flash-preview
+    python eval/run_agent_benchmark.py --dataset HotpotQA --num 50 --model codex --resume
 """
 
 from __future__ import annotations
@@ -26,20 +29,41 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 os.chdir(str(Path(__file__).parent.parent))
 
 from eval.benchmark import exact_match, token_f1
+from eval.data_prep import load_questions
 
 
-# --- MCP tool call extraction from Codex SDK Turn ---
+# --- Tool call extraction (works with both Codex Turn and MCPAgentResult) ---
 
-def extract_tool_calls(turn_raw: object) -> list[dict]:
-    """Extract MCP tool calls from a Codex Turn's items.
+def extract_tool_calls(raw_response: object) -> list[dict]:
+    """Extract tool call records from the raw_response, regardless of backend.
 
-    The Codex SDK exposes McpToolCallItem objects in Turn.items with:
-      server, tool, arguments, result, error, status
+    Handles:
+    - Codex SDK Turn: items contain McpToolCallItem objects
+    - MCPAgentResult: tool_calls contain MCPToolCallRecord objects
     """
-    from openai_codex_sdk import McpToolCallItem
+    from llm_client import MCPAgentResult
+
+    if isinstance(raw_response, MCPAgentResult):
+        return [
+            {
+                "server": r.server,
+                "tool": r.tool,
+                "has_result": r.result is not None,
+                "has_error": r.error is not None,
+                "error": r.error[:500] if r.error else None,
+                "result_preview": r.result[:200] if r.result else None,
+            }
+            for r in raw_response.tool_calls
+        ]
+
+    # Codex SDK Turn path
+    try:
+        from openai_codex_sdk import McpToolCallItem
+    except ImportError:
+        return []
 
     calls = []
-    items = getattr(turn_raw, "items", None)
+    items = getattr(raw_response, "items", None)
     if not items:
         return calls
 
@@ -70,27 +94,8 @@ def build_messages(question: str, dataset_name: str) -> list[dict]:
     return render_prompt(PROMPT_TEMPLATE, question=question, dataset_name=dataset_name)
 
 
-# --- Main ---
+# --- MCP server config ---
 
-def load_questions(dataset_path: str, n: int | None = None) -> list[dict]:
-    qfile = Path(dataset_path) / "Question.json"
-    if not qfile.exists():
-        print(f"ERROR: {qfile} not found")
-        sys.exit(1)
-    questions = []
-    with open(qfile) as f:
-        for line in f:
-            if line.strip():
-                questions.append(json.loads(line))
-    if n:
-        questions = questions[:n]
-    return questions
-
-
-# MCP server config for the DIGIMON KG-RAG server (only server the agent needs).
-# Codex spawns MCP servers as subprocesses — must explicitly pass API keys since
-# the subprocess won't inherit the parent's env. llm_client auto-loads keys in the
-# parent process, so we forward them here.
 def _build_mcp_servers() -> dict:
     """Build MCP server config with API keys forwarded from current env."""
     import llm_client  # triggers auto-load of ~/.secrets/api_keys.env
@@ -111,14 +116,28 @@ def _build_mcp_servers() -> dict:
 DIGIMON_MCP_SERVERS = _build_mcp_servers()
 
 
+# --- Agent model detection ---
+
+def _is_codex_model(model: str) -> bool:
+    """Check if model routes through the Codex SDK."""
+    lower = model.lower()
+    return lower == "codex" or lower.startswith("codex/")
+
+
+# --- Run agent ---
+
 async def run_agent(
     question: str,
     dataset_name: str,
     timeout: int = 120,
     model: str = "codex",
     reasoning_effort: str = "high",
+    max_turns: int = 20,
 ) -> dict:
-    """Run the Codex agent on a single question via llm_client.
+    """Run an agent on a single question via llm_client.
+
+    For Codex models: uses Codex SDK with MCP servers.
+    For other models: uses llm_client's MCP agent loop (litellm + tool calling).
 
     Returns dict with: answer, tool_calls, usage, cost, latency_s, error
     """
@@ -129,19 +148,30 @@ async def run_agent(
 
     t0 = time.monotonic()
     try:
-        result = await acall_llm(
-            model,
-            messages,
-            timeout=timeout,
-            working_directory=project_root,
-            approval_policy="never",
-            sandbox_mode="workspace-write",
-            model_reasoning_effort=reasoning_effort,
-            mcp_servers=DIGIMON_MCP_SERVERS,
-        )
+        if _is_codex_model(model):
+            # Codex SDK path — agent-specific kwargs
+            result = await acall_llm(
+                model,
+                messages,
+                timeout=timeout,
+                working_directory=project_root,
+                approval_policy="never",
+                sandbox_mode="workspace-write",
+                model_reasoning_effort=reasoning_effort,
+                mcp_servers=DIGIMON_MCP_SERVERS,
+            )
+        else:
+            # MCP agent loop — any litellm model
+            result = await acall_llm(
+                model,
+                messages,
+                timeout=timeout,
+                mcp_servers=DIGIMON_MCP_SERVERS,
+                max_turns=max_turns,
+            )
+
         elapsed = time.monotonic() - t0
 
-        # Extract MCP tool calls from the raw Turn object
         tool_calls = extract_tool_calls(result.raw_response)
 
         return {
@@ -176,13 +206,14 @@ async def run_agent(
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="Agent-driven benchmark (via llm_client Codex SDK)")
+    parser = argparse.ArgumentParser(description="Agent-driven benchmark (any model via llm_client)")
     parser.add_argument("--dataset", required=True, help="Dataset name (e.g. HotpotQAsmallest)")
     parser.add_argument("--num", type=int, default=None, help="Limit to first N questions")
     parser.add_argument("--timeout", type=int, default=120, help="Timeout per question in seconds")
     parser.add_argument("--resume", action="store_true", help="Resume from previous run")
-    parser.add_argument("--model", default="codex", help="Agent model (default: codex)")
-    parser.add_argument("--effort", default="high", help="Reasoning effort: minimal/low/medium/high")
+    parser.add_argument("--model", default="codex", help="Agent model (default: codex). Any litellm model string works.")
+    parser.add_argument("--effort", default="high", help="Reasoning effort (Codex only): minimal/low/medium/high")
+    parser.add_argument("--max-turns", type=int, default=20, help="Max tool-calling loop iterations (non-Codex only)")
     parser.add_argument("--data-root", default="./Data", help="Data root directory")
     args = parser.parse_args()
 
@@ -224,7 +255,8 @@ async def main() -> None:
     log_file = open(log_path, "a")
     print(f"Log: {log_path}")
     print(f"JSON: {output_path}")
-    print(f"Model: {args.model} (effort={args.effort}, timeout={args.timeout}s)")
+    backend = "Codex SDK" if _is_codex_model(args.model) else "MCP agent loop"
+    print(f"Model: {args.model} ({backend}, timeout={args.timeout}s)")
 
     print(f"\n{'='*70}")
     print(f"AGENT BENCHMARK: {args.dataset} ({len(questions)} questions)")
@@ -253,6 +285,7 @@ async def main() -> None:
                 timeout=args.timeout,
                 model=args.model,
                 reasoning_effort=args.effort,
+                max_turns=args.max_turns,
             )
 
             predicted = agent_result["answer"]
@@ -269,15 +302,8 @@ async def main() -> None:
             # Tool call summary
             tool_names = [tc["tool"] for tc in tool_calls]
             n_tools = len(tool_calls)
-            # Separate DIGIMON tools from Codex built-in discovery
-            digimon_tools = [t for t in tool_names if "digimon" in t or t in (
-                "auto_compose", "execute_method", "list_operators",
-                "entity_vdb_search", "relationship_onehop", "chunk_occurrence",
-                "meta_generate_answer", "list_available_resources", "get_config",
-            )]
-            discovery_tools = [t for t in tool_names if t not in digimon_tools]
 
-            # Token counts from SDK
+            # Token counts
             input_tokens = usage.get("input_tokens", 0)
             output_tokens = usage.get("output_tokens", 0)
             cached_tokens = usage.get("cached_input_tokens", 0)
@@ -288,7 +314,7 @@ async def main() -> None:
                 print(f"  ERROR: {error}")
             print(f"  Predicted: {predicted[:200]}")
             print(f"  EM={em}  F1={f1:.2f}  ({elapsed:.1f}s, ${cost:.4f})")
-            print(f"  Tools: {n_tools} total — {len(digimon_tools)} digimon {digimon_tools}, {len(discovery_tools)} discovery {discovery_tools}")
+            print(f"  Tools: {n_tools} calls {tool_names}")
             print(f"  Tokens: {fresh_tokens:,} fresh + {cached_tokens:,} cached = {input_tokens:,} in, {output_tokens:,} out")
 
             log_file.write(
@@ -332,8 +358,8 @@ async def main() -> None:
             }
             results.append(result_record)
 
-            _save_results(output_path, args.dataset, len(questions), n_done,
-                          total_em, total_f1, total_cost, results)
+            _save_results(output_path, args.dataset, args.model, len(questions),
+                          n_done, total_em, total_f1, total_cost, results)
 
     except KeyboardInterrupt:
         print(f"\n\nInterrupted after {n_done} questions.")
@@ -356,6 +382,7 @@ async def main() -> None:
 def _save_results(
     output_path: Path,
     dataset: str,
+    model: str,
     n_questions: int,
     n_done: int,
     total_em: int,
@@ -372,6 +399,7 @@ def _save_results(
     with open(output_path, "w") as f:
         json.dump({
             "dataset": dataset,
+            "model": model,
             "n_questions": n_questions,
             "n_completed": n_done,
             "avg_em": 100 * total_em / n_done if n_done else 0,
