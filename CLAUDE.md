@@ -123,16 +123,18 @@ In Mode 2/3, the inner agent does all the reasoning within the pipeline. This is
 
 **Multi-model config**:
 ```yaml
-agentic_model: "codex/gpt-5.3-codex"  # most capable, via Codex SDK
+agentic_model: "anthropic/claude-sonnet-4-5-20250929"  # query-time reasoning, via litellm API
 ```
-Valid values via llm_client: `"codex/gpt-5.3-codex"`, `"claude-code"`, or any litellm model string (e.g. `"deepseek/deepseek-chat"`).
+Valid values: any litellm model string. This is a regular API call (NOT an agent SDK), despite the field name.
+Common choices: `"anthropic/claude-sonnet-4-5-20250929"`, `"gemini/gemini-2.5-flash"`, `"openai/o4-mini"`.
+Agent SDK models (`codex`, `claude-code`) work but cause recursive subprocess issues when DIGIMON runs as an MCP server under that same agent.
 
-**Agentic model tradeoffs** (for mid-pipeline reasoning):
-- `codex/gpt-5.3-codex` — default. Most capable coding/reasoning model. Requires ChatGPT Plus.
-- `claude-code` — Claude Agent SDK. Premium quality, highest latency/cost.
-- `deepseek/deepseek-chat` — $0.28/M. Use for high-volume benchmark runs where cost matters.
+**Model tradeoffs** (for mid-pipeline reasoning):
+- `anthropic/claude-sonnet-4-5-20250929` — default. High-quality reasoning via direct API.
+- `gemini/gemini-2.5-flash` — $0.30/M. Good balance of quality and cost.
+- `openai/o4-mini` — Strong reasoning with chain-of-thought.
 
-Graph building uses `llm` (gpt-4o-mini, cheap/fast). Use `get_config` to inspect, `set_agentic_model` to override at runtime.
+Graph building uses `llm.model` (`gemini/gemini-2.5-flash`, cheap/fast). API keys auto-loaded by llm_client from `~/.secrets/api_keys.env`. Use `get_config` to inspect, `set_agentic_model` to override at runtime.
 
 ### Previous Work: MCP Integration
 
@@ -325,6 +327,12 @@ graphs, enabling recursive meta-analysis. Priority order:
 2. **Add MuSiQue + 2Wiki** — download, convert to DIGIMON corpus format, add to data_prep.py
 3. **Trace writer + trace-to-graph converter** — instrument operator calls, produce ER graphs
 4. **Recursive application** — apply DIGIMON operators to trace graphs
+
+### Future: Execution Memory for auto_compose
+After each `execute_method`/`auto_compose`, log `{query, method_chosen, quality_score, latency_ms}` to a JSONL file.
+Feed recent history as few-shot examples into `auto_compose`'s prompt so it learns which methods work for which query types.
+EMA smoothing on quality scores per method to handle drift. ~30 lines bolted onto existing auto_compose flow, no new module needed.
+(Idea extracted from deleted `Core/Memory/memory_system.py` — the rest was boilerplate superseded by auto_compose.)
 
 ### Future: Multi-Dataset Composition
 `OperatorContext` is monolithic — all operators share one graph, one VDB set. This blocks:

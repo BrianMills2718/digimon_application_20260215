@@ -1,0 +1,1294 @@
+[
+  {
+    "name": "corpus_prepare",
+    "description": "Prepare documents from a directory into a Corpus.json for DIGIMON processing.\n\n    Supported formats: .txt, .md, .json, .jsonl, .csv, .pdf\n    For structured formats (JSON, CSV), auto-detects content and title fields.\n\n    Args:\n        input_directory: Path to directory containing source files (relative to project root or absolute)\n        dataset_name: Name for this dataset (used to namespace all artifacts)\n\n    Returns:\n        status: str, corpus_path: str, num_documents: int\n    ",
+    "inputSchema": {
+      "properties": {
+        "input_directory": {
+          "title": "Input Directory",
+          "type": "string"
+        },
+        "dataset_name": {
+          "title": "Dataset Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "input_directory",
+        "dataset_name"
+      ],
+      "title": "corpus_prepareArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "graph_build_er",
+    "description": "Build an Entity-Relationship (ER) knowledge graph from a prepared corpus.\n    Extracts entities (with types and descriptions) and relationships using LLM.\n    Best for general-purpose KG. Uses single-step delimiter extraction by default,\n    which produces entity types, entity descriptions, and relation descriptions.\n\n    If no Corpus.json exists and input_directory is provided, auto-prepares the corpus first.\n\n    Args:\n        dataset_name: Name of the dataset (must have corpus prepared, or pass input_directory)\n        force_rebuild: Force rebuild even if graph exists\n        input_directory: Path to source files for auto corpus preparation (optional)\n\n    Returns:\n        graph_id: str, status: str, num_nodes: int, num_edges: int\n    ",
+    "inputSchema": {
+      "properties": {
+        "dataset_name": {
+          "title": "Dataset Name",
+          "type": "string"
+        },
+        "force_rebuild": {
+          "default": false,
+          "title": "Force Rebuild",
+          "type": "boolean"
+        },
+        "input_directory": {
+          "default": null,
+          "title": "Input Directory",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dataset_name"
+      ],
+      "title": "graph_build_erArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "graph_build_rk",
+    "description": "Build an RK (Relationship-Keyword) graph. Like ER but with keyword-enriched edges.\n\n    If no Corpus.json exists and input_directory is provided, auto-prepares the corpus first.\n\n    Args:\n        dataset_name: Name of the dataset (must have corpus prepared, or pass input_directory)\n        force_rebuild: Force rebuild even if graph exists\n        input_directory: Path to source files for auto corpus preparation (optional)\n\n    Returns:\n        graph_id: str, status: str, num_nodes: int, num_edges: int\n    ",
+    "inputSchema": {
+      "properties": {
+        "dataset_name": {
+          "title": "Dataset Name",
+          "type": "string"
+        },
+        "force_rebuild": {
+          "default": false,
+          "title": "Force Rebuild",
+          "type": "boolean"
+        },
+        "input_directory": {
+          "default": null,
+          "title": "Input Directory",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dataset_name"
+      ],
+      "title": "graph_build_rkArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "graph_build_tree",
+    "description": "Build a hierarchical Tree graph (RAPTOR-style). Clusters chunks and creates summaries at multiple levels.\n\n    If no Corpus.json exists and input_directory is provided, auto-prepares the corpus first.\n\n    Args:\n        dataset_name: Name of the dataset (must have corpus prepared, or pass input_directory)\n        force_rebuild: Force rebuild even if graph exists\n        input_directory: Path to source files for auto corpus preparation (optional)\n\n    Returns:\n        graph_id: str, status: str, num_nodes: int, num_edges: int\n    ",
+    "inputSchema": {
+      "properties": {
+        "dataset_name": {
+          "title": "Dataset Name",
+          "type": "string"
+        },
+        "force_rebuild": {
+          "default": false,
+          "title": "Force Rebuild",
+          "type": "boolean"
+        },
+        "input_directory": {
+          "default": null,
+          "title": "Input Directory",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dataset_name"
+      ],
+      "title": "graph_build_treeArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "graph_build_tree_balanced",
+    "description": "Build a balanced Tree graph using K-Means clustering for more uniform cluster sizes.\n\n    If no Corpus.json exists and input_directory is provided, auto-prepares the corpus first.\n\n    Args:\n        dataset_name: Name of the dataset (must have corpus prepared, or pass input_directory)\n        force_rebuild: Force rebuild even if graph exists\n        input_directory: Path to source files for auto corpus preparation (optional)\n\n    Returns:\n        graph_id: str, status: str, num_nodes: int, num_edges: int\n    ",
+    "inputSchema": {
+      "properties": {
+        "dataset_name": {
+          "title": "Dataset Name",
+          "type": "string"
+        },
+        "force_rebuild": {
+          "default": false,
+          "title": "Force Rebuild",
+          "type": "boolean"
+        },
+        "input_directory": {
+          "default": null,
+          "title": "Input Directory",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dataset_name"
+      ],
+      "title": "graph_build_tree_balancedArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "graph_build_passage",
+    "description": "Build a Passage graph where nodes are text passages linked by shared entities.\n\n    If no Corpus.json exists and input_directory is provided, auto-prepares the corpus first.\n\n    Args:\n        dataset_name: Name of the dataset (must have corpus prepared, or pass input_directory)\n        force_rebuild: Force rebuild even if graph exists\n        input_directory: Path to source files for auto corpus preparation (optional)\n\n    Returns:\n        graph_id: str, status: str, num_nodes: int, num_edges: int\n    ",
+    "inputSchema": {
+      "properties": {
+        "dataset_name": {
+          "title": "Dataset Name",
+          "type": "string"
+        },
+        "force_rebuild": {
+          "default": false,
+          "title": "Force Rebuild",
+          "type": "boolean"
+        },
+        "input_directory": {
+          "default": null,
+          "title": "Input Directory",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dataset_name"
+      ],
+      "title": "graph_build_passageArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "entity_vdb_build",
+    "description": "Build a vector database index from entities in a graph. Required before entity_vdb_search.\n\n    Args:\n        graph_reference_id: ID of the graph (e.g. 'Fictional_Test_ERGraph')\n        vdb_collection_name: Name for the VDB collection (e.g. 'Fictional_Test_entities')\n        force_rebuild: Force rebuild even if VDB exists\n\n    Returns:\n        status: str, vdb_id: str, num_entities_indexed: int\n    ",
+    "inputSchema": {
+      "properties": {
+        "graph_reference_id": {
+          "title": "Graph Reference Id",
+          "type": "string"
+        },
+        "vdb_collection_name": {
+          "title": "Vdb Collection Name",
+          "type": "string"
+        },
+        "force_rebuild": {
+          "default": false,
+          "title": "Force Rebuild",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "graph_reference_id",
+        "vdb_collection_name"
+      ],
+      "title": "entity_vdb_buildArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "entity_vdb_search",
+    "description": "Search for entities similar to a query using vector similarity.\n\n    Args:\n        vdb_reference_id: ID of the entity VDB to search\n        query_text: Natural language search query\n        top_k: Number of results to return\n\n    Returns:\n        similar_entities: list of {entity_name: str, score: float, node_id: str}\n    ",
+    "inputSchema": {
+      "properties": {
+        "vdb_reference_id": {
+          "title": "Vdb Reference Id",
+          "type": "string"
+        },
+        "query_text": {
+          "title": "Query Text",
+          "type": "string"
+        },
+        "top_k": {
+          "default": 5,
+          "title": "Top K",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "vdb_reference_id",
+        "query_text"
+      ],
+      "title": "entity_vdb_searchArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "entity_onehop",
+    "description": "Find one-hop neighbor entities in the graph.\n\n    Args:\n        entity_ids: List of entity IDs to find neighbors for\n        graph_reference_id: ID of the graph to search\n\n    Returns:\n        neighbors: {entity_id: [{...}]}, total_neighbors_found: int, message: str\n    ",
+    "inputSchema": {
+      "properties": {
+        "entity_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Entity Ids",
+          "type": "array"
+        },
+        "graph_reference_id": {
+          "title": "Graph Reference Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity_ids",
+        "graph_reference_id"
+      ],
+      "title": "entity_onehopArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "entity_ppr",
+    "description": "Run Personalized PageRank from seed entities to find related entities.\n\n    Args:\n        graph_reference_id: ID of the graph\n        seed_entity_ids: Starting entity IDs for PPR\n        top_k: Number of top-ranked entities to return\n\n    Returns:\n        ranked_entities: list of [entity_id: str, score: float]\n    ",
+    "inputSchema": {
+      "properties": {
+        "graph_reference_id": {
+          "title": "Graph Reference Id",
+          "type": "string"
+        },
+        "seed_entity_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Seed Entity Ids",
+          "type": "array"
+        },
+        "top_k": {
+          "default": 10,
+          "title": "Top K",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "graph_reference_id",
+        "seed_entity_ids"
+      ],
+      "title": "entity_pprArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "entity_agent",
+    "description": "Use LLM to extract entities from text guided by a query.\n\n    Args:\n        query_text: Query to guide entity extraction\n        text_context: Text content to extract entities from\n        target_entity_types: Entity types to focus on (e.g. ['person', 'organization'])\n        max_entities: Maximum entities to extract\n\n    Returns:\n        extracted_entities: list of {entity_name: str, entity_type: str, description?: str, extraction_confidence?: float}\n    ",
+    "inputSchema": {
+      "properties": {
+        "query_text": {
+          "title": "Query Text",
+          "type": "string"
+        },
+        "text_context": {
+          "title": "Text Context",
+          "type": "string"
+        },
+        "target_entity_types": {
+          "default": null,
+          "items": {
+            "type": "string"
+          },
+          "title": "Target Entity Types",
+          "type": "array"
+        },
+        "max_entities": {
+          "default": 10,
+          "title": "Max Entities",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "query_text",
+        "text_context"
+      ],
+      "title": "entity_agentArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "entity_link",
+    "description": "Link entity mentions to canonical entities in a VDB.\n\n    Args:\n        source_entities: Entity mention strings to link\n        vdb_reference_id: VDB to search for canonical matches\n        similarity_threshold: Minimum score to consider a match\n\n    Returns:\n        linked_entities_results: list of {source_entity_mention: str, linked_entity_id?: str, similarity_score?: float, link_status: str}\n    ",
+    "inputSchema": {
+      "properties": {
+        "source_entities": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Entities",
+          "type": "array"
+        },
+        "vdb_reference_id": {
+          "title": "Vdb Reference Id",
+          "type": "string"
+        },
+        "similarity_threshold": {
+          "default": 0.5,
+          "title": "Similarity Threshold",
+          "type": "number"
+        }
+      },
+      "required": [
+        "source_entities",
+        "vdb_reference_id"
+      ],
+      "title": "entity_linkArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "entity_tfidf",
+    "description": "Rank candidate entities by TF-IDF similarity to a query.\n\n    Args:\n        candidate_entity_ids: Entity IDs to rank\n        query_text: Query to compare against\n        graph_reference_id: Graph containing the entities\n        top_k: Number of top results\n\n    Returns:\n        ranked_entities: list of [entity_id: str, score: float]\n    ",
+    "inputSchema": {
+      "properties": {
+        "candidate_entity_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Candidate Entity Ids",
+          "type": "array"
+        },
+        "query_text": {
+          "title": "Query Text",
+          "type": "string"
+        },
+        "graph_reference_id": {
+          "title": "Graph Reference Id",
+          "type": "string"
+        },
+        "top_k": {
+          "default": 10,
+          "title": "Top K",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "candidate_entity_ids",
+        "query_text",
+        "graph_reference_id"
+      ],
+      "title": "entity_tfidfArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "relationship_onehop",
+    "description": "Get one-hop relationships for given entities.\n\n    Args:\n        entity_ids: Entity IDs to find relationships for\n        graph_reference_id: ID of the graph\n\n    Returns:\n        one_hop_relationships: list of {relationship_id: str, source_node_id: str, target_node_id: str, type: str, description?: str}\n    ",
+    "inputSchema": {
+      "properties": {
+        "entity_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Entity Ids",
+          "type": "array"
+        },
+        "graph_reference_id": {
+          "title": "Graph Reference Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity_ids",
+        "graph_reference_id"
+      ],
+      "title": "relationship_onehopArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "relationship_score_aggregator",
+    "description": "Aggregate entity scores (e.g. from PPR) onto relationships and return top-k.\n\n    Args:\n        entity_scores: Dict mapping entity_id to score\n        graph_reference_id: ID of the graph\n        top_k: Number of top relationships to return\n        aggregation_method: How to combine scores: 'sum', 'average', or 'max'\n\n    Returns:\n        scored_relationships: list of [{relationship_id: str, source_node_id: str, target_node_id: str, type: str}, score: float]\n    ",
+    "inputSchema": {
+      "properties": {
+        "entity_scores": {
+          "additionalProperties": true,
+          "title": "Entity Scores",
+          "type": "object"
+        },
+        "graph_reference_id": {
+          "title": "Graph Reference Id",
+          "type": "string"
+        },
+        "top_k": {
+          "default": 10,
+          "title": "Top K",
+          "type": "integer"
+        },
+        "aggregation_method": {
+          "default": "sum",
+          "title": "Aggregation Method",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity_scores",
+        "graph_reference_id"
+      ],
+      "title": "relationship_score_aggregatorArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "relationship_agent",
+    "description": "Use LLM to extract relationships from text context.\n\n    Args:\n        query_text: Query to guide extraction\n        text_context: Text to extract relationships from\n        context_entity_names: Known entity names for context\n        target_relationship_types: Relationship types to focus on\n        max_relationships: Maximum relationships to extract\n\n    Returns:\n        extracted_relationships: list of {relationship_id: str, source_node_id: str, target_node_id: str, type: str}\n    ",
+    "inputSchema": {
+      "properties": {
+        "query_text": {
+          "title": "Query Text",
+          "type": "string"
+        },
+        "text_context": {
+          "title": "Text Context",
+          "type": "string"
+        },
+        "context_entity_names": {
+          "default": null,
+          "items": {
+            "type": "string"
+          },
+          "title": "Context Entity Names",
+          "type": "array"
+        },
+        "target_relationship_types": {
+          "default": null,
+          "items": {
+            "type": "string"
+          },
+          "title": "Target Relationship Types",
+          "type": "array"
+        },
+        "max_relationships": {
+          "default": 10,
+          "title": "Max Relationships",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "query_text",
+        "text_context"
+      ],
+      "title": "relationship_agentArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "chunk_from_relationships",
+    "description": "Retrieve text chunks associated with specified relationships.\n\n    Args:\n        target_relationships: List of relationship identifiers (e.g. 'entity1->entity2')\n        document_collection_id: Graph/collection ID to search\n        top_k: Maximum chunks to return\n\n    Returns:\n        relevant_chunks: list of {chunk_id: str, content: str, relevance_score?: float}\n    ",
+    "inputSchema": {
+      "properties": {
+        "target_relationships": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Target Relationships",
+          "type": "array"
+        },
+        "document_collection_id": {
+          "title": "Document Collection Id",
+          "type": "string"
+        },
+        "top_k": {
+          "default": 10,
+          "title": "Top K",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "target_relationships",
+        "document_collection_id"
+      ],
+      "title": "chunk_from_relationshipsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "chunk_occurrence",
+    "description": "Rank chunks by entity pair co-occurrence.\n\n    Args:\n        target_entity_pairs: List of dicts like {\"entity1_id\": \"X\", \"entity2_id\": \"Y\"}\n        document_collection_id: Graph ID to search\n        top_k: Number of top chunks to return\n\n    Returns:\n        ranked_occurrence_chunks: list of {chunk_id: str, content: str, relevance_score?: float}\n    ",
+    "inputSchema": {
+      "properties": {
+        "target_entity_pairs": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Target Entity Pairs",
+          "type": "array"
+        },
+        "document_collection_id": {
+          "title": "Document Collection Id",
+          "type": "string"
+        },
+        "top_k": {
+          "default": 5,
+          "title": "Top K",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "target_entity_pairs",
+        "document_collection_id"
+      ],
+      "title": "chunk_occurrenceArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "chunk_get_text",
+    "description": "Get source text chunks associated with specific entities.\n\n    Args:\n        graph_reference_id: ID of the graph containing the entities\n        entity_ids: List of entity names/IDs to get text for\n        max_chunks_per_entity: Max chunks per entity\n\n    Returns:\n        retrieved_chunks: list of {entity_id?: str, chunk_id: str, text_content: str}, status_message: str\n    ",
+    "inputSchema": {
+      "properties": {
+        "graph_reference_id": {
+          "title": "Graph Reference Id",
+          "type": "string"
+        },
+        "entity_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Entity Ids",
+          "type": "array"
+        },
+        "max_chunks_per_entity": {
+          "default": 5,
+          "title": "Max Chunks Per Entity",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "graph_reference_id",
+        "entity_ids"
+      ],
+      "title": "chunk_get_textArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "graph_analyze",
+    "description": "Get statistics and metrics about a built graph (node count, edge count, centrality, clustering, etc).\n\n    Args:\n        graph_id: ID of the graph to analyze\n\n    Returns:\n        node_count: int, edge_count: int, density: float, avg_degree: float, centrality_stats: {...}, clustering_coefficient: float\n    ",
+    "inputSchema": {
+      "properties": {
+        "graph_id": {
+          "title": "Graph Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "graph_id"
+      ],
+      "title": "graph_analyzeArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "graph_visualize",
+    "description": "Export a graph's structure for visualization (nodes and edges as JSON).\n\n    Args:\n        graph_id: ID of the graph to export\n        output_format: Format - 'JSON_NODES_EDGES' or 'GML'\n\n    Returns:\n        nodes: list of {id: str, label: str, ...}, edges: list of {source: str, target: str, ...}\n    ",
+    "inputSchema": {
+      "properties": {
+        "graph_id": {
+          "title": "Graph Id",
+          "type": "string"
+        },
+        "output_format": {
+          "default": "JSON_NODES_EDGES",
+          "title": "Output Format",
+          "type": "string"
+        }
+      },
+      "required": [
+        "graph_id"
+      ],
+      "title": "graph_visualizeArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "build_communities",
+    "description": "Run Leiden clustering on an existing graph and generate community reports.\n\n    Required by basic_global method. This calls LLM to generate community summaries,\n    so it's more expensive than VDB builds but much cheaper than graph rebuilds.\n\n    Args:\n        dataset_name: Name of the dataset (must have graph built)\n        force_rebuild: Force rebuild even if community data exists on disk\n\n    Returns:\n        status: str, dataset: str, num_communities: int\n    ",
+    "inputSchema": {
+      "properties": {
+        "dataset_name": {
+          "title": "Dataset Name",
+          "type": "string"
+        },
+        "force_rebuild": {
+          "default": false,
+          "title": "Force Rebuild",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "dataset_name"
+      ],
+      "title": "build_communitiesArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "community_detect_from_entities",
+    "description": "Find communities containing the given seed entities.\n\n    Args:\n        graph_reference_id: ID of the graph with community structure\n        seed_entity_ids: Entity IDs to find communities for\n        max_communities: Maximum communities to return\n\n    Returns:\n        relevant_communities: list of {community_id: str, level?: int, title?: str, nodes?: list, description?: str}\n    ",
+    "inputSchema": {
+      "properties": {
+        "graph_reference_id": {
+          "title": "Graph Reference Id",
+          "type": "string"
+        },
+        "seed_entity_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Seed Entity Ids",
+          "type": "array"
+        },
+        "max_communities": {
+          "default": 5,
+          "title": "Max Communities",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "graph_reference_id",
+        "seed_entity_ids"
+      ],
+      "title": "community_detect_from_entitiesArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "community_get_layer",
+    "description": "Get all communities at or below a hierarchy layer depth.\n\n    Args:\n        community_hierarchy_reference_id: Graph ID with community hierarchy\n        max_layer_depth: Maximum layer depth to include (0=top level)\n\n    Returns:\n        communities_in_layers: list of {community_id: str, level?: int, title?: str, nodes?: list, description?: str}\n    ",
+    "inputSchema": {
+      "properties": {
+        "community_hierarchy_reference_id": {
+          "title": "Community Hierarchy Reference Id",
+          "type": "string"
+        },
+        "max_layer_depth": {
+          "default": 1,
+          "title": "Max Layer Depth",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "community_hierarchy_reference_id"
+      ],
+      "title": "community_get_layerArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "subgraph_khop_paths",
+    "description": "Find k-hop paths between entities in a graph.\n\n    Args:\n        graph_reference_id: ID of the graph to search\n        start_entity_ids: Starting entity IDs\n        end_entity_ids: Target entity IDs (if None, explores k-hop neighborhood)\n        k_hops: Maximum number of hops\n        max_paths: Maximum paths to return\n\n    Returns:\n        discovered_paths: list of {path_id: str, segments: [{item_id: str, item_type: str, label?: str}], start_node_id: str, hop_count: int}\n    ",
+    "inputSchema": {
+      "properties": {
+        "graph_reference_id": {
+          "title": "Graph Reference Id",
+          "type": "string"
+        },
+        "start_entity_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Start Entity Ids",
+          "type": "array"
+        },
+        "end_entity_ids": {
+          "default": null,
+          "items": {
+            "type": "string"
+          },
+          "title": "End Entity Ids",
+          "type": "array"
+        },
+        "k_hops": {
+          "default": 2,
+          "title": "K Hops",
+          "type": "integer"
+        },
+        "max_paths": {
+          "default": 10,
+          "title": "Max Paths",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "graph_reference_id",
+        "start_entity_ids"
+      ],
+      "title": "subgraph_khop_pathsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "subgraph_steiner_tree",
+    "description": "Compute a Steiner tree connecting the given terminal entities.\n\n    Args:\n        graph_reference_id: ID of the graph\n        terminal_node_ids: Entity IDs that must be connected (minimum 2)\n\n    Returns:\n        steiner_tree_edges: list of {source: str, target: str, weight?: float}\n    ",
+    "inputSchema": {
+      "properties": {
+        "graph_reference_id": {
+          "title": "Graph Reference Id",
+          "type": "string"
+        },
+        "terminal_node_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Terminal Node Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "graph_reference_id",
+        "terminal_node_ids"
+      ],
+      "title": "subgraph_steiner_treeArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "subgraph_agent_path",
+    "description": "Use LLM to rank candidate paths by relevance to a question.\n\n    Args:\n        user_question: The question to evaluate path relevance against\n        candidate_paths_json: JSON string of candidate PathObject list\n        max_paths: Maximum relevant paths to return\n\n    Returns:\n        relevant_paths: list of {path_id: str, segments: [{item_id: str, item_type: str, label?: str}]}\n    ",
+    "inputSchema": {
+      "properties": {
+        "user_question": {
+          "title": "User Question",
+          "type": "string"
+        },
+        "candidate_paths_json": {
+          "title": "Candidate Paths Json",
+          "type": "string"
+        },
+        "max_paths": {
+          "default": 5,
+          "title": "Max Paths",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "user_question",
+        "candidate_paths_json"
+      ],
+      "title": "subgraph_agent_pathArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_available_resources",
+    "description": "List all currently available graphs, VDBs, communities, sparse matrices, and datasets.",
+    "inputSchema": {
+      "properties": {},
+      "title": "list_available_resourcesArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_config",
+    "description": "Get current DIGIMON configuration (model roles, paths).\n\n    Returns JSON with llm_model, agentic_model, data_root, and working_dir.\n    ",
+    "inputSchema": {
+      "properties": {},
+      "title": "get_configArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "set_agentic_model",
+    "description": "Override the agentic model at runtime.\n\n    The agentic model handles mid-pipeline LLM calls (entity extraction,\n    answer generation, iterative reasoning). Graph building uses the\n    separate llm.model and is unaffected.\n\n    Args:\n        model: Model identifier (e.g. 'gemini/gemini-2.0-flash', 'anthropic/claude-sonnet-4-5-20250929')\n    ",
+    "inputSchema": {
+      "properties": {
+        "model": {
+          "title": "Model",
+          "type": "string"
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "set_agentic_modelArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "auto_compose",
+    "description": "Automatically select and run the best retrieval method for a query.\n\n    An LLM analyzes the query characteristics and available resources,\n    picks from the 10 named methods, then executes it end-to-end.\n\n    Three client modes (increasing control):\n    1. auto_compose \u2014 DIGIMON picks the method (this tool)\n    2. execute_method \u2014 client picks from 10 methods\n    3. Individual operator tools \u2014 client composes everything\n\n    Args:\n        query: The question to answer\n        dataset_name: Name of the dataset (must have graph built)\n        auto_build: Auto-build missing prerequisites (VDBs, sparse matrices, communities)\n        return_context_only: If True, return raw context instead of generated answer\n    ",
+    "inputSchema": {
+      "properties": {
+        "query": {
+          "title": "Query",
+          "type": "string"
+        },
+        "dataset_name": {
+          "title": "Dataset Name",
+          "type": "string"
+        },
+        "auto_build": {
+          "default": true,
+          "title": "Auto Build",
+          "type": "boolean"
+        },
+        "return_context_only": {
+          "default": false,
+          "title": "Return Context Only",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "query",
+        "dataset_name"
+      ],
+      "title": "auto_composeArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "relationship_vdb_build",
+    "description": "Build a vector database index from relationships in a graph. Required before relationship_vdb_search.\n\n    Args:\n        graph_reference_id: ID of the graph (e.g. 'Fictional_Test_ERGraph')\n        vdb_collection_name: Name for the VDB collection (e.g. 'Fictional_Test_relations')\n        force_rebuild: Force rebuild even if VDB exists\n\n    Returns:\n        status: str, vdb_id: str, num_relationships_indexed: int\n    ",
+    "inputSchema": {
+      "properties": {
+        "graph_reference_id": {
+          "title": "Graph Reference Id",
+          "type": "string"
+        },
+        "vdb_collection_name": {
+          "title": "Vdb Collection Name",
+          "type": "string"
+        },
+        "force_rebuild": {
+          "default": false,
+          "title": "Force Rebuild",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "graph_reference_id",
+        "vdb_collection_name"
+      ],
+      "title": "relationship_vdb_buildArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "relationship_vdb_search",
+    "description": "Search for relationships similar to a query using vector similarity.\n\n    Args:\n        vdb_reference_id: ID of the relationship VDB to search\n        query_text: Natural language search query\n        top_k: Number of results to return\n        score_threshold: Minimum similarity score (optional)\n\n    Returns:\n        similar_relationships: list of [relationship_id: str, description: str, score: float]\n    ",
+    "inputSchema": {
+      "properties": {
+        "vdb_reference_id": {
+          "title": "Vdb Reference Id",
+          "type": "string"
+        },
+        "query_text": {
+          "title": "Query Text",
+          "type": "string"
+        },
+        "top_k": {
+          "default": 10,
+          "title": "Top K",
+          "type": "integer"
+        },
+        "score_threshold": {
+          "default": null,
+          "title": "Score Threshold",
+          "type": "number"
+        }
+      },
+      "required": [
+        "vdb_reference_id",
+        "query_text"
+      ],
+      "title": "relationship_vdb_searchArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "build_sparse_matrices",
+    "description": "Build sparse CSR matrices mapping entities\u2192relationships\u2192chunks for a graph.\n\n    Required by fastgraphrag and hipporag methods. Persists matrices to disk.\n\n    Args:\n        dataset_name: Name of the dataset (must have graph built)\n        force_rebuild: Force rebuild even if matrices exist on disk\n\n    Returns:\n        status: str, dataset: str, entity_to_rel_shape: [int, int], rel_to_chunk_shape: [int, int]\n    ",
+    "inputSchema": {
+      "properties": {
+        "dataset_name": {
+          "title": "Dataset Name",
+          "type": "string"
+        },
+        "force_rebuild": {
+          "default": false,
+          "title": "Force Rebuild",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "dataset_name"
+      ],
+      "title": "build_sparse_matricesArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "chunk_aggregator",
+    "description": "Propagate relationship/PPR scores to chunks via sparse matrices.\n\n    Used in FastGraphRAG and HippoRAG pipelines. Requires sparse matrices\n    built during graph construction.\n\n    Args:\n        relationship_scores: Dict mapping relationship_id to score\n        graph_reference_id: Graph ID containing the chunks\n        top_k: Maximum chunks to return\n\n    Returns:\n        ranked_aggregated_chunks: list of {chunk_id: str, content: str, relevance_score?: float}\n    ",
+    "inputSchema": {
+      "properties": {
+        "relationship_scores": {
+          "additionalProperties": true,
+          "title": "Relationship Scores",
+          "type": "object"
+        },
+        "graph_reference_id": {
+          "title": "Graph Reference Id",
+          "type": "string"
+        },
+        "top_k": {
+          "default": 10,
+          "title": "Top K",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "relationship_scores",
+        "graph_reference_id"
+      ],
+      "title": "chunk_aggregatorArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "meta_extract_entities",
+    "description": "Use LLM to extract entity mentions from query text.\n\n    Useful when you need to identify entities in a question before linking\n    them to graph entities. Used in HippoRAG, ToG, and DALK pipelines.\n\n    Args:\n        query_text: The question or text to extract entities from\n\n    Returns:\n        entities: list of {entity_name: str, score: float}\n    ",
+    "inputSchema": {
+      "properties": {
+        "query_text": {
+          "title": "Query Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query_text"
+      ],
+      "title": "meta_extract_entitiesArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "meta_generate_answer",
+    "description": "Generate an answer from query + retrieved text chunks using LLM.\n\n    Terminal operator in most retrieval pipelines. Pass retrieved chunks\n    as context for the LLM to synthesize an answer.\n\n    Args:\n        query_text: The question to answer\n        context_chunks: List of text strings providing context\n        system_prompt: Optional custom system prompt (supports {context_data} placeholder)\n\n    Returns:\n        Plain text string (LLM-generated answer)\n    ",
+    "inputSchema": {
+      "properties": {
+        "query_text": {
+          "title": "Query Text",
+          "type": "string"
+        },
+        "context_chunks": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Context Chunks",
+          "type": "array"
+        },
+        "system_prompt": {
+          "default": null,
+          "title": "System Prompt",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query_text",
+        "context_chunks"
+      ],
+      "title": "meta_generate_answerArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "meta_pcst_optimize",
+    "description": "Optimize entity+relationship sets into a compact subgraph using PCST.\n\n    Prize-Collecting Steiner Tree selects the most informative nodes and\n    edges based on scores. Used in the GR method pipeline.\n\n    Args:\n        entity_ids: List of entity names/IDs\n        entity_scores: Dict mapping entity_id to score (prize)\n        relationship_triples: List of dicts with src_id, tgt_id, weight keys\n        graph_reference_id: Graph ID for context\n\n    Returns:\n        nodes: list of str, edges: list of [source: str, target: str]\n    ",
+    "inputSchema": {
+      "properties": {
+        "entity_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Entity Ids",
+          "type": "array"
+        },
+        "entity_scores": {
+          "additionalProperties": true,
+          "title": "Entity Scores",
+          "type": "object"
+        },
+        "relationship_triples": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Relationship Triples",
+          "type": "array"
+        },
+        "graph_reference_id": {
+          "title": "Graph Reference Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity_ids",
+        "entity_scores",
+        "relationship_triples",
+        "graph_reference_id"
+      ],
+      "title": "meta_pcst_optimizeArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "meta_decompose_question",
+    "description": "Decompose a complex question into independent sub-questions (AoT-style).\n\n    Breaks a multi-hop question into focused sub-questions that can each be\n    answered via separate retrieval chains, then combined with meta_synthesize_answers.\n\n    Args:\n        query_text: The complex question to decompose\n        max_questions: Maximum number of sub-questions to generate\n\n    Returns:\n        sub_questions: list of {entity_name: str (sub-question text), entity_type: \"sub_question\", score: float}\n    ",
+    "inputSchema": {
+      "properties": {
+        "query_text": {
+          "title": "Query Text",
+          "type": "string"
+        },
+        "max_questions": {
+          "default": 5,
+          "title": "Max Questions",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "query_text"
+      ],
+      "title": "meta_decompose_questionArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "meta_synthesize_answers",
+    "description": "Synthesize sub-answers into a final coherent answer.\n\n    Combines answers from parallel retrieval chains (e.g., from decomposed\n    sub-questions) into a single answer addressing the original question.\n\n    Args:\n        query_text: The original question\n        sub_answers: List of sub-answer strings to synthesize\n        synthesis_style: Style of synthesis: 'concise', 'detailed', or 'bullet_points'\n\n    Returns:\n        Plain text string (synthesized answer)\n    ",
+    "inputSchema": {
+      "properties": {
+        "query_text": {
+          "title": "Query Text",
+          "type": "string"
+        },
+        "sub_answers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Sub Answers",
+          "type": "array"
+        },
+        "synthesis_style": {
+          "default": "concise",
+          "title": "Synthesis Style",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query_text",
+        "sub_answers"
+      ],
+      "title": "meta_synthesize_answersArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_operators",
+    "description": "List all 24 operators with their I/O slots, cost tiers, and when to use.\n\n    Returns the full operator catalog. Each entry includes operator_id,\n    display_name, category, input/output slots (name + kind), cost_tier,\n    requires_* flags, and when_to_use guidance.\n    ",
+    "inputSchema": {
+      "properties": {},
+      "title": "list_operatorsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_compatible_successors",
+    "description": "Get operators that can consume the outputs of a given operator.\n\n    Use this to explore valid operator chains. For example,\n    get_compatible_successors(\"entity.ppr\") returns operators that\n    accept ENTITY_SET or SCORE_VECTOR as input.\n\n    Args:\n        operator_id: The operator to find successors for (e.g. 'entity.ppr')\n    ",
+    "inputSchema": {
+      "properties": {
+        "operator_id": {
+          "title": "Operator Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operator_id"
+      ],
+      "title": "get_compatible_successorsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_methods",
+    "description": "List all 10 available retrieval methods with rich metadata.\n\n    Returns profiles including operator chains, requirements (VDB, community,\n    sparse matrices), cost tiers, and guidance on when to use each method.\n    Use this to decide which method to pass to execute_method.\n    ",
+    "inputSchema": {
+      "properties": {},
+      "title": "list_methodsArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_graph_types",
+    "description": "List all 5 available graph types with descriptions and guidance.\n\n    Returns information about each graph type to help decide which to build.\n    ",
+    "inputSchema": {
+      "properties": {},
+      "title": "list_graph_typesArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "execute_method",
+    "description": "Run a named retrieval method pipeline end-to-end.\n\n    This executes a complete retrieval pipeline (e.g., basic_local runs:\n    entity VDB search -> relationship one-hop -> chunk co-occurrence -> answer).\n\n    Use list_methods to see all available methods and their requirements.\n\n    Args:\n        method_name: One of: basic_local, basic_global, lightrag, fastgraphrag,\n                     hipporag, tog, gr, dalk, kgp, med\n        query: The question to answer\n        dataset_name: Name of the dataset (must have graph + VDB built)\n        return_context_only: If True, return raw retrieved context instead of\n                           a generated answer. Useful when the calling agent\n                           wants to synthesize the answer itself.\n        auto_build: If True, automatically build all missing prerequisites before\n                   running: entity VDB, relationship VDB, sparse matrices, and\n                   community structure. Community building calls LLM (most expensive).\n    ",
+    "inputSchema": {
+      "properties": {
+        "method_name": {
+          "title": "Method Name",
+          "type": "string"
+        },
+        "query": {
+          "title": "Query",
+          "type": "string"
+        },
+        "dataset_name": {
+          "title": "Dataset Name",
+          "type": "string"
+        },
+        "return_context_only": {
+          "default": false,
+          "title": "Return Context Only",
+          "type": "boolean"
+        },
+        "auto_build": {
+          "default": false,
+          "title": "Auto Build",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "method_name",
+        "query",
+        "dataset_name"
+      ],
+      "title": "execute_methodArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "convert_modality",
+    "description": "Convert data between graph, table, and vector modalities.\n\n    Supported conversion paths (call list_modality_conversions for full details):\n      graph -> table: modes = nodes, edges, adjacency\n      table -> graph: modes = entity_rel, adjacency, auto\n      graph -> vector: modes = node_embed, features\n      table -> vector: modes = stats, row_embed\n      vector -> graph: modes = similarity, clustering\n      vector -> table: modes = direct, pca, similarity\n\n    Args:\n        source_format: \"graph\", \"table\", or \"vector\"\n        target_format: \"graph\", \"table\", or \"vector\"\n        graph_reference_id: Graph ID from context (for graph source)\n        table_path: CSV file path (for table source)\n        table_json: Inline JSON array of rows (for table source)\n        vector_json: Inline JSON 2D array (for vector source)\n        mode: Conversion strategy, or \"auto\" for default\n        embedding_provider: \"local\" (sentence-transformers), \"digimon\" (configured model), or \"hash\" (testing)\n        similarity_threshold: For vector->graph similarity mode (0.0-1.0)\n\n    Returns:\n        data: converted data (JSON rows for table, node/edge dict for graph, nested array for vector),\n        format: str, mode: str, shape: [rows, cols], conversion_time_ms: float\n    ",
+    "inputSchema": {
+      "properties": {
+        "source_format": {
+          "title": "Source Format",
+          "type": "string"
+        },
+        "target_format": {
+          "title": "Target Format",
+          "type": "string"
+        },
+        "graph_reference_id": {
+          "default": "",
+          "title": "Graph Reference Id",
+          "type": "string"
+        },
+        "table_path": {
+          "default": "",
+          "title": "Table Path",
+          "type": "string"
+        },
+        "table_json": {
+          "default": "",
+          "title": "Table Json",
+          "type": "string"
+        },
+        "vector_json": {
+          "default": "",
+          "title": "Vector Json",
+          "type": "string"
+        },
+        "mode": {
+          "default": "auto",
+          "title": "Mode",
+          "type": "string"
+        },
+        "embedding_provider": {
+          "default": "local",
+          "title": "Embedding Provider",
+          "type": "string"
+        },
+        "similarity_threshold": {
+          "default": 0.5,
+          "title": "Similarity Threshold",
+          "type": "number"
+        }
+      },
+      "required": [
+        "source_format",
+        "target_format"
+      ],
+      "title": "convert_modalityArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "validate_conversion",
+    "description": "Validate round-trip conversion quality by converting through a sequence of formats.\n\n    Example: format_sequence=\"graph,table,graph\" converts graph->table->graph and\n    measures how much structure is preserved.\n\n    Args:\n        format_sequence: Comma-separated format sequence (e.g. \"graph,table,graph\")\n        graph_reference_id: Graph ID if starting from graph\n        table_json: JSON rows if starting from table\n        vector_json: JSON 2D array if starting from vector\n        mode_sequence: Comma-separated modes for each step (optional, defaults to \"auto\")\n        embedding_provider: \"local\", \"digimon\", or \"hash\"\n\n    Returns:\n        preservation_score: float (0-1), entity_preservation: float,\n        edge_preservation: float, warnings: list[str], steps: list[{from, to, mode, shape, time_ms}]\n    ",
+    "inputSchema": {
+      "properties": {
+        "format_sequence": {
+          "title": "Format Sequence",
+          "type": "string"
+        },
+        "graph_reference_id": {
+          "default": "",
+          "title": "Graph Reference Id",
+          "type": "string"
+        },
+        "table_json": {
+          "default": "",
+          "title": "Table Json",
+          "type": "string"
+        },
+        "vector_json": {
+          "default": "",
+          "title": "Vector Json",
+          "type": "string"
+        },
+        "mode_sequence": {
+          "default": "",
+          "title": "Mode Sequence",
+          "type": "string"
+        },
+        "embedding_provider": {
+          "default": "local",
+          "title": "Embedding Provider",
+          "type": "string"
+        }
+      },
+      "required": [
+        "format_sequence"
+      ],
+      "title": "validate_conversionArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "select_analysis_mode",
+    "description": "Recommend the best analysis modality (graph, table, vector, or cross-modal) for a research question.\n\n    Uses an LLM to analyze the question type and recommend the optimal data modality\n    plus a suggested workflow of DIGIMON tool calls.\n\n    Args:\n        research_question: The question to analyze\n        dataset_name: Name of the dataset to check available resources\n\n    Returns:\n        recommended_mode: str, confidence: float, reasoning: str,\n        suggested_steps: list[str]\n    ",
+    "inputSchema": {
+      "properties": {
+        "research_question": {
+          "title": "Research Question",
+          "type": "string"
+        },
+        "dataset_name": {
+          "default": "",
+          "title": "Dataset Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "research_question"
+      ],
+      "title": "select_analysis_modeArguments",
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_modality_conversions",
+    "description": "List all supported cross-modal conversion paths with their modes and descriptions.\n\n    Discovery tool for agents. Shows what conversions are available, which modes\n    each supports, and whether embeddings are required.\n\n    Returns:\n        list of {source_format, target_format, mode, description, requires_embedding}\n    ",
+    "inputSchema": {
+      "properties": {},
+      "title": "list_modality_conversionsArguments",
+      "type": "object"
+    }
+  }
+]
