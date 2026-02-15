@@ -45,12 +45,16 @@ def extract_tool_calls(turn_raw: object) -> list[dict]:
 
     for item in items:
         if isinstance(item, McpToolCallItem):
+            error_text = getattr(item, "error", None)
+            result_text = getattr(item, "result", None)
             calls.append({
                 "server": getattr(item, "server", ""),
                 "tool": getattr(item, "tool", ""),
                 "status": str(getattr(item, "status", "")),
-                "has_result": getattr(item, "result", None) is not None,
-                "has_error": getattr(item, "error", None) is not None,
+                "has_result": result_text is not None,
+                "has_error": error_text is not None,
+                "error": str(error_text)[:500] if error_text else None,
+                "result_preview": str(result_text)[:200] if result_text else None,
             })
     return calls
 
@@ -58,20 +62,29 @@ def extract_tool_calls(turn_raw: object) -> list[dict]:
 # --- Prompt ---
 
 SYSTEM_PROMPT = """\
-You are a QA research assistant with access to knowledge graph search tools via MCP.
-The tools let you search entities, traverse relationships, retrieve source text, and generate answers.
-Use them to answer the question accurately and concisely."""
+You are a QA research assistant. You have ONE MCP server: digimon-kgrag.
+It has a knowledge graph built from the dataset with entity/relationship/chunk search tools.
+
+To answer a question, call auto_compose like this:
+  auto_compose(query="<the question>", dataset_name="<dataset>", auto_build=true)
+
+It returns the answer directly. Do NOT call list_available_resources, get_config, \
+list_mcp_resources, or any other discovery tools. Go straight to auto_compose.
+
+CRITICAL: Your final answer must be ONLY the bare answer — no explanation, no sentences.
+
+Examples:
+  Q: Are both Mount Everest and K2 located in Asia?  A: yes
+  Q: What instrument did the lead singer of The Beatles play?  A: guitar"""
 
 
 def build_prompt(question: str, dataset_name: str) -> str:
     """Build the user prompt for the agent."""
     return (
-        f"Dataset: '{dataset_name}' (graph and indexes already built).\n\n"
+        f"Dataset: '{dataset_name}'\n\n"
         f"Question: {question}\n\n"
-        f"Use the available MCP tools to search the knowledge graph, retrieve relevant "
-        f"context, and answer the question. Start by searching for key entities from the "
-        f"question, then follow relationships and retrieve source text.\n\n"
-        f"Give your final answer as a concise phrase (a few words, not a full sentence)."
+        f"Call auto_compose(query=\"{question}\", dataset_name=\"{dataset_name}\", "
+        f"auto_build=true) and reply with ONLY the answer."
     )
 
 
@@ -90,6 +103,20 @@ def load_questions(dataset_path: str, n: int | None = None) -> list[dict]:
     if n:
         questions = questions[:n]
     return questions
+
+
+# MCP server config for the DIGIMON KG-RAG server (only server the agent needs)
+DIGIMON_MCP_SERVERS = {
+    "digimon-kgrag": {
+        "command": "/home/brian/miniconda3/envs/digimon/bin/python",
+        "args": ["-u", str(Path(__file__).parent.parent / "digimon_mcp_stdio_server.py")],
+        "env": {
+            "CLAUDECODE": "",
+            # Use direct API model for mid-pipeline LLM calls (not codex — avoids recursive agent spawn)
+            "DIGIMON_AGENTIC_MODEL": "deepseek/deepseek-chat",
+        },
+    },
+}
 
 
 async def run_agent(
@@ -122,6 +149,7 @@ async def run_agent(
             approval_policy="never",
             sandbox_mode="workspace-write",
             model_reasoning_effort=reasoning_effort,
+            mcp_servers=DIGIMON_MCP_SERVERS,
         )
         elapsed = time.monotonic() - t0
 
@@ -253,19 +281,27 @@ async def main() -> None:
             # Tool call summary
             tool_names = [tc["tool"] for tc in tool_calls]
             n_tools = len(tool_calls)
+            # Separate DIGIMON tools from Codex built-in discovery
+            digimon_tools = [t for t in tool_names if "digimon" in t or t in (
+                "auto_compose", "execute_method", "list_operators",
+                "entity_vdb_search", "relationship_onehop", "chunk_occurrence",
+                "meta_generate_answer", "list_available_resources", "get_config",
+            )]
+            discovery_tools = [t for t in tool_names if t not in digimon_tools]
 
             # Token counts from SDK
             input_tokens = usage.get("input_tokens", 0)
             output_tokens = usage.get("output_tokens", 0)
             cached_tokens = usage.get("cached_input_tokens", 0)
+            fresh_tokens = input_tokens - cached_tokens
 
             # Print results
             if error:
                 print(f"  ERROR: {error}")
             print(f"  Predicted: {predicted[:200]}")
             print(f"  EM={em}  F1={f1:.2f}  ({elapsed:.1f}s, ${cost:.4f})")
-            print(f"  Tools: {n_tools} calls {tool_names}")
-            print(f"  Tokens: {input_tokens} in ({cached_tokens} cached) + {output_tokens} out")
+            print(f"  Tools: {n_tools} total — {len(digimon_tools)} digimon {digimon_tools}, {len(discovery_tools)} discovery {discovery_tools}")
+            print(f"  Tokens: {fresh_tokens:,} fresh + {cached_tokens:,} cached = {input_tokens:,} in, {output_tokens:,} out")
 
             log_file.write(
                 f"  Predicted: {predicted}\n"

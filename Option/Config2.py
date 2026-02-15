@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 import os
+import sys
 from dataclasses import field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
@@ -11,6 +12,10 @@ from Core.Utils.YamlModel import YamlModel
 import json
 from pathlib import Path
 # from Core.Common.Logger import logger  # Moved to inside parse to avoid circular import
+
+def _config_log(msg: str) -> None:
+    """Print config messages to stderr (not stdout) to avoid corrupting MCP stdio transport."""
+    print(msg, file=sys.stderr)
 
 class WorkingParams(BaseModel):
     """Working parameters"""
@@ -210,44 +215,44 @@ class Config(WorkingParams, YamlModel):
                     final_config_data = yaml.safe_load(f)
                     if final_config_data and 'llm' in final_config_data and 'embedding' in final_config_data:
                         loaded_from_file = True
-                        print(f"INFO [Config.default]: Loaded default config from {default_yaml_path_primary}")
+                        _config_log(f"INFO [Config.default]: Loaded default config from {default_yaml_path_primary}")
             if not loaded_from_file and os.path.exists(default_yaml_path_secondary):
-                print(f"WARNING [Config.default]: {default_yaml_path_primary} not found or incomplete. Attempting to load from {default_yaml_path_secondary}.")
+                _config_log(f"WARNING [Config.default]: {default_yaml_path_primary} not found or incomplete. Attempting to load from {default_yaml_path_secondary}.")
                 with open(default_yaml_path_secondary, 'r') as f:
                     final_config_data = yaml.safe_load(f)
                     if final_config_data and 'llm' in final_config_data and 'embedding' in final_config_data:
                         loaded_from_file = True
-                        print(f"INFO [Config.default]: Loaded default config from {default_yaml_path_secondary}")
+                        _config_log(f"INFO [Config.default]: Loaded default config from {default_yaml_path_secondary}")
         except Exception as e:
-            print(f"ERROR [Config.default]: Error loading default config from YAML files ({default_yaml_path_primary}, {default_yaml_path_secondary}): {e}. Proceeding with programmatic defaults for missing sections.")
+            _config_log(f"ERROR [Config.default]: Error loading default config from YAML files ({default_yaml_path_primary}, {default_yaml_path_secondary}): {e}. Proceeding with programmatic defaults for missing sections.")
             if not isinstance(final_config_data, dict):
                 final_config_data = {}
         # Ensure all required fields have at least minimal valid defaults if not loaded.
         if 'llm' not in final_config_data or not isinstance(final_config_data.get('llm'), dict):
-            print("WARNING [Config.default]: LLM config not found or invalid in default YAMLs/data, creating minimal programmatic default LLMConfig.")
+            _config_log("WARNING [Config.default]: LLM config not found or invalid in default YAMLs/data, creating minimal programmatic default LLMConfig.")
             final_config_data['llm'] = LLMConfig(api_type=LLMType.OPENAI, model="gpt-3.5-turbo", api_key="YOUR_API_KEY_OR_PLACEHOLDER").model_dump()
         if 'embedding' not in final_config_data or not isinstance(final_config_data.get('embedding'), dict):
-            print("WARNING [Config.default]: Embedding config not found or invalid in default YAMLs/data, creating minimal programmatic default EmbeddingConfig.")
+            _config_log("WARNING [Config.default]: Embedding config not found or invalid in default YAMLs/data, creating minimal programmatic default EmbeddingConfig.")
             final_config_data['embedding'] = EmbeddingConfig(api_type=EmbeddingType.OPENAI, model="text-embedding-ada-002", api_key="YOUR_API_KEY_OR_PLACEHOLDER").model_dump()
         if 'graph' not in final_config_data or not isinstance(final_config_data.get('graph'), dict):
-            print("WARNING [Config.default]: Graph config not found in default YAMLs/data, creating default GraphConfig.")
+            _config_log("WARNING [Config.default]: Graph config not found in default YAMLs/data, creating default GraphConfig.")
             final_config_data['graph'] = GraphConfig().model_dump()
         if 'chunk' not in final_config_data or not isinstance(final_config_data.get('chunk'), dict):
-            print("WARNING [Config.default]: Chunk config not found in default YAMLs/data, creating default ChunkConfig.")
+            _config_log("WARNING [Config.default]: Chunk config not found in default YAMLs/data, creating default ChunkConfig.")
             final_config_data['chunk'] = ChunkConfig().model_dump()
         if 'retriever' not in final_config_data or not isinstance(final_config_data.get('retriever'), dict):
-            print("WARNING [Config.default]: Retriever config not found or invalid in default YAMLs/data, creating default RetrieverConfig.")
+            _config_log("WARNING [Config.default]: Retriever config not found or invalid in default YAMLs/data, creating default RetrieverConfig.")
             final_config_data['retriever'] = RetrieverConfig().model_dump()
         if 'query_config' not in final_config_data or not isinstance(final_config_data.get('query_config'), dict):
-            print("WARNING [Config.default]: Query config (query_config) not found or invalid in default YAMLs/data, creating default QueryConfig.")
+            _config_log("WARNING [Config.default]: Query config (query_config) not found or invalid in default YAMLs/data, creating default QueryConfig.")
             final_config_data['query_config'] = QueryConfig().model_dump()
         try:
             instance = cls(**final_config_data)
-            print("INFO [Config.default]: Successfully created default Config instance.")
+            _config_log("INFO [Config.default]: Successfully created default Config instance.")
             return instance
         except Exception as e:
-            print(f"ERROR [Config.default]: CRITICAL: Failed to instantiate Config with final_config_data. Error: {e}")
-            print(f"ERROR [Config.default]: Final config data used: {final_config_data}")
+            _config_log(f"ERROR [Config.default]: CRITICAL: Failed to instantiate Config with final_config_data. Error: {e}")
+            _config_log(f"ERROR [Config.default]: Final config data used: {final_config_data}")
             raise
 
     @property

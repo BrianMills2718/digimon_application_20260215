@@ -2169,12 +2169,13 @@ async def convert_modality(
     else:
         return json.dumps({"error": f"Unknown source_format: {source_format!r}"})
 
-    # --- Get embedding provider if needed ---
+    # --- Get embedding provider ---
     provider = None
+    provider_error = None
     try:
         provider = get_embedding_provider(embedding_provider, _state)
-    except ValueError:
-        pass  # Will fail later if actually needed
+    except ValueError as e:
+        provider_error = str(e)
 
     # --- Run conversion ---
     try:
@@ -2183,6 +2184,11 @@ async def convert_modality(
             kwargs["threshold"] = similarity_threshold
         result = await convert(source_data, source_format, target_format,
                                mode=mode, provider=provider, **kwargs)
+    except ValueError as e:
+        # If embedding provider failed, surface the original error
+        if provider_error and "embedding provider" in str(e).lower():
+            return json.dumps({"error": f"{e} (provider error: {provider_error})"})
+        return json.dumps({"error": str(e)})
     except Exception as e:
         logger.error(f"convert_modality: {e}", exc_info=True)
         return json.dumps({"error": str(e)})
@@ -2274,13 +2280,18 @@ async def validate_conversion(
         return json.dumps({"error": f"Unknown starting format: {start_format!r}"})
 
     provider = None
+    provider_error = None
     try:
         provider = get_embedding_provider(embedding_provider, _state)
-    except ValueError:
-        pass
+    except ValueError as e:
+        provider_error = str(e)
 
     try:
         result = await validate_round_trip(data, formats, mode_sequence=modes, provider=provider)
+    except ValueError as e:
+        if provider_error and "embedding provider" in str(e).lower():
+            return json.dumps({"error": f"{e} (provider error: {provider_error})"})
+        return json.dumps({"error": str(e)})
     except Exception as e:
         logger.error(f"validate_conversion: {e}", exc_info=True)
         return json.dumps({"error": str(e)})
@@ -2322,8 +2333,8 @@ async def select_analysis_mode(
     if dataset_name:
         try:
             resources = await list_available_resources()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"select_analysis_mode: list_available_resources failed: {e}")
 
     prompt_path = str(Path(__file__).parent / "prompts" / "select_analysis_mode.yaml")
 
@@ -2336,12 +2347,7 @@ async def select_analysis_mode(
         )
     except Exception as e:
         logger.error(f"select_analysis_mode: prompt render failed: {e}")
-        return json.dumps({
-            "recommended_mode": "graph",
-            "confidence": 0.1,
-            "reasoning": f"Fallback: prompt render failed: {e}",
-            "suggested_steps": ["Use graph_analyze to inspect the graph structure"],
-        })
+        return json.dumps({"error": f"Prompt render failed: {e}"})
 
     # Use agentic LLM if available, else fall back to default LLM
     llm = _state.get("agentic_llm")
@@ -2357,12 +2363,7 @@ async def select_analysis_mode(
         )
     except Exception as e:
         logger.error(f"select_analysis_mode: LLM call failed: {e}")
-        return json.dumps({
-            "recommended_mode": "graph",
-            "confidence": 0.1,
-            "reasoning": f"Fallback: LLM call failed: {e}",
-            "suggested_steps": ["Use graph_analyze to inspect the graph structure"],
-        })
+        return json.dumps({"error": f"LLM call failed: {e}"})
 
     return json.dumps(decision.model_dump(), indent=2)
 

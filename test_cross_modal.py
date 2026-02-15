@@ -721,6 +721,90 @@ async def main():
     print()
 
     # =========================================================================
+    # TEST GROUP 12: Edge case handling (bug fix validation)
+    # =========================================================================
+    print("=" * 70)
+    print("TEST GROUP 12: Edge cases and bug fixes")
+    print("=" * 70)
+
+    from Core.AgentTools.cross_modal_tools import (
+        _validate_2d, table_to_vector_stats as tvs,
+        vector_to_table_pca as vtp,
+    )
+
+    # 12a. NaN in DataFrame doesn't crash stats
+    df_with_nan = pd.DataFrame({"a": [1.0, np.nan, 3.0], "b": [np.nan, 5.0, 6.0]})
+    stats_nan = tvs(df_with_nan)
+    nan_in_result = np.isnan(stats_nan).any()
+    report(
+        "stats on NaN DataFrame produces valid (non-NaN) output",
+        not nan_in_result,
+        f"stats={stats_nan.tolist()}",
+    )
+
+    # 12b. 1D vector rejected
+    try:
+        _validate_2d(np.array([1.0, 2.0, 3.0]), "test")
+        report("1D vector rejected by _validate_2d", False, "no exception")
+    except ValueError as e:
+        report("1D vector rejected by _validate_2d", True, str(e))
+
+    # 12c. PCA on 1 row rejected
+    try:
+        vtp(np.array([[1.0, 2.0, 3.0]]))
+        report("PCA on 1 row rejected", False, "no exception")
+    except ValueError as e:
+        report("PCA on 1 row rejected", True, str(e))
+
+    # 12d. Empty DataFrame stats
+    empty_df = pd.DataFrame()
+    stats_empty = tvs(empty_df)
+    report(
+        "stats on empty DataFrame doesn't crash",
+        stats_empty.shape == (1, 11),
+        f"shape={stats_empty.shape}",
+    )
+
+    # 12e. Invalid type_col raises
+    from Core.AgentTools.cross_modal_tools import table_to_graph_entity_rel as tge
+    df_simple = pd.DataFrame({"source": ["a"], "target": ["b"]})
+    try:
+        tge(df_simple, source_col="source", target_col="target", type_col="nonexistent")
+        report("invalid type_col raises ValueError", False, "no exception")
+    except ValueError as e:
+        report("invalid type_col raises ValueError", True, str(e))
+
+    # 12f. Embedding provider error surfaces in convert_modality
+    #      (can't test MCP layer directly, but test the provider factory)
+    from Core.AgentTools.cross_modal_tools import get_embedding_provider
+    try:
+        get_embedding_provider("nonexistent_provider")
+        report("invalid provider raises ValueError", False, "no exception")
+    except ValueError as e:
+        report("invalid provider raises ValueError", True, str(e))
+
+    # 12g. Graph dict with empty nodes/edges
+    empty_graph = {"nodes": [], "edges": []}
+    r = await convert(empty_graph, "graph", "table", mode="nodes")
+    report(
+        "empty graph → table(nodes) produces empty DataFrame",
+        isinstance(r["data"], pd.DataFrame) and len(r["data"]) == 0,
+        f"rows={len(r['data'])}",
+    )
+    r = await convert(empty_graph, "graph", "vector", mode="features")
+    report(
+        "empty graph → features produces (1,10) vector",
+        r["data"].shape == (1, 10),
+        f"shape={r['data'].shape}",
+    )
+    feat = r["data"][0]
+    report(
+        "empty graph features: node_count=0, edge_count=0",
+        int(feat[0]) == 0 and int(feat[1]) == 0,
+    )
+    print()
+
+    # =========================================================================
     # SUMMARY
     # =========================================================================
     print("=" * 70)

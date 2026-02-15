@@ -1,3 +1,7 @@
+# Agent tooling scratch
+.codex/
+.claude/
+
 # Python
 __pycache__/
 *.pyc

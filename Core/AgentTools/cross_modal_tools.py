@@ -60,7 +60,7 @@ def _graph_to_dict(nx_graph: nx.Graph) -> dict[str, list[dict]]:
             "id": str(node_id),
             "label": data.get("label", data.get("entity_name", str(node_id))),
             "type": data.get("entity_type", data.get("type", "entity")),
-            "properties": {k: v for k, v in data.items()
+            "properties": {k: _safe_serialize(v) for k, v in data.items()
                           if k not in ("label", "entity_name", "entity_type", "type")},
         }
         nodes.append(node)
@@ -72,7 +72,7 @@ def _graph_to_dict(nx_graph: nx.Graph) -> dict[str, list[dict]]:
             "target": str(tgt),
             "type": data.get("relation_type", data.get("label", "related_to")),
             "weight": float(data.get("weight", 1.0)),
-            "properties": {k: v for k, v in data.items()
+            "properties": {k: _safe_serialize(v) for k, v in data.items()
                           if k not in ("relation_type", "label", "weight")},
         }
         edges.append(edge)
@@ -243,7 +243,9 @@ def table_to_graph_entity_rel(
         if tgt not in nodes_set:
             nodes_set[tgt] = {"id": tgt, "label": tgt, "type": "entity", "properties": {}}
 
-        rel_type = str(row[type_col]) if type_col and type_col in df.columns else "related_to"
+        if type_col and type_col not in df.columns:
+            raise ValueError(f"type_col {type_col!r} not found in DataFrame columns: {list(df.columns)}")
+        rel_type = str(row[type_col]) if type_col else "related_to"
         props = {k: _safe_serialize(v) for k, v in row.items()
                  if k not in (source_col, target_col, type_col)}
         edges.append({
@@ -301,6 +303,10 @@ def _detect_entity_columns(df: pd.DataFrame) -> tuple[str, str]:
     if len(scored) >= 2:
         return scored[0][1], scored[1][1]
     if len(scored) == 1:
+        logger.warning(
+            f"Only one string column ({scored[0][1]!r}) found — using it for both source and target. "
+            f"This will create self-loop edges. Consider specifying source_col/target_col explicitly."
+        )
         return scored[0][1], scored[0][1]
     raise ValueError(
         f"Cannot detect entity columns. Available columns: {list(df.columns)}. "
@@ -384,16 +390,17 @@ def table_to_vector_stats(df: pd.DataFrame) -> np.ndarray:
     numeric_cols = df.select_dtypes(include=[np.number])
     string_cols = df.select_dtypes(include=[object])
 
+    nv = numeric_cols.values
     stats = np.array([
         df.shape[0],                                        # row_count
         df.shape[1],                                        # col_count
         int(df.isnull().sum().sum()),                       # null_count
         len(numeric_cols.columns),                          # numeric_cols
         len(string_cols.columns),                           # string_cols
-        float(numeric_cols.values.mean()) if not numeric_cols.empty else 0.0,
-        float(numeric_cols.values.std()) if not numeric_cols.empty else 0.0,
-        float(numeric_cols.values.min()) if not numeric_cols.empty else 0.0,
-        float(numeric_cols.values.max()) if not numeric_cols.empty else 0.0,
+        float(np.nanmean(nv)) if nv.size > 0 else 0.0,
+        float(np.nanstd(nv)) if nv.size > 0 else 0.0,
+        float(np.nanmin(nv)) if nv.size > 0 else 0.0,
+        float(np.nanmax(nv)) if nv.size > 0 else 0.0,
         float(df.nunique().mean()),                         # avg unique per col
         float(df.duplicated().sum()),                       # duplicate rows
     ], dtype=np.float32).reshape(1, -1)
@@ -495,11 +502,18 @@ def vector_to_graph_clustering(
 # Vector → Table conversions
 # =============================================================================
 
+def _validate_2d(vectors: np.ndarray, caller: str) -> tuple[int, int]:
+    """Validate vectors is a 2D array, return (n_rows, n_dims)."""
+    if vectors.ndim != 2:
+        raise ValueError(f"{caller}: expected 2D array, got shape {vectors.shape}")
+    return vectors.shape
+
+
 def vector_to_table_direct(
     vectors: np.ndarray, labels: Optional[list[str]] = None,
 ) -> pd.DataFrame:
     """Reshape vectors to DataFrame with feature columns + stats."""
-    n, d = vectors.shape
+    n, d = _validate_2d(vectors, "vector_to_table_direct")
     if labels is None:
         labels = [f"vec_{i}" for i in range(n)]
     cols = [f"dim_{i}" for i in range(d)]
@@ -520,7 +534,9 @@ def vector_to_table_pca(
     from sklearn.decomposition import PCA
     from sklearn.preprocessing import StandardScaler
 
-    n, d = vectors.shape
+    n, d = _validate_2d(vectors, "vector_to_table_pca")
+    if n < 2:
+        raise ValueError(f"vector_to_table_pca: need at least 2 rows for PCA, got {n}")
     nc = min(n_components, n, d)
     if labels is None:
         labels = [f"vec_{i}" for i in range(n)]
@@ -543,7 +559,7 @@ def vector_to_table_similarity(
     """Cosine similarity matrix as NxN DataFrame."""
     from sklearn.metrics.pairwise import cosine_similarity
 
-    n = vectors.shape[0]
+    n, d = _validate_2d(vectors, "vector_to_table_similarity")
     if labels is None:
         labels = [f"vec_{i}" for i in range(n)]
     sim = cosine_similarity(vectors)
