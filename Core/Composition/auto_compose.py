@@ -46,7 +46,6 @@ async def select_method(
     model: str,
     resources: str,
     auto_build: bool = True,
-    api_key: str | None = None,
 ) -> CompositionDecision:
     """Use an LLM to select the best retrieval method for a query.
 
@@ -54,10 +53,9 @@ async def select_method(
         query: The user's question
         dataset_name: Name of the target dataset
         composer: OperatorComposer instance (for get_method_profiles())
-        model: LLM model identifier (e.g. "anthropic/claude-sonnet-4-5-20250929")
+        model: LLM model identifier (e.g. "gemini/gemini-2.0-flash")
         resources: JSON string from list_available_resources()
         auto_build: Whether auto_build will be available for prerequisites
-        api_key: Optional API key (passed through to litellm via llm_client)
 
     Returns:
         CompositionDecision with method_name, reasoning, and confidence.
@@ -82,15 +80,10 @@ async def select_method(
         return _fallback(f"Prompt render error: {e}")
 
     try:
-        llm_kwargs = {}
-        if api_key:
-            llm_kwargs["api_key"] = api_key
-
         decision, meta = await acall_llm_structured(
             model,
             messages,
             response_model=CompositionDecision,
-            **llm_kwargs,
         )
         logger.info(
             f"auto_compose: LLM selected '{decision.method_name}' "

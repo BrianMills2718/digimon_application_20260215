@@ -67,7 +67,7 @@ directly via execute_method or individual operators. Both are always available.
 - `prompts/auto_compose.yaml` — Jinja2 template for method selection prompt
 - `Option/Config2.py` — `agentic_model` field for separate LLM for meta operators
 
-**MCP tools (39 total)**:
+**MCP tools (43 total)**:
 - 5 graph build (er, rk, tree, tree_balanced, passage) + 1 corpus (prepare)
 - 7 entity (vdb_build, vdb_search, onehop, ppr, agent, link, tfidf)
 - 5 relationship (onehop, score_agg, agent, vdb_build, vdb_search)
@@ -76,13 +76,15 @@ directly via execute_method or individual operators. Both are always available.
 - 3 community (build_communities, detect_from_entities, get_layer)
 - 3 meta (extract_entities, generate_answer, pcst_optimize)
 - 1 prerequisite build (build_sparse_matrices)
+- 2 config (get_config, set_agentic_model)
+- 2 operator discovery (list_operators, get_compatible_successors)
 - 4 method-level (list_methods, list_graph_types, execute_method, auto_compose)
 - 1 context (list_available_resources)
 
 **Three execution modes** (increasing control):
-1. `auto_compose(query, dataset, auto_build=True)` — full auto, DIGIMON picks the method
+1. Individual operator tools — client composes the pipeline using `list_operators` + `get_compatible_successors`
 2. `execute_method("basic_local", query, dataset, auto_build=True)` — client picks from 10 methods
-3. Individual operator tools — calling agent composes the pipeline
+3. `auto_compose(query, dataset, auto_build=True)` — full auto, DIGIMON picks the method
 
 **Auto-build** (`auto_build=True` on execute_method):
 - Automatically builds all missing prerequisites: entity VDB, relationship VDB,
@@ -91,11 +93,12 @@ directly via execute_method or individual operators. Both are always available.
 - Default: `False` (existing behavior unchanged)
 - All 10 methods work with `auto_build=True` given a built graph
 
-**Multi-model config** (optional):
+**Multi-model config**:
 ```yaml
-agentic_model: "anthropic/claude-sonnet-4-5-20250929"  # for meta operators
+agentic_model: "gemini/gemini-2.0-flash"  # for meta operators (default)
 ```
-Graph building uses `llm` (cheap/fast), meta operators use `agentic_model` (quality).
+Graph building uses `llm` (cheap/fast), meta operators use `agentic_model` (capable).
+Use `get_config` to inspect, `set_agentic_model` to override at runtime.
 
 ### Previous Work: MCP Integration
 

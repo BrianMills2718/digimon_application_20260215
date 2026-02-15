@@ -30,27 +30,35 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP("digimon-kgrag", instructions="""
 DIGIMON KG-RAG Tools: Build knowledge graphs from documents and query them.
 
-## Two Execution Modes
+## Core: 24 Typed Operators
 
-### Mode 1: Individual Operator Tools (fine-grained control)
-Call operators directly for custom pipelines. The calling agent decides the sequence.
+DIGIMON's core value is 24 composable operators across 6 categories:
+entity (7), relationship (4), chunk (3), subgraph (3), community (2), meta (5).
+Each operator has typed I/O slots, cost tiers, and prerequisite flags.
+Call `list_operators` for the full catalog, `get_compatible_successors` to explore chains.
 
-Typical workflow:
-1. corpus_prepare - Prepare .txt files into a corpus
-2. graph_build_er (or rk, tree, tree_balanced, passage) - Build a knowledge graph
-3. entity_vdb_build - Build a vector index of entities
-4. entity_vdb_search / entity_ppr / entity_tfidf - Find relevant entities
-5. relationship_onehop / relationship_vdb_search - Find relationships
-6. chunk_get_text / chunk_from_relationships / chunk_occurrence - Get text chunks
-7. meta_generate_answer - Generate answer from retrieved context
+## Three Execution Modes
 
-### Mode 2: Named Method Pipelines (one-call execution)
-Use execute_method to run a complete retrieval pipeline end-to-end.
-Call list_methods first to see all 10 available methods and their requirements.
+### Mode 1: Individual Operators (client composes)
+Call operators directly for custom pipelines. Use `list_operators` +
+`get_compatible_successors` to discover valid chains. Typical flow:
+corpus_prepare → graph_build_er → entity_vdb_build → entity_vdb_search →
+relationship_onehop → chunk_occurrence → meta_generate_answer
+
+### Mode 2: Named Method Pipelines (10 pre-composed)
+Call `list_methods` to see profiles, then `execute_method` to run end-to-end.
+Pass `auto_build=True` to auto-build missing prerequisites.
 
 ### Mode 3: Full Auto (auto_compose)
-Use auto_compose with just a query and dataset name. An LLM picks the best
-retrieval method based on query characteristics and available resources.
+`auto_compose(query, dataset, auto_build=True)` — an LLM picks the best
+method based on query characteristics and available resources.
+
+## Config
+
+Two model roles: `llm.model` (graph building, cheap) vs `agentic_model`
+(mid-pipeline reasoning — entity extraction, answer generation, iterative steps).
+- `get_config` — inspect current models, paths
+- `set_agentic_model` — override the reasoning model at runtime
 
 ## Graph Types (call list_graph_types for details)
 - **er**: General-purpose entity-relationship graph. Works with all methods.
@@ -58,31 +66,12 @@ retrieval method based on query characteristics and available resources.
 - **tree/tree_balanced**: Hierarchical clustering. Best for summarization.
 - **passage**: Passage-level nodes. Best for document-centric retrieval.
 
-## Retrieval Methods (call list_methods for details)
-- **basic_local**: VDB → one-hop → co-occurrence. Simple, fast.
-- **basic_global**: Community reports. For broad/thematic questions.
-- **lightrag**: Relationship VDB search. Needs RK graph.
-- **fastgraphrag**: PPR + sparse matrices. For multi-hop topology.
-- **hipporag**: LLM entity extraction → PPR. For out-of-vocabulary entities.
-- **tog**: Iterative LLM exploration. For complex multi-hop reasoning.
-- **gr**: Dual VDB + PCST optimization. For compact informative subgraphs.
-- **dalk**: Entity linking + path filtering. For specific knowledge paths.
-- **kgp**: TF-IDF + iterative reasoning. For rich text descriptions.
-- **med**: Steiner tree subgraph. For domain-specific connected subgraphs.
-
 ## Tips
-- Use return_context_only=True in execute_method when you want to synthesize
+- Use `return_context_only=True` in execute_method when you want to synthesize
   the answer yourself instead of letting DIGIMON's LLM generate it.
-- Call list_available_resources to see what graphs and VDBs exist.
-- Graph building requires corpus_prepare first.
-- VDB building requires a graph to be built first.
-- Pass auto_build=True to execute_method to auto-build all missing prerequisites:
-  entity VDB, relationship VDB, sparse matrices, and community structure.
-  Community building calls LLM (most expensive auto-build step).
-- Default graph build now uses single-step extraction (extract_two_step=false),
-  which extracts entity types, entity descriptions, and relation descriptions.
-  Graphs built with the old default (extract_two_step=true) have empty descriptions;
-  rebuild them to get descriptions.
+- Call `list_available_resources` to see what graphs and VDBs exist.
+- Graph building requires `corpus_prepare` first. VDB building requires a graph.
+- Default graph build uses single-step extraction (entity types + descriptions).
 
 State is maintained between calls via GraphRAGContext.
 """)
@@ -940,6 +929,62 @@ async def list_available_resources() -> str:
 
 
 # =============================================================================
+# CONFIG TOOLS
+# =============================================================================
+
+@mcp.tool()
+async def get_config() -> str:
+    """Get current DIGIMON configuration (model roles, paths).
+
+    Returns JSON with llm_model, agentic_model, data_root, and working_dir.
+    """
+    await _ensure_initialized()
+    config = _state["config"]
+
+    agentic_model = None
+    agentic_source = None
+    if _state.get("agentic_llm"):
+        agentic_model = _state["agentic_llm"].model
+        agentic_source = _state.get("agentic_model_source", "config")
+
+    return json.dumps({
+        "llm_model": config.llm.model,
+        "agentic_model": agentic_model,
+        "agentic_model_source": agentic_source,
+        "data_root": str(config.data_root),
+        "working_dir": str(config.working_dir),
+    }, indent=2)
+
+
+@mcp.tool()
+async def set_agentic_model(model: str) -> str:
+    """Override the agentic model at runtime.
+
+    The agentic model handles mid-pipeline LLM calls (entity extraction,
+    answer generation, iterative reasoning). Graph building uses the
+    separate llm.model and is unaffected.
+
+    Args:
+        model: Model identifier (e.g. 'gemini/gemini-2.0-flash', 'anthropic/claude-sonnet-4-5-20250929')
+    """
+    await _ensure_initialized()
+    from Core.Provider.LLMClientAdapter import LLMClientAdapter
+
+    old_model = _state["agentic_llm"].model if _state.get("agentic_llm") else None
+    _state["agentic_llm"] = LLMClientAdapter(model)
+    _state["agentic_model_source"] = "runtime_override"
+
+    logger.info(f"Agentic model changed: {old_model} -> {model}")
+
+    return json.dumps({
+        "status": "success",
+        "previous_model": old_model,
+        "new_model": model,
+        "source": "runtime_override",
+    }, indent=2)
+
+
+# =============================================================================
 # AUTO-COMPOSE (LLM-driven method selection)
 # =============================================================================
 
@@ -968,10 +1013,9 @@ async def auto_compose(query: str, dataset_name: str,
 
     from Core.Composition.auto_compose import select_method
 
-    # Determine model and API key for method selection
+    # Determine model for method selection
     config = _state["config"]
     model = getattr(config, "agentic_model", None) or config.llm.model
-    api_key = getattr(config.llm, "api_key", None)
 
     # Get current resources
     resources_json = await list_available_resources()
@@ -985,7 +1029,6 @@ async def auto_compose(query: str, dataset_name: str,
         model=model,
         resources=resources_json,
         auto_build=auto_build,
-        api_key=api_key,
     )
 
     logger.info(
@@ -1324,6 +1367,76 @@ def _build_operator_context() -> Any:
         llm=_state.get("agentic_llm") or _state["llm"],
         config=_state["config"],
     )
+
+
+# =============================================================================
+# OPERATOR DISCOVERY TOOLS
+# =============================================================================
+
+@mcp.tool()
+async def list_operators() -> str:
+    """List all 24 operators with their I/O slots, cost tiers, and when to use.
+
+    Returns the full operator catalog. Each entry includes operator_id,
+    display_name, category, input/output slots (name + kind), cost_tier,
+    requires_* flags, and when_to_use guidance.
+    """
+    await _ensure_initialized()
+    _ensure_composer()
+
+    from Core.Operators.registry import REGISTRY
+
+    operators = REGISTRY.list_all()
+    return json.dumps([
+        {
+            "operator_id": op.operator_id,
+            "display_name": op.display_name,
+            "category": op.category,
+            "input_slots": [{"name": s.name, "kind": s.kind.value, "required": s.required} for s in op.input_slots],
+            "output_slots": [{"name": s.name, "kind": s.kind.value} for s in op.output_slots],
+            "cost_tier": op.cost_tier.value,
+            "requires_llm": op.requires_llm,
+            "requires_entity_vdb": op.requires_entity_vdb,
+            "requires_relationship_vdb": op.requires_relationship_vdb,
+            "requires_community": op.requires_community,
+            "requires_sparse_matrices": op.requires_sparse_matrices,
+            "when_to_use": op.when_to_use,
+        }
+        for op in operators
+    ], indent=2)
+
+
+@mcp.tool()
+async def get_compatible_successors(operator_id: str) -> str:
+    """Get operators that can consume the outputs of a given operator.
+
+    Use this to explore valid operator chains. For example,
+    get_compatible_successors("entity.ppr") returns operators that
+    accept ENTITY_SET or SCORE_VECTOR as input.
+
+    Args:
+        operator_id: The operator to find successors for (e.g. 'entity.ppr')
+    """
+    await _ensure_initialized()
+    _ensure_composer()
+
+    from Core.Operators.registry import REGISTRY
+
+    source = REGISTRY.get(operator_id)
+    if not source:
+        return json.dumps({"error": f"Unknown operator: '{operator_id}'"})
+
+    successors = REGISTRY.get_compatible_successors(operator_id)
+    return json.dumps([
+        {
+            "operator_id": op.operator_id,
+            "display_name": op.display_name,
+            "input_slots": [{"name": s.name, "kind": s.kind.value, "required": s.required} for s in op.input_slots],
+            "output_slots": [{"name": s.name, "kind": s.kind.value} for s in op.output_slots],
+            "cost_tier": op.cost_tier.value,
+        }
+        for op in successors
+    ], indent=2)
 
 
 # =============================================================================
