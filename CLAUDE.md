@@ -95,9 +95,10 @@ directly via execute_method or individual operators. Both are always available.
 
 **Multi-model config**:
 ```yaml
-agentic_model: "gemini/gemini-2.0-flash"  # for meta operators (default)
+agentic_model: "claude-code"  # routes through Claude Agent SDK via llm_client
 ```
-Graph building uses `llm` (cheap/fast), meta operators use `agentic_model` (capable).
+Graph building uses `llm` (gpt-4o-mini, cheap/fast), meta operators use `agentic_model`
+(Claude Code via Agent SDK — same quality brain as the orchestrating client).
 Use `get_config` to inspect, `set_agentic_model` to override at runtime.
 
 ### Previous Work: MCP Integration
