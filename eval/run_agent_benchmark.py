@@ -7,8 +7,8 @@ digimon-kgrag MCP tools and autonomously composes operator chains.
 Saves results incrementally (partial runs preserved on Ctrl+C).
 
 Usage:
-    python eval/run_agent_benchmark.py --dataset HotpotQAsmallest --n 10
-    python eval/run_agent_benchmark.py --dataset HotpotQA --n 50 --resume
+    python eval/run_agent_benchmark.py --dataset HotpotQAsmallest --num 10
+    python eval/run_agent_benchmark.py --dataset HotpotQA --num 50 --resume
 """
 
 from __future__ import annotations
@@ -61,31 +61,13 @@ def extract_tool_calls(turn_raw: object) -> list[dict]:
 
 # --- Prompt ---
 
-SYSTEM_PROMPT = """\
-You are a QA research assistant. You have ONE MCP server: digimon-kgrag.
-It has a knowledge graph built from the dataset with entity/relationship/chunk search tools.
-
-To answer a question, call auto_compose like this:
-  auto_compose(query="<the question>", dataset_name="<dataset>", auto_build=true)
-
-It returns the answer directly. Do NOT call list_available_resources, get_config, \
-list_mcp_resources, or any other discovery tools. Go straight to auto_compose.
-
-CRITICAL: Your final answer must be ONLY the bare answer — no explanation, no sentences.
-
-Examples:
-  Q: Are both Mount Everest and K2 located in Asia?  A: yes
-  Q: What instrument did the lead singer of The Beatles play?  A: guitar"""
+PROMPT_TEMPLATE = Path(__file__).parent.parent / "prompts" / "agent_benchmark.yaml"
 
 
-def build_prompt(question: str, dataset_name: str) -> str:
-    """Build the user prompt for the agent."""
-    return (
-        f"Dataset: '{dataset_name}'\n\n"
-        f"Question: {question}\n\n"
-        f"Call auto_compose(query=\"{question}\", dataset_name=\"{dataset_name}\", "
-        f"auto_build=true) and reply with ONLY the answer."
-    )
+def build_messages(question: str, dataset_name: str) -> list[dict]:
+    """Render the agent benchmark prompt from YAML template."""
+    from llm_client import render_prompt
+    return render_prompt(PROMPT_TEMPLATE, question=question, dataset_name=dataset_name)
 
 
 # --- Main ---
@@ -105,14 +87,28 @@ def load_questions(dataset_path: str, n: int | None = None) -> list[dict]:
     return questions
 
 
-# MCP server config for the DIGIMON KG-RAG server (only server the agent needs)
-DIGIMON_MCP_SERVERS = {
-    "digimon-kgrag": {
-        "command": "/home/brian/miniconda3/envs/digimon/bin/python",
-        "args": ["-u", str(Path(__file__).parent.parent / "digimon_mcp_stdio_server.py")],
-        "env": {"CLAUDECODE": ""},
-    },
-}
+# MCP server config for the DIGIMON KG-RAG server (only server the agent needs).
+# Codex spawns MCP servers as subprocesses — must explicitly pass API keys since
+# the subprocess won't inherit the parent's env. llm_client auto-loads keys in the
+# parent process, so we forward them here.
+def _build_mcp_servers() -> dict:
+    """Build MCP server config with API keys forwarded from current env."""
+    import llm_client  # triggers auto-load of ~/.secrets/api_keys.env
+    env = {}
+    for key in ("OPENAI_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY",
+                "DEEPSEEK_API_KEY", "HOME", "PATH"):
+        val = os.environ.get(key)
+        if val:
+            env[key] = val
+    return {
+        "digimon-kgrag": {
+            "command": "/home/brian/miniconda3/envs/digimon/bin/python",
+            "args": ["-u", str(Path(__file__).parent.parent / "digimon_mcp_stdio_server.py")],
+            "env": env,
+        },
+    }
+
+DIGIMON_MCP_SERVERS = _build_mcp_servers()
 
 
 async def run_agent(
@@ -129,11 +125,7 @@ async def run_agent(
     from llm_client import acall_llm
 
     project_root = str(Path(__file__).parent.parent)
-    prompt = build_prompt(question, dataset_name)
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": prompt},
-    ]
+    messages = build_messages(question, dataset_name)
 
     t0 = time.monotonic()
     try:
@@ -186,7 +178,7 @@ async def run_agent(
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Agent-driven benchmark (via llm_client Codex SDK)")
     parser.add_argument("--dataset", required=True, help="Dataset name (e.g. HotpotQAsmallest)")
-    parser.add_argument("--n", type=int, default=None, help="Limit to first N questions")
+    parser.add_argument("--num", type=int, default=None, help="Limit to first N questions")
     parser.add_argument("--timeout", type=int, default=120, help="Timeout per question in seconds")
     parser.add_argument("--resume", action="store_true", help="Resume from previous run")
     parser.add_argument("--model", default="codex", help="Agent model (default: codex)")
@@ -199,7 +191,7 @@ async def main() -> None:
         print(f"ERROR: Dataset not found at {dataset_path}")
         sys.exit(1)
 
-    questions = load_questions(str(dataset_path), args.n)
+    questions = load_questions(str(dataset_path), args.num)
     print(f"Loaded {len(questions)} questions from {args.dataset}")
 
     # Output files

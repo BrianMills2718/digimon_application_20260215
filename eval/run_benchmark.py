@@ -63,7 +63,7 @@ async def main(args: argparse.Namespace) -> None:
 
     # --- Load questions ---
     data_path = get_dataset_path(args.dataset)
-    questions = load_questions(data_path, n_questions=args.n)
+    questions = load_questions(data_path, n_questions=args.num)
 
     # --- Check prerequisites ---
     if not check_corpus_ready(args.dataset, str(config.working_dir)):
@@ -169,7 +169,7 @@ async def main(args: argparse.Namespace) -> None:
         questions=questions,
         composer=composer,
         op_ctx_builder=build_op_ctx,
-        n_questions=args.n,
+        n_questions=args.num,
         llm_stats=counting_llm.stats,
     )
     result = await runner.run()
@@ -206,7 +206,7 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated method names (e.g. basic_local,fastgraphrag)",
     )
     parser.add_argument(
-        "--n", type=int, default=None,
+        "--num", type=int, default=None,
         help="Limit to first N questions (default: all)",
     )
     return parser.parse_args()

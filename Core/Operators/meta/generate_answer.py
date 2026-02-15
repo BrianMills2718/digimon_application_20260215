@@ -40,7 +40,7 @@ async def meta_generate_answer(
                 f"Context:\n{context}\n\n"
                 f"Question: {query}\n\n"
                 "Answer the question based on the provided context. "
-                "Be concise and accurate."
+                "Give ONLY the shortest factual answer — no extra words, no full sentences."
             )
             response = await ctx.llm.aask(msg=[{"role": "user", "content": prompt}])
 

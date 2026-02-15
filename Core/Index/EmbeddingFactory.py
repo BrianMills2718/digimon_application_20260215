@@ -50,10 +50,13 @@ class RAGEmbeddingFactory(GenericFactory):
         raise TypeError("To use RAG, please set your embedding in Config2.yaml.")
 
     def _create_openai(self, config) -> OpenAIEmbedding:
-        params = dict(
-            api_key = config.embedding.api_key or config.llm.api_key,
-            api_base = config.embedding.base_url or config.llm.base_url,
-        )
+        api_key = config.embedding.api_key or config.llm.api_key or None
+        api_base = config.embedding.base_url or config.llm.base_url or None
+        params = dict()
+        if api_key:
+            params["api_key"] = api_key
+        if api_base:
+            params["api_base"] = api_base
 
         self._try_set_model_and_batch_size(params, config)
 
