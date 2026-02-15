@@ -328,14 +328,4 @@ graphs, enabling recursive meta-analysis. Priority order:
 3. **Trace writer + trace-to-graph converter** — instrument operator calls, produce ER graphs
 4. **Recursive application** — apply DIGIMON operators to trace graphs
 
-### Future: Execution Memory for auto_compose
-After each `execute_method`/`auto_compose`, log `{query, method_chosen, quality_score, latency_ms}` to a JSONL file.
-Feed recent history as few-shot examples into `auto_compose`'s prompt so it learns which methods work for which query types.
-EMA smoothing on quality scores per method to handle drift. ~30 lines bolted onto existing auto_compose flow, no new module needed.
-(Idea extracted from deleted `Core/Memory/memory_system.py` — the rest was boilerplate superseded by auto_compose.)
-
-### Future: Multi-Dataset Composition
-`OperatorContext` is monolithic — all operators share one graph, one VDB set. This blocks:
-- Cross-dataset queries (e.g., "compare entities in dataset A vs dataset B")
-- Graph merging / federation
-- **What's needed**: Either per-step context overrides in `ExecutionPlan`, or a multi-context executor that can bind different graphs to different steps
+See `docs/IDEAS.md` for future enhancement ideas and dead code inventory.
