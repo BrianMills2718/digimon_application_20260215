@@ -6,112 +6,103 @@
 
 ## Decision
 
-DIGIMON supports **two orchestration modes** that are **not mutually exclusive**:
+DIGIMON requires a **capable LLM** (Claude, Codex, or equivalent) for all agentic reasoning — both for orchestration (choosing how to build graphs, selecting retrieval methods, composing chains) and for mid-pipeline steps (entity extraction, iterative reasoning, answer generation). The default `agentic_model` must be a strong model, not gpt-4o-mini.
 
-1. **DIGIMON-internal brain** — An `agentic_model` (configurable in Config2.yaml) handles mid-pipeline LLM calls and auto_compose method selection. This model should be capable (Claude, GPT-4o, Codex) because it makes retrieval-critical decisions.
+The system supports two orchestration modes that are **not mutually exclusive**:
 
-2. **Client-as-brain** — A capable external agent (Claude Code, Codex CLI) calls DIGIMON's tools directly, choosing graph types, retrieval methods, and operator chains. The client bypasses auto_compose and drives via `execute_method` or individual operator tools.
+1. **DIGIMON-internal brain** — A capable `agentic_model` handles orchestration and mid-pipeline reasoning. The client just sends a query and gets an answer.
 
-The client can **delegate** orchestration to DIGIMON's internal brain (auto_compose) or **override** it (execute_method, individual operators). Both paths are always available.
+2. **Client-as-brain** — When the client is itself a capable agent (Claude Code, Codex CLI), it can bypass DIGIMON's orchestration and drive directly — choosing graph types, picking retrieval methods, composing operator chains. Mid-pipeline LLM calls still use the internal `agentic_model`.
+
+Which mode to use is **the client's choice**, and should be **configurable at runtime via MCP**.
 
 ## Context
 
-The operator pipeline exposes 39 MCP tools across three client modes:
+### The two kinds of LLM work inside DIGIMON
 
-| Mode | Tool | Who decides |
-|------|------|-------------|
-| Full auto | `auto_compose(query, dataset)` | DIGIMON's internal brain |
-| Named method | `execute_method(method, query, dataset)` | Client picks method |
-| Raw operators | Individual tools (entity_vdb_search, etc.) | Client composes chain |
+**Orchestration** (can be done by client OR internal brain):
+- Choosing which graph type to build (ER, RK, tree, passage)
+- Selecting a retrieval method from the 10 named methods
+- Composing custom operator chains
+- Deciding what prerequisites to build
 
-### Tension
+**Mid-pipeline agentic steps** (must be internal — client can't intervene):
+- `meta.extract_entities` — LLM extracts entity mentions from a query
+- `meta.reason_step` — LLM reasons about graph neighborhoods (tog, kgp loops)
+- `meta.generate_answer` — LLM synthesizes a final answer from retrieved context
+- `subgraph.agent_path` — LLM ranks candidate paths by relevance
 
-The calling client (Claude Code / Codex CLI) is often a powerful LLM agent with full user-goal context. Having `auto_compose` make a **separate internal LLM call** to pick a retrieval method seems redundant when the client could just read `list_methods()` and pick.
+The client can own orchestration but **cannot** own mid-pipeline steps — those happen inside PipelineExecutor without round-tripping. So DIGIMON always needs a capable internal model.
 
-But mid-pipeline agentic steps (meta.extract_entities, meta.reason_step, subgraph.agent_path, tog's iterative loop) **cannot** round-trip to the client. These happen inside PipelineExecutor and need an internal LLM.
+### Three MCP client modes
 
-### Arguments for DIGIMON-internal brain
+| Mode | Tool | Orchestration by | Mid-pipeline by |
+|------|------|-----------------|-----------------|
+| Full auto | `auto_compose(query, dataset)` | Internal brain | Internal brain |
+| Named method | `execute_method(method, query, dataset)` | Client | Internal brain |
+| Raw operators | Individual tools | Client | Internal brain |
 
-- Knows the operator catalog, graph topology tradeoffs, and retrieval nuances intimately
-- Mid-pipeline LLM calls (tog, hipporag, kgp) cannot be delegated to the client
-- Auto_compose is a single tool call vs. the client needing two (list_methods + execute_method)
-- Useful for simple/non-LLM clients (scripts, webhooks, cron jobs)
+### Why the internal brain must be capable
 
-### Arguments for client-as-brain
+Mid-pipeline steps are retrieval-critical. A weak model doing entity extraction or iterative reasoning degrades the entire pipeline. tog's multi-hop exploration, hipporag's entity linking, kgp's neighborhood reasoning — all require strong LLM reasoning. gpt-4o-mini is not sufficient as a default.
 
-- Has the user's full goal context — knows what the query is really asking
-- Can make cross-system decisions (e.g., "query DIGIMON then feed results to investigative_wiki")
-- Already a capable model — redundant to call a second LLM for method selection
-- Can inspect `list_methods()` profiles and reason about method fit with full conversation context
+### When a smart client should drive
+
+A capable client (Claude Code, Codex) has advantages for orchestration:
+- Full user-goal context — knows what the query is really asking
+- Cross-system awareness — can coordinate DIGIMON with other tools
+- Conversation history — can learn from previous retrieval failures
+
+But DIGIMON's internal brain has advantages too:
+- Deep knowledge of the operator catalog and method tradeoffs
+- Can be a specialized model fine-tuned or prompted for retrieval decisions
+- Simpler for the client — one tool call instead of multi-step reasoning
+
+The right answer is: **let the client choose**. Expose the configuration through MCP so the client can delegate or override as it sees fit.
 
 ## Design
 
-### Configuration
+### Model roles
 
-```yaml
-# Config2.yaml
-llm:
-  model: "openai/gpt-4o-mini"     # Default for graph building (extraction)
-  api_key: "..."
+| Config field | Controls | Default |
+|-------------|----------|---------|
+| `llm.model` | Graph construction (entity/relationship extraction), community reports | `openai/gpt-4o-mini` (bulk extraction, cost-sensitive) |
+| `agentic_model` | All agentic reasoning: auto_compose, meta operators, loop bodies | A capable model (Claude Sonnet, Codex, etc.) |
 
-# Separate model for agentic reasoning (mid-pipeline LLM + auto_compose).
-# Should be capable. Falls back to llm.model if unset.
-agentic_model: "anthropic/claude-sonnet-4-5-20250929"
-```
+### MCP configuration exposure
 
-`agentic_model` controls:
-- `auto_compose` method selection
-- All meta operators (extract_entities, reason_step, rerank, generate_answer)
-- Loop-based reasoning in tog, kgp
-- Any future agentic operators
+The client must be able to:
+1. **Inspect** active model configuration (`get_config` tool)
+2. **Override** the agentic model at runtime (`set_agentic_model` tool)
+3. **See** which model controls what (documented in MCP server instructions)
 
-`llm.model` controls:
-- Graph construction (entity/relationship extraction during build)
-- Community report generation
+This lets a Claude Code client say: "use Codex for internal reasoning" (cheaper) or "use Sonnet" (higher quality) — without editing files on disk.
 
 ### Recommended usage patterns
 
 **Capable client (Claude Code, Codex CLI)**:
-- Use Mode 2 (`execute_method`) or Mode 3 (individual operators)
-- Client reads `list_methods()`, reasons about method fit, picks the method
-- Client can also use `auto_compose` when it doesn't want to think about method selection
+- Use Mode 2 (`list_methods` + `execute_method`) for orchestration — client picks the method with full goal context
+- Or use `auto_compose` when the client doesn't have strong opinions about retrieval strategy
+- Optionally call `set_agentic_model` at session start to control cost/quality
 
 **Simple client (script, webhook, automation)**:
 - Use `auto_compose(query, dataset, auto_build=True)` — one call, full auto
-- DIGIMON's internal brain handles everything
+- Internal brain handles everything
 
 **Cost-sensitive setup**:
-- Set `agentic_model` to a cheaper-but-capable model (e.g., Codex, gpt-4o-mini)
-- Use expensive client (Claude Code) only for high-level orchestration
-- DIGIMON handles internal reasoning cheaply
+- `agentic_model`: cheaper-but-capable model (Codex) for internal reasoning
+- Client: expensive model (Claude Code) for high-level orchestration
+- `llm.model`: gpt-4o-mini for bulk graph extraction (cost-sensitive, high volume)
 
 ## Current State (2026-02-15)
 
-### Defaults
-- `llm.model`: `openai/gpt-4o-mini` — used for graph building (entity/relationship extraction)
-- `agentic_model`: **commented out** (`None`) — all agentic/mid-pipeline LLM calls fall back to gpt-4o-mini
-- This means tog's iterative reasoning, hipporag's entity extraction, auto_compose method selection, and answer generation all use gpt-4o-mini
-
-### Configuration
-- `Config2.yaml` is the only config file, edited on disk before server start
-- `agentic_model` field exists in `Config2.py` (line 53) but is commented out in the YAML
-- No runtime configuration — model choices are baked in at server startup
-
-### MCP exposure
-- **Not exposed.** The client cannot inspect or change model configuration through MCP tools.
-- The client has no way to know what model is handling agentic steps
-- The client cannot say "use Sonnet for reasoning" without editing Config2.yaml on disk
+- `agentic_model` is **commented out** in Config2.yaml — everything falls back to gpt-4o-mini
+- No MCP tools for config inspection or runtime override
+- Client is blind to what model handles agentic steps
 
 ## Action Items
 
-1. **Uncomment `agentic_model`** in Config2.yaml with a capable default
-2. **Add `get_config` MCP tool** — client can inspect active models, working_dir, etc.
-3. **Add `set_agentic_model` MCP tool** — client can override the agentic model at runtime (e.g., Claude Code says "use codex for internal reasoning, use sonnet for answer generation")
-4. **Document in MCP server instructions** which model controls what
-
-## Consequences
-
-- `auto_compose` stays as a tool — useful for simple clients and as a fallback
-- The MCP server instructions document all three modes so the client can choose
-- Future raw chain composition (using `find_chains_to_goal()`) follows the same pattern: the client or the internal brain can drive it
-- Runtime model configuration means the client can tune cost/quality tradeoffs per session
+1. Uncomment `agentic_model` in Config2.yaml with a capable default
+2. Add `get_config` MCP tool
+3. Add `set_agentic_model` MCP tool
+4. Update MCP server instructions to document model roles and configuration
