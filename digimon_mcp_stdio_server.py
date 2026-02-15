@@ -48,6 +48,10 @@ Typical workflow:
 Use execute_method to run a complete retrieval pipeline end-to-end.
 Call list_methods first to see all 10 available methods and their requirements.
 
+### Mode 3: Full Auto (auto_compose)
+Use auto_compose with just a query and dataset name. An LLM picks the best
+retrieval method based on query characteristics and available resources.
+
 ## Graph Types (call list_graph_types for details)
 - **er**: General-purpose entity-relationship graph. Works with all methods.
 - **rk**: Keyword-enriched relationships. Best for LightRAG.
@@ -903,15 +907,110 @@ async def subgraph_agent_path(user_question: str,
 
 @mcp.tool()
 async def list_available_resources() -> str:
-    """List all currently available graphs, VDBs, and datasets in the session context."""
+    """List all currently available graphs, VDBs, communities, sparse matrices, and datasets."""
     await _ensure_initialized()
     ctx = _state["context"]
+    config = _state["config"]
+
+    # Communities loaded in this session
+    communities = list(_state.get("communities", {}).keys())
+
+    # Check for persisted sparse matrices on disk
+    sparse_matrices_available = []
+    graphs = ctx.list_graphs() if hasattr(ctx, "list_graphs") else []
+    for gid in graphs:
+        # Derive dataset name from graph_id by stripping suffix
+        ds = gid
+        for suffix in ["_ERGraph", "_RKGraph", "_TreeGraphBalanced", "_TreeGraph", "_PassageGraph"]:
+            if ds.endswith(suffix):
+                ds = ds[: -len(suffix)]
+                break
+        e2r_path, r2c_path = _sparse_matrix_paths(ds)
+        if e2r_path.exists() and r2c_path.exists():
+            sparse_matrices_available.append(ds)
+
     return json.dumps({
-        "graphs": ctx.list_graphs() if hasattr(ctx, "list_graphs") else [],
+        "graphs": graphs,
         "vdbs": ctx.list_vdbs() if hasattr(ctx, "list_vdbs") else [],
-        "working_dir": str(_state["config"].working_dir),
-        "data_root": str(_state["config"].data_root),
+        "communities": communities,
+        "sparse_matrices": sparse_matrices_available,
+        "working_dir": str(config.working_dir),
+        "data_root": str(config.data_root),
     }, indent=2)
+
+
+# =============================================================================
+# AUTO-COMPOSE (LLM-driven method selection)
+# =============================================================================
+
+@mcp.tool()
+async def auto_compose(query: str, dataset_name: str,
+                       auto_build: bool = True,
+                       return_context_only: bool = False) -> str:
+    """Automatically select and run the best retrieval method for a query.
+
+    An LLM analyzes the query characteristics and available resources,
+    picks from the 10 named methods, then executes it end-to-end.
+
+    Three client modes (increasing control):
+    1. auto_compose — DIGIMON picks the method (this tool)
+    2. execute_method — client picks from 10 methods
+    3. Individual operator tools — client composes everything
+
+    Args:
+        query: The question to answer
+        dataset_name: Name of the dataset (must have graph built)
+        auto_build: Auto-build missing prerequisites (VDBs, sparse matrices, communities)
+        return_context_only: If True, return raw context instead of generated answer
+    """
+    await _ensure_initialized()
+    _ensure_composer()
+
+    from Core.Composition.auto_compose import select_method
+
+    # Determine model and API key for method selection
+    config = _state["config"]
+    model = getattr(config, "agentic_model", None) or config.llm.model
+    api_key = getattr(config.llm, "api_key", None)
+
+    # Get current resources
+    resources_json = await list_available_resources()
+
+    # LLM selects the method
+    composer = _state["composer"]
+    decision = await select_method(
+        query=query,
+        dataset_name=dataset_name,
+        composer=composer,
+        model=model,
+        resources=resources_json,
+        auto_build=auto_build,
+        api_key=api_key,
+    )
+
+    logger.info(
+        f"auto_compose: selected '{decision.method_name}' "
+        f"(confidence={decision.confidence:.2f}) — {decision.reasoning}"
+    )
+
+    # Execute the selected method
+    result_json = await execute_method(
+        method_name=decision.method_name,
+        query=query,
+        dataset_name=dataset_name,
+        return_context_only=return_context_only,
+        auto_build=auto_build,
+    )
+
+    # Attach composition metadata to the result
+    result = json.loads(result_json)
+    result["_composition"] = {
+        "method_selected": decision.method_name,
+        "reasoning": decision.reasoning,
+        "confidence": decision.confidence,
+    }
+
+    return json.dumps(result, indent=2, default=str)
 
 
 # =============================================================================

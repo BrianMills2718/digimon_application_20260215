@@ -15,8 +15,9 @@ Phase 5:  Method Plans (10)  [DONE] All 10 methods expressed as ExecutionPlans, 
 Phase 6:  Graph Capabilities [DONE] BaseGraph.capabilities property
 Phase 7:  QA Evaluation      [DONE] New pipeline 50% vs old 30% on HotPotQA (10 questions)
 Phase 8:  Delete Old System  [DONE] Core/Retriever/ and Core/Query/ deleted, references cleaned up
-Phase 9:  MCP Composition    [DONE] 33 MCP tools, execute_method, auto_build for VDBs
+Phase 9:  MCP Composition    [DONE] MCP tools, execute_method, auto_build for VDBs
 Phase 10: Full Auto-Build    [DONE] build_sparse_matrices + build_communities tools; 10/10 methods pass with auto_build=True
+Phase 11: Auto-Compose       [DONE] auto_compose MCP tool — LLM picks best method from 10 based on query + resources
 ```
 
 ### Key Architecture: Operator Pipeline
@@ -31,7 +32,7 @@ async def op(inputs: Dict[str, SlotValue], ctx: OperatorContext, params: Dict) -
 - `Core/Schema/OperatorDescriptor.py` — Machine-readable operator metadata
 - `Core/Operators/` — 24 operators in entity/, relationship/, chunk/, subgraph/, community/, meta/
 - `Core/Operators/registry.py` — OperatorRegistry with composition helpers
-- `Core/Composition/` — ChainValidator, PipelineExecutor, Adapters
+- `Core/Composition/` — ChainValidator, PipelineExecutor, Adapters, auto_compose
 - `Core/Methods/` — 10 method plans (basic_local, fastgraphrag, hipporag, tog, gr, dalk, kgp, med, etc.)
 - `Core/AgentSchema/plan.py` — Extended with LoopConfig, ConditionalBranch
 
@@ -60,19 +61,26 @@ The MCP server (`digimon_mcp_stdio_server.py`) is the toolbox — the calling ag
 **New components**:
 - `Core/Provider/LLMClientAdapter.py` — wraps `llm_client.acall_llm` behind BaseLLM interface
 - `Core/Composition/OperatorComposer.py` — method profiling, plan building, execution
+- `Core/Composition/auto_compose.py` — LLM-driven method selection (CompositionDecision, select_method)
+- `prompts/auto_compose.yaml` — Jinja2 template for method selection prompt
 - `Option/Config2.py` — `agentic_model` field for separate LLM for meta operators
 
-**MCP tools (33 total)**:
-- 5 graph build tools (er, rk, tree, tree_balanced, passage)
-- 1 corpus tool (prepare)
-- 25 operator/query tools (all 24 operators + relationship_vdb_build)
-- 2 prerequisite build tools (build_sparse_matrices, build_communities)
-- 3 method-level tools (list_methods, list_graph_types, execute_method)
-- 1 context tool (list_available_resources)
+**MCP tools (39 total)**:
+- 5 graph build (er, rk, tree, tree_balanced, passage) + 1 corpus (prepare)
+- 7 entity (vdb_build, vdb_search, onehop, ppr, agent, link, tfidf)
+- 5 relationship (onehop, score_agg, agent, vdb_build, vdb_search)
+- 4 chunk (from_relationships, occurrence, get_text, aggregator)
+- 2 graph analysis (analyze, visualize) + 3 subgraph (khop_paths, steiner_tree, agent_path)
+- 3 community (build_communities, detect_from_entities, get_layer)
+- 3 meta (extract_entities, generate_answer, pcst_optimize)
+- 1 prerequisite build (build_sparse_matrices)
+- 4 method-level (list_methods, list_graph_types, execute_method, auto_compose)
+- 1 context (list_available_resources)
 
-**Two execution modes**:
-1. Individual operator tools — calling agent composes the pipeline
-2. `execute_method("basic_local", query, dataset, auto_build=True)` — one-call named pipeline
+**Three execution modes** (increasing control):
+1. `auto_compose(query, dataset, auto_build=True)` — full auto, DIGIMON picks the method
+2. `execute_method("basic_local", query, dataset, auto_build=True)` — client picks from 10 methods
+3. Individual operator tools — calling agent composes the pipeline
 
 **Auto-build** (`auto_build=True` on execute_method):
 - Automatically builds all missing prerequisites: entity VDB, relationship VDB,
@@ -188,13 +196,15 @@ med:           entity.vdb → subgraph.khop_paths → subgraph.steiner_tree → 
 
 ## Next Steps
 
-### Phase 11: Dynamic Agent Composition
-Let an LLM agent select and compose operator chains at runtime. The infrastructure is ready:
-- `OperatorRegistry.find_chains_to_goal()` discovers valid chains (95 at depth 3, 2054 at depth 4)
-- `OperatorDescriptor` provides machine-readable slot specs for each operator
-- `PipelineExecutor` validates slot names, types, and required inputs pre-dispatch with actionable error messages
-- `test_custom_chain.py` proves arbitrary (non-method) chains execute successfully
-- **What's needed**: An agent prompt/tool that takes a query, inspects the descriptor catalog, builds an `ExecutionPlan`, and executes it — replacing the 10 named methods with query-adaptive composition
+### Phase 11: Auto-Compose (DONE)
+LLM-driven method selection via `auto_compose` MCP tool. An LLM picks from the 10 named methods
+based on query characteristics and available resources, then executes the selected pipeline.
+- `Core/Composition/auto_compose.py` — `select_method()` renders prompt, calls `acall_llm_structured`, returns `CompositionDecision`
+- `prompts/auto_compose.yaml` — Jinja2 template with method profiles, resources, and selection rules
+- Uses `llm_client.render_prompt()` + `llm_client.acall_llm_structured()` with Pydantic extraction
+- Falls back to `basic_local` on any LLM failure (invalid method name, extraction error, etc.)
+- `list_available_resources` enhanced with community + sparse matrix availability
+- **Design decision**: Pick from 10 tested methods, not compose raw chains (2054 valid chains at depth 4 is too many for LLM evaluation)
 
 ### Phase 12: Multi-Dataset Composition
 `OperatorContext` is monolithic — all operators share one graph, one VDB set. This blocks:
