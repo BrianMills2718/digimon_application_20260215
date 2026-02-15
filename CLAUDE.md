@@ -98,13 +98,22 @@ directly via individual operators or execute_method. Both are always available.
 - Default: `False` (existing behavior unchanged)
 - All reference pipelines work with `auto_build=True` given a built graph
 
+**Two-level agent architecture**:
+
+There are two agents in DIGIMON — the **outer agent** (orchestrator) and the **inner agent** (`agentic_model`):
+- **Outer agent** (Claude Code, Codex): Composes operators, decides strategy, drives Mode 1.
+- **Inner agent** (`agentic_model`): Handles mid-pipeline LLM calls inside operators like `entity.agent`, `relationship.agent`, `subgraph.agent_path`, and iterative loops in tog/kgp.
+
+In Mode 1, the outer agent can subsume the inner agent's role — instead of calling `subgraph.agent_path` (which uses `agentic_model` internally to filter paths), the outer agent can call `subgraph.khop_paths`, read the paths itself, and decide which to keep.
+
+In Mode 2/3, the inner agent does all the reasoning within the pipeline. This is where `agentic_model` matters most.
+
 **Multi-model config**:
 ```yaml
 agentic_model: "claude-code"  # routes through Claude Agent SDK via llm_client
 ```
-Graph building uses `llm` (gpt-4o-mini, cheap/fast), meta operators use `agentic_model`
-(Claude Code via Agent SDK — same quality brain as the orchestrating client).
-Use `get_config` to inspect, `set_agentic_model` to override at runtime.
+Valid values via llm_client: `"claude-code"`, `"codex"`, `"codex/gpt-5"`, or any litellm model string (e.g. `"gemini/gemini-2.0-flash"`).
+Graph building uses `llm` (gpt-4o-mini, cheap/fast). Use `get_config` to inspect, `set_agentic_model` to override at runtime.
 
 ### Previous Work: MCP Integration
 
