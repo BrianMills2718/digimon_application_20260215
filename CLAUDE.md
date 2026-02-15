@@ -55,8 +55,10 @@ meta:         extract_entities, reason_step, rerank, generate_answer, pcst_optim
 
 **Status**: Complete. All 24 operators + 10 method pipelines accessible via MCP.
 
-The MCP server (`digimon_mcp_stdio_server.py`) is the toolbox — the calling agent
-(Claude Code, Codex, custom) decides what graph to build and what retrieval method to use.
+**Orchestration architecture** (see `docs/adr/001-agent-orchestration-architecture.md`):
+Two non-exclusive modes — DIGIMON's internal brain (`agentic_model`) handles mid-pipeline
+LLM calls and auto_compose; a capable client (Claude Code, Codex) can override and drive
+directly via execute_method or individual operators. Both are always available.
 
 **New components**:
 - `Core/Provider/LLMClientAdapter.py` — wraps `llm_client.acall_llm` behind BaseLLM interface
