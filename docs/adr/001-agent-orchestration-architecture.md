@@ -85,9 +85,33 @@ agentic_model: "anthropic/claude-sonnet-4-5-20250929"
 - Use expensive client (Claude Code) only for high-level orchestration
 - DIGIMON handles internal reasoning cheaply
 
+## Current State (2026-02-15)
+
+### Defaults
+- `llm.model`: `openai/gpt-4o-mini` — used for graph building (entity/relationship extraction)
+- `agentic_model`: **commented out** (`None`) — all agentic/mid-pipeline LLM calls fall back to gpt-4o-mini
+- This means tog's iterative reasoning, hipporag's entity extraction, auto_compose method selection, and answer generation all use gpt-4o-mini
+
+### Configuration
+- `Config2.yaml` is the only config file, edited on disk before server start
+- `agentic_model` field exists in `Config2.py` (line 53) but is commented out in the YAML
+- No runtime configuration — model choices are baked in at server startup
+
+### MCP exposure
+- **Not exposed.** The client cannot inspect or change model configuration through MCP tools.
+- The client has no way to know what model is handling agentic steps
+- The client cannot say "use Sonnet for reasoning" without editing Config2.yaml on disk
+
+## Action Items
+
+1. **Uncomment `agentic_model`** in Config2.yaml with a capable default
+2. **Add `get_config` MCP tool** — client can inspect active models, working_dir, etc.
+3. **Add `set_agentic_model` MCP tool** — client can override the agentic model at runtime (e.g., Claude Code says "use codex for internal reasoning, use sonnet for answer generation")
+4. **Document in MCP server instructions** which model controls what
+
 ## Consequences
 
-- `agentic_model` should be uncommented and set to a capable model by default
 - `auto_compose` stays as a tool — useful for simple clients and as a fallback
 - The MCP server instructions document all three modes so the client can choose
 - Future raw chain composition (using `find_chains_to_goal()`) follows the same pattern: the client or the internal brain can drive it
+- Runtime model configuration means the client can tune cost/quality tradeoffs per session
