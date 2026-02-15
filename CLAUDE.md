@@ -110,9 +110,16 @@ In Mode 2/3, the inner agent does all the reasoning within the pipeline. This is
 
 **Multi-model config**:
 ```yaml
-agentic_model: "claude-code"  # routes through Claude Agent SDK via llm_client
+agentic_model: "codex/gpt-5.3-codex-spark"  # fast, text-only, via Codex SDK
 ```
-Valid values via llm_client: `"claude-code"`, `"codex"`, `"codex/gpt-5"`, or any litellm model string (e.g. `"gemini/gemini-2.0-flash"`).
+Valid values via llm_client: `"codex/gpt-5.3-codex-spark"`, `"codex/gpt-5.3-codex"`, `"claude-code"`, or any litellm model string (e.g. `"gemini/gemini-2.0-flash"`).
+
+**Agentic model tradeoffs** (for mid-pipeline reasoning):
+- `codex/gpt-5.3-codex-spark` — default. Fast, text-only, good for bulk benchmark runs.
+- `codex/gpt-5.3-codex` — max capability, slower. Use for complex decomposition/reasoning.
+- `claude-code` — Claude Agent SDK. Premium quality, highest latency/cost.
+- `gemini/gemini-2.0-flash` — cheapest. Use for high-volume runs where quality is secondary.
+
 Graph building uses `llm` (gpt-4o-mini, cheap/fast). Use `get_config` to inspect, `set_agentic_model` to override at runtime.
 
 ### Previous Work: MCP Integration
