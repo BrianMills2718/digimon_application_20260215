@@ -20,8 +20,10 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Add project root to path
@@ -122,6 +124,15 @@ def _is_codex_model(model: str) -> bool:
     """Check if model routes through the Codex SDK."""
     lower = model.lower()
     return lower == "codex" or lower.startswith("codex/")
+
+
+def _model_slug(model: str) -> str:
+    """Convert model string to filesystem-safe slug. e.g. 'gemini/gemini-3-flash-preview' -> 'gemini-3-flash-preview'."""
+    # Use last segment after /
+    slug = model.rsplit("/", 1)[-1]
+    # Replace non-alphanumeric with hyphens
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", slug).strip("-").lower()
+    return slug or "unknown"
 
 
 # --- Run agent ---
@@ -225,21 +236,30 @@ async def main() -> None:
     questions = load_questions(str(dataset_path), args.num)
     print(f"Loaded {len(questions)} questions from {args.dataset}")
 
-    # Output files
+    # Output files — include model slug + timestamp so runs never overwrite
+    run_ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    slug = _model_slug(args.model)
     output_dir = Path("results")
     output_dir.mkdir(exist_ok=True)
-    output_path = output_dir / f"{args.dataset}_agent_benchmark.json"
-    log_path = output_dir / f"{args.dataset}_agent_benchmark.log"
+    output_path = output_dir / f"{args.dataset}_{slug}_{run_ts}.json"
+    log_path = output_dir / f"{args.dataset}_{slug}_{run_ts}.log"
 
-    # Resume support
+    # Resume support — find most recent file for this dataset+model
     completed_ids: set[str] = set()
     results: list[dict] = []
-    if args.resume and output_path.exists():
-        with open(output_path) as f:
-            existing = json.load(f)
-        results = existing.get("results", [])
-        completed_ids = {r["id"] for r in results}
-        print(f"Resuming: {len(completed_ids)} questions already done")
+    if args.resume:
+        pattern = f"{args.dataset}_{slug}_*.json"
+        prev_files = sorted(output_dir.glob(pattern))
+        if prev_files:
+            resume_path = prev_files[-1]  # most recent by timestamp
+            with open(resume_path) as f:
+                existing = json.load(f)
+            results = existing.get("results", [])
+            completed_ids = {r["id"] for r in results}
+            # Reuse same output path instead of creating a new one
+            output_path = resume_path
+            log_path = resume_path.with_suffix(".log")
+            print(f"Resuming from {resume_path}: {len(completed_ids)} questions done")
 
     # Running totals
     total_em = 0
@@ -366,9 +386,14 @@ async def main() -> None:
     finally:
         log_file.close()
 
-    # Final summary
+    # Final summary + experiment log
     if n_done > 0:
         avg_tools = sum(r["n_tool_calls"] for r in results) / n_done
+        avg_latency = sum(r["latency_s"] for r in results) / n_done
+        total_input = sum(r.get("input_tokens", 0) for r in results)
+        total_output = sum(r.get("output_tokens", 0) for r in results)
+        n_errors = sum(1 for r in results if r.get("error"))
+
         print(f"\n{'='*70}")
         print(f"FINAL: {n_done}/{len(questions)} questions")
         print(f"  EM:    {100*total_em/n_done:.1f}%")
@@ -377,6 +402,31 @@ async def main() -> None:
         print(f"  Tools: {avg_tools:.1f} calls/question avg")
         print(f"{'='*70}")
         print(f"Results saved to {output_path}")
+
+        # Append to experiment log (tracked in git)
+        experiment_log = Path(__file__).parent / "experiment_log.jsonl"
+        entry = {
+            "timestamp": run_ts,
+            "dataset": args.dataset,
+            "model": args.model,
+            "backend": backend,
+            "n_questions": len(questions),
+            "n_completed": n_done,
+            "n_errors": n_errors,
+            "avg_em": round(100 * total_em / n_done, 1),
+            "avg_f1": round(100 * total_f1 / n_done, 1),
+            "total_cost": round(total_cost, 4),
+            "avg_tool_calls": round(avg_tools, 1),
+            "avg_latency_s": round(avg_latency, 1),
+            "total_input_tokens": total_input,
+            "total_output_tokens": total_output,
+            "timeout": args.timeout,
+            "max_turns": args.max_turns,
+            "results_file": str(output_path),
+        }
+        with open(experiment_log, "a") as f:
+            f.write(json.dumps(entry, default=str) + "\n")
+        print(f"Experiment logged to {experiment_log}")
 
 
 def _save_results(
