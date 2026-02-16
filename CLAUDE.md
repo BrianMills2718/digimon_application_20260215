@@ -283,14 +283,15 @@ meta_decompose_question("Who founded the company that employed Jane Doe?")
 **Two benchmark modes:**
 
 1. **Agent benchmark** (`eval/run_agent_benchmark.py`) — agent freely composes operators via MCP
-   - Codex models: uses `acall_llm("codex", ..., mcp_servers=...)` (Codex SDK, not subprocess)
-   - Other models (e.g. gemini-3-flash): uses `MCPSessionPool` for persistent MCP connections across questions
+   - Three agent backends: Codex SDK (`--model codex`), Claude Agent SDK (`--model claude-code`), MCP agent loop (any litellm model)
    - **Only loads `digimon-kgrag` MCP server** (not all 17 global servers) via `mcp_servers` kwarg
-   - `DIGIMON_BENCHMARK_MODE=1` prunes non-retrieval tools (graph_visualize, corpus_prepare, graph_analyze)
-   - Agent discovers and calls digimon-kgrag MCP tools autonomously
-   - CLI: `python eval/run_agent_benchmark.py --dataset HotpotQAsmallest --n 10`
-   - Options: `--model codex` `--effort high` `--timeout 120`
-   - Output: `results/{dataset}_agent_benchmark.json` + `.log`
+   - Two prompt modes (`--mode`):
+     - `fixed` (default): prescribed workflow (VDB→onehop→chunk), `BENCHMARK_MODE=1` (47 tools)
+     - `adaptive`: open-ended strategy guide, `BENCHMARK_MODE=2` (44 tools — hides `auto_compose`, `execute_method`, `list_methods`)
+   - Agent SDK answer extraction: takes last non-empty line of full response (agent SDKs concatenate all text blocks)
+   - CLI: `python eval/run_agent_benchmark.py --dataset HotpotQAsmallest --num 10 --model claude-code --mode adaptive`
+   - Options: `--model codex` `--effort high` `--timeout 120` `--mode adaptive` `--resume`
+   - Output: `results/{dataset}_{model}_{timestamp}.json` + `.log`
 
 2. **Fixed pipeline benchmark** (`eval/run_benchmark.py`) — runs named methods via OperatorComposer
    - Calls Python directly (no MCP overhead) for batch runs
@@ -300,15 +301,23 @@ meta_decompose_question("Who founded the company that employed Jane Doe?")
 
 **Shared infrastructure:**
 - `eval/benchmark.py` — EM/F1 scoring, BenchmarkRunner, QuestionResult/MethodResult dataclasses
-- `eval/data_prep.py` — Dataset loading from Question.json (JSONL)
+- `eval/data_prep.py` — Dataset loading from Question.json (JSONL) + `convert_hipporag_dataset()` for HippoRAG format conversion
 - `eval/_llm_counter.py` — CountingLLMWrapper for fixed pipeline token tracking
 - `eval/_chunk_lookup.py` — ChunkLookup adapter for OperatorContext
+- `prompts/agent_benchmark.yaml` — fixed mode prompt (prescribed workflow)
+- `prompts/agent_benchmark_adaptive.yaml` — adaptive mode prompt (strategy guide, all 27 operators)
 
-**Baselines** (HotPotQAsmallest, 10 questions):
-- basic_local pipeline: 50% EM (fixed pipeline, no agent)
-- gemini-3-flash agent (v1.1 prompt): **70% EM, 84.2% F1** ($1.09, 17.1 tool calls/q avg)
-- codex agent (AoT prompt): 75% EM, 87.5% F1 (8/10 completed, 2 timeouts)
+**Converted datasets** (via `convert_hipporag_dataset()`):
+- `Data/2WikiMultiHopQA/` — 1000 questions, 6119 corpus docs (from HippoRAG benchmark)
+- `Data/MuSiQue/` — 1000 questions, 11656 corpus docs (from HippoRAG benchmark)
+
+**Baselines**:
+- basic_local pipeline: 50% EM (fixed pipeline, no agent, 10q)
+- gemini-3-flash fixed mode: **70% EM, 84.2% F1** (10q, $1.09, 17.1 tools/q)
+- gemini-3-flash fixed mode: **61.5% EM, 73.9% F1** (200q, $7.35, 5.6 tools/q)
+- claude-code adaptive mode: **70% EM, 82.4% F1** (10q, $2.30, 61.5s/q)
 - Config: gleaning=2, entity/edge descriptions ON, IDF-weighted PPR enabled
+- See `docs/COMPETITIVE_ANALYSIS.md` for SOTA comparison and benchmark strategy
 
 ### Phase 17: Cross-Modal MCP Tools (DONE)
 
