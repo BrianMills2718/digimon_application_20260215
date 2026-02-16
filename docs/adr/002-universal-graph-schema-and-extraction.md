@@ -159,6 +159,74 @@ graph:
 
 Mixed mode connects to onto-canon's predicate governance pipeline: `[NEW]` types are equivalent to `predicate_proposals` with status `pending`. An agent or human can later promote, reject, or merge them.
 
+### 3b. Canonicalization Aggressiveness (Orthogonal to Ontology Mode)
+
+Ontology mode controls what the LLM **extracts**. Canonicalization aggressiveness controls how hard we **merge** extracted output into canonical vocabularies **post-extraction**. These are independent dimensions:
+
+```
+                    Canonicalization Aggressiveness
+                    none        conservative    aggressive
+Extraction    ┌──────────────┬───────────────┬──────────────┐
+Constraint    │              │               │              │
+  open        │ current      │               │ "open-       │
+              │ behavior     │               │  minimal"    │
+              │              │               │              │
+  mixed       │              │               │              │
+              │              │               │              │
+  closed      │              │               │ maximum      │
+              │              │               │ constraint   │
+              └──────────────┴───────────────┴──────────────┘
+```
+
+**"Open-minimal"** = open extraction (no prompt constraints — LLM extracts whatever it finds) + aggressive post-extraction canonicalization (merge everything into the smallest possible vocabulary). The ontology stays small not by constraining the LLM, but by canonicalizing its output.
+
+Canonicalization applies to **three independent targets**, each with its own aggressiveness setting:
+
+```yaml
+# In Config2.yaml
+post_build:
+  canonicalize:
+    entities:
+      enabled: true
+      aggressiveness: "conservative"  # "none" | "conservative" | "aggressive"
+      # conservative: exact abbreviations, case variants only
+      # aggressive: fuzzy semantic similarity via LLM
+      merge_threshold: 0.85
+
+    relations:
+      enabled: true
+      aggressiveness: "aggressive"
+      # conservative: exact verb stem match to PropBank
+      # aggressive: LLM maps "funded", "gave money to", "bankrolled" → fund-01
+      vocabulary: "propbank"  # "propbank" | "framenet" | "custom"
+
+    entity_types:
+      enabled: true
+      aggressiveness: "moderate"
+      # conservative: exact SUMO type match
+      # aggressive: LLM maps "spy agency" → GovernmentOrganization
+      vocabulary: "sumo"  # "sumo" | "custom"
+```
+
+**Why SUMO/PropBank/FrameNet may make custom ontology lists unnecessary**: These canonical vocabularies already define a minimal, principled set of types and predicates:
+- **PropBank**: ~7,000 verb senses with argument structure (fund-01, attack-01, employ-01)
+- **SUMO**: ~100 top-level types in a formal hierarchy (Agent, Organization, Process, etc.)
+- **FrameNet**: ~1,200 frames with named roles (Employer, Employee, Position, etc.)
+
+A "closed" ontology with a hand-curated list of 10 entity types is just a subset of SUMO. A hand-curated list of 20 relation types is just a subset of PropBank. The canonical vocabularies ARE the principled version of what hand-curated lists approximate.
+
+**The aggressiveness dimension replaces the need for hand-curated lists**: Instead of maintaining `entity_types: [person, organization, location]` per domain, set `entity_types.vocabulary: "sumo"` and `entity_types.aggressiveness: "aggressive"`. The LLM maps whatever it extracts into the SUMO hierarchy. Different aggressiveness levels control how forcefully:
+
+| Target | Conservative | Aggressive |
+|--------|-------------|-----------|
+| **Entities** | Only merge "CIA" ↔ "Central Intelligence Agency" (exact abbreviation) | Also merge "the Agency" ↔ "CIA" (contextual reference) |
+| **Relations** | Only map "fund" → fund-01 (exact stem) | Also map "bankrolled", "gave money to", "financed" → fund-01 |
+| **Entity types** | Only map "person" → Human (exact match) | Also map "spy", "operative", "agent" → Human with role=IntelligenceAgent |
+
+**Cypher/openCypher becomes valuable as canonicalization aggressiveness increases**: With open extraction + no canonicalization, edge labels are messy ("directed", "is the director of", "was directed by") — Cypher pattern matching fails on label mismatch. With aggressive relation canonicalization, all three become `direct-01` — and `MATCH (f:Film)-[:direct-01]->(p:Person)` works reliably. The value of structured queries scales directly with ontology constraint.
+
+**Cypher implementation note**: [txtai](https://github.com/neuml/txtai) uses NetworkX as its default graph backend (same as DIGIMON) and has integrated [GrandCypher](https://github.com/aplbrain/grand-cypher) for Cypher queries over NetworkX graphs. This is a proven approach — no need to write a custom parser.
+
 ### 4. Reification for N-ary Relationships
 
 For the `reified` graph type, extraction produces events as nodes with role-typed edges to participants:
@@ -275,11 +343,14 @@ prompts/
 
 ## Implementation Order
 
-1. **Prompts as data** — Move extraction prompts from `GraphPrompt.py` to YAML templates. Load via `llm_client.render_prompt()`. No behavior change, just externalization.
-2. **Ontology modes** — Add `ontology_mode` config + Jinja2 conditionals in templates. Open mode is current behavior. Closed/mixed add constraints.
-3. **Entity canonicalization post-build step** — The most immediate value. Adapts onto-canon's dedup prompt for direct NetworkX graph operation.
-4. **Reified graph type** — New extraction template + JSON parser + diamond-pattern builder. New graph type config.
-5. **Full post-build pipeline** — Q-code resolution, schema validation, predicate mapping as optional enrichment steps.
+1. **Entity canonicalization post-build step** — The most immediate value. Adapts onto-canon's `match_entities_to_concepts()` for direct NetworkX graph operation. Configurable `merge_threshold`. No dependency on prompts-as-data.
+2. **Prompts as data** — Move extraction prompts from `GraphPrompt.py` to YAML/Jinja2 templates. Load via `llm_client.render_prompt()`. No behavior change, just externalization. Unblocks ontology modes.
+3. **Relation canonicalization post-build step** — Map extracted relation names to PropBank senses via onto-canon's AMR pipeline. Configurable aggressiveness. Unblocks Cypher.
+4. **Ontology modes** — Add `ontology_mode` config + Jinja2 conditionals in templates. Open mode is current behavior. Closed/mixed add constraints. Consider: SUMO/PropBank as the canonical type/relation lists rather than hand-curated per-domain lists.
+5. **Cypher query tool** — Integrate [GrandCypher](https://github.com/aplbrain/grand-cypher) for openCypher queries on NetworkX. Value scales with canonicalization aggressiveness — most useful after step 3.
+6. **Entity type canonicalization** — Map extracted types to SUMO hierarchy. Configurable aggressiveness.
+7. **Reified graph type** — New extraction template + JSON parser + diamond-pattern builder. For n-ary events (intelligence analysis use case, not needed for QA benchmarks).
+8. **Full post-build pipeline** — Q-code resolution, schema validation as optional enrichment steps.
 
 ## Consequences
 

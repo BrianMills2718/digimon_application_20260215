@@ -284,11 +284,33 @@ UNIFIED_PLAN ITEMS (parallel tracks, mostly independent):
 | Item | Why Suspect | When It Becomes Needed |
 |------|------------|----------------------|
 | **[H] Graph versioning** | Classic YAGNI. Nobody has asked for snapshot/diff/restore. The current workflow is: build graph → query graph → done. | When mutation tools are used in production and someone needs to undo a bad edit. |
-| **[J] Reified graph type** | Adds significant extraction complexity (new parser, diamond-pattern builder). No benchmark tests n-ary relationships. HotpotQA is binary factoid QA. | When building graphs from narrative text with complex events (intelligence analysis, not QA benchmarks). |
-| **[K] Schema validation** | Only useful in closed/mixed mode, which itself isn't needed for current benchmarks. | When using domain-specific ontologies for controlled extraction. |
+| **[J] Reified graph type** | Adds significant extraction complexity (new parser, diamond-pattern builder). No benchmark tests n-ary relationships. 2WikiMultiHopQA questions are binary property chains. | When building graphs from narrative text with complex events (intelligence analysis, not QA benchmarks). |
+| **[K] Schema validation** | Only useful in closed/mixed mode, which itself isn't needed for current benchmarks. SUMO/PropBank may replace hand-curated type lists entirely. | When using domain-specific ontologies for controlled extraction. |
 | **[L] Q-code resolution** | Wikidata linking is expensive and adds latency. HotpotQA entities don't need disambiguation — they're already named entities from Wikipedia. | When building cross-investigation graphs where "CIA" in doc 1 must link to "CIA" in doc 500. |
 | **[M] Deep epistemic round-trip** | The round-trip is lossy (`DIGIMON_ATTRIBUTE_MAPPING.md` documents data loss: keywords, clusters, multi-source_ids). Fixing this is significant work for a use case (periodic deep epistemic analysis) that hasn't been demonstrated yet. | When actually using onto-canon's belief revision on DIGIMON graphs in a real workflow. |
-| **[N] Cypher-like queries** | Writing a parser is fun but operators cover retrieval needs. No user has asked "find all PERSON→EMPLOYED_BY→ORG patterns." | When doing exploratory graph analysis beyond what operators provide. |
+
+### RECLASSIFIED: Not overengineering, but has a dependency chain
+
+| Item | Status | Dependency |
+|------|--------|-----------|
+| **[N] Cypher queries** | Was "overengineering." Now: **high value but blocked by relation canonicalization**. Cypher's value scales directly with ontology constraint — with messy extracted edge labels, pattern matching fails on label mismatch. With canonicalized PropBank senses, `MATCH (f)-[:direct-01]->(p)` works reliably. Use [GrandCypher](https://github.com/aplbrain/grand-cypher) on NetworkX (proven by txtai). | Depends on: relation canonicalization (PropBank mapping) |
+| **Relation canonicalization** | New item. Map extracted relation names → PropBank senses post-build. Configurable aggressiveness. Reuse onto-canon's AMR pipeline. | Depends on: nothing (onto-canon AMR infrastructure exists) |
+
+### Two orthogonal configuration dimensions (new insight)
+
+Ontology mode (extraction constraint) and canonicalization aggressiveness (post-extraction merge) are **independent**:
+
+```
+Extraction constraint:         open → mixed → closed       (prompt-level)
+Canonicalization aggressiveness: none → conservative → aggressive  (post-build)
+```
+
+Canonicalization applies to three targets independently:
+- **Entities** → merge "CIA" / "Central Intelligence Agency" / "the Agency" (via `match_entities_to_concepts`)
+- **Relations** → merge "funded" / "bankrolled" / "gave money to" → `fund-01` (via PropBank)
+- **Entity types** → merge "spy agency" / "intelligence org" → `GovernmentOrganization` (via SUMO)
+
+SUMO/PropBank/FrameNet may make hand-curated ontology lists unnecessary — they ARE the principled minimal vocabulary. The aggressiveness setting controls how forcefully you map into them.
 
 ---
 
