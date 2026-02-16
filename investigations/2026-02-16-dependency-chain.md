@@ -310,7 +310,7 @@ Canonicalization applies to three targets independently:
 - **Relations** → merge "funded" / "bankrolled" / "gave money to" → `fund-01` (via PropBank)
 - **Entity types** → merge "spy agency" / "intelligence org" → `GovernmentOrganization` (via SUMO)
 
-SUMO/PropBank/FrameNet may make hand-curated ontology lists unnecessary — they ARE the principled minimal vocabulary. The aggressiveness setting controls how forcefully you map into them.
+SUMO/PropBank/FrameNet may make hand-curated ontology lists unnecessary — they ARE the principled minimal vocabulary. And aggressiveness operates at three levels: (1) surface text → canonical sense, (2) merging senses with each other via FrameNet frames (e.g., `fund-01` + `invest-01` → same group), (3) collapsing to SUMO top-level types. The aggressiveness setting controls how far up the hierarchy you climb — from preserving every PropBank distinction to collapsing into ~20 SUMO types.
 
 ---
 

@@ -215,15 +215,31 @@ post_build:
 
 A "closed" ontology with a hand-curated list of 10 entity types is just a subset of SUMO. A hand-curated list of 20 relation types is just a subset of PropBank. The canonical vocabularies ARE the principled version of what hand-curated lists approximate.
 
-**The aggressiveness dimension replaces the need for hand-curated lists**: Instead of maintaining `entity_types: [person, organization, location]` per domain, set `entity_types.vocabulary: "sumo"` and `entity_types.aggressiveness: "aggressive"`. The LLM maps whatever it extracts into the SUMO hierarchy. Different aggressiveness levels control how forcefully:
+**The aggressiveness dimension operates at three levels, not one.** Canonicalization isn't just "map messy text into canonical senses." It also controls how coarse-grained the canonical vocabulary itself becomes — merging senses with each other:
 
-| Target | Conservative | Aggressive |
-|--------|-------------|-----------|
-| **Entities** | Only merge "CIA" ↔ "Central Intelligence Agency" (exact abbreviation) | Also merge "the Agency" ↔ "CIA" (contextual reference) |
-| **Relations** | Only map "fund" → fund-01 (exact stem) | Also map "bankrolled", "gave money to", "financed" → fund-01 |
-| **Entity types** | Only map "person" → Human (exact match) | Also map "spy", "operative", "agent" → Human with role=IntelligenceAgent |
+```
+Level 1: Surface → Sense         "bankrolled" → fund-01             (text normalization)
+Level 2: Sense → Sense Group     fund-01 + invest-01 → same group  (semantic merging)
+Level 3: Sense Group → Type      financial transfers → Transaction  (ontological abstraction)
+```
 
-**Cypher/openCypher becomes valuable as canonicalization aggressiveness increases**: With open extraction + no canonicalization, edge labels are messy ("directed", "is the director of", "was directed by") — Cypher pattern matching fails on label mismatch. With aggressive relation canonicalization, all three become `direct-01` — and `MATCH (f:Film)-[:direct-01]->(p:Person)` works reliably. The value of structured queries scales directly with ontology constraint.
+The canonical vocabularies provide the hierarchy for all three levels:
+- **PropBank** defines ~7,000 senses (Level 1 targets)
+- **FrameNet** groups related senses into ~1,200 frames (Level 2 grouping: `fund-01` and `invest-01` share a frame)
+- **SUMO** defines ~100 top-level types (Level 3 abstraction: both map to `Transaction`)
+
+Aggressiveness controls how far up you climb:
+
+| Aggressiveness | Entities | Relations | Types |
+|---------------|----------|-----------|-------|
+| **None** | Raw extracted names | Raw extracted verbs | Raw extracted types |
+| **Conservative** | Merge exact abbreviations ("CIA" ↔ "Central Intelligence Agency") | Map to PropBank sense ("funded" → `fund-01`) | Map to exact SUMO type |
+| **Moderate** | Merge contextual references ("the Agency" ↔ "CIA") | Map to PropBank AND merge similar senses (`fund-01` + `finance-01` → same group via FrameNet frame) | Map to SUMO parent type |
+| **Aggressive** | Merge by semantic similarity (LLM decides) | Collapse entire FrameNet frames into single predicates (`fund-01` + `invest-01` + `bankroll` → `FINANCIAL_TRANSFER`) | Collapse to SUMO top-level (~20 types) |
+
+**This replaces hand-curated ontology lists**: A "closed" ontology with 10 entity types and 20 relation types is just an ad-hoc slice of SUMO/PropBank. Setting `aggressiveness: "aggressive"` with SUMO/PropBank/FrameNet as the vocabulary achieves the same effect systematically — the ontology stays minimal because semantically similar extractions get collapsed, and the granularity is controlled by a single parameter rather than per-domain curation.
+
+**Cypher/openCypher becomes valuable as aggressiveness increases**: With no canonicalization, edge labels are messy ("directed", "is the director of", "was directed by") — Cypher pattern matching fails on label mismatch. At conservative aggressiveness, these become `direct-01` — Cypher works on exact senses. At aggressive, `fund-01` and `invest-01` collapse to the same label — Cypher queries become more general and more powerful. The value of structured queries scales directly with canonicalization aggressiveness.
 
 **Cypher implementation note**: [txtai](https://github.com/neuml/txtai) uses NetworkX as its default graph backend (same as DIGIMON) and has integrated [GrandCypher](https://github.com/aplbrain/grand-cypher) for Cypher queries over NetworkX graphs. This is a proven approach — no need to write a custom parser.
 
