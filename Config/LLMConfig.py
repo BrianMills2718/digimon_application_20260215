@@ -3,7 +3,7 @@
 
 
 from enum import Enum
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import field_validator
 
@@ -42,6 +42,7 @@ class LLMConfig(YamlModel):
 
     model: Optional[str] = None  # also stands for DEPLOYMENT_NAME
     pricing_plan: Optional[str] = None  # Cost Settlement Plan Parameters.
+    fallback_models: List[str] = []  # Fallback models for llm_client (tried in order if primary fails)
 
     # For Cloud Service Provider like Baidu/ Alibaba
     access_key: Optional[str] = None

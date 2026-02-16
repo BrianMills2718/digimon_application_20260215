@@ -19,8 +19,38 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+# === MCP STDIO SAFETY: prevent ALL non-JSONRPC stdout writes ===
+# litellm prints colored INFO/WARNING/ERROR to stdout via Python logging,
+# direct print() calls, and Rich console handlers. This corrupts MCP stdio
+# transport (JSONRPC over stdout). Must be done BEFORE any imports touch litellm.
+#
+# Fixed: 2026-02-15 — overnight benchmark failed because litellm's Gemini 429
+# error body was printed line-by-line to stdout, creating 260K JSONRPC parse errors.
+
+# 1. Force all Python logging to stderr at WARNING+ level
+logging.basicConfig(stream=sys.stderr, level=logging.WARNING, force=True)
+
+# 2. Env vars to suppress litellm's own output mechanisms
+os.environ["LITELLM_LOG"] = "ERROR"
+
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
+
+# 3. Import litellm early and suppress every output channel
+try:
+    import litellm
+    litellm.suppress_debug_info = True  # Kills "Give Feedback" banner
+    litellm.set_verbose = False         # Kills print_verbose() calls
+    # Redirect all litellm-related Python loggers to stderr
+    for logger_name in ("LiteLLM", "LiteLLM Proxy", "LiteLLM Router"):
+        _ll = logging.getLogger(logger_name)
+        _ll.handlers.clear()
+        _handler = logging.StreamHandler(sys.stderr)
+        _handler.setLevel(logging.ERROR)
+        _ll.addHandler(_handler)
+        _ll.propagate = False
+except ImportError:
+    pass
 
 from mcp.server.fastmcp import FastMCP
 
@@ -104,7 +134,7 @@ async def _ensure_initialized():
     os.chdir(project_root)
 
     from Option.Config2 import Config
-    from Core.Provider.LiteLLMProvider import LiteLLMProvider
+    from Core.Provider.LLMClientAdapter import LLMClientAdapter
     from Core.Index.EmbeddingFactory import get_rag_embedding
     from Core.Chunk.ChunkFactory import ChunkFactory
     from Core.AgentSchema.context import GraphRAGContext
@@ -112,7 +142,12 @@ async def _ensure_initialized():
     config_path = os.path.join(project_root, "Option", "Config2.yaml")
     config = Config.from_yaml_file(config_path)
 
-    llm = LiteLLMProvider(config.llm)
+    fallback = getattr(config.llm, 'fallback_models', None) or []
+    llm = LLMClientAdapter(
+        config.llm.model,
+        fallback_models=fallback,
+        num_retries=3,
+    )
     encoder = get_rag_embedding(config=config)
     chunk_factory = ChunkFactory(config)
 

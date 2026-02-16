@@ -5,14 +5,23 @@ llm_client which handles retry, fallback, cost tracking, and model routing.
 
 Usage:
     from Core.Provider.LLMClientAdapter import LLMClientAdapter
+
+    # Basic (same as before)
     adapter = LLMClientAdapter(model="anthropic/claude-sonnet-4-5-20250929")
+
+    # With fallback chain and retry for graph building
+    adapter = LLMClientAdapter(
+        model="gemini/gemini-2.5-flash",
+        fallback_models=["deepseek/deepseek-chat", "openai/gpt-4o-mini"],
+        num_retries=3,
+    )
     answer = await adapter.aask("What is the capital of France?")
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from Core.Common.Logger import logger
 from Core.Provider.BaseLLM import BaseLLM
@@ -26,7 +35,15 @@ class LLMClientAdapter(BaseLLM):
     We implement acompletion_text() via llm_client.acall_llm.
     """
 
-    def __init__(self, model: str, **llm_client_kwargs: Any):
+    def __init__(
+        self,
+        model: str,
+        *,
+        fallback_models: List[str] | None = None,
+        num_retries: int = 2,
+        max_concurrency: int = 5,
+        **llm_client_kwargs: Any,
+    ):
         # Build a minimal LLMConfig so BaseLLM fields are satisfied
         self.config = LLMConfig(
             api_type=LLMType.LITELLM,
@@ -34,17 +51,18 @@ class LLMClientAdapter(BaseLLM):
             api_key="managed-by-llm-client",
         )
         self.model = model
+        self._fallback_models = fallback_models or []
+        self._num_retries = num_retries
         self._kwargs = llm_client_kwargs
-        self.semaphore = asyncio.Semaphore(
-            llm_client_kwargs.pop("max_concurrency", 5)
-        )
+        self.semaphore = asyncio.Semaphore(max_concurrency)
         self.cost_manager = None  # llm_client tracks costs internally
         self.use_system_prompt = True
         self.system_prompt = "You are a helpful assistant."
         self.pricing_plan = model
         self.aclient = None
 
-        logger.info(f"LLMClientAdapter initialized for model: {model}")
+        fb_info = f", fallbacks={self._fallback_models}" if self._fallback_models else ""
+        logger.info(f"LLMClientAdapter initialized: {model}{fb_info}, retries={num_retries}")
 
     async def _achat_completion(
         self,
@@ -56,11 +74,16 @@ class LLMClientAdapter(BaseLLM):
         """Call llm_client.acall_llm and return OpenAI-compatible response dict."""
         from llm_client import acall_llm
 
+        call_kwargs = {**self._kwargs}
+        if self._fallback_models:
+            call_kwargs["fallback_models"] = self._fallback_models
+        call_kwargs["num_retries"] = self._num_retries
+
         result = await acall_llm(
             self.model,
             messages,
             timeout=timeout,
-            **self._kwargs,
+            **call_kwargs,
         )
 
         # Convert LLMCallResult to OpenAI-style response dict for get_choice_text()
@@ -89,11 +112,19 @@ class LLMClientAdapter(BaseLLM):
 
         from llm_client import acall_llm
 
+        call_kwargs = {**self._kwargs}
+        if self._fallback_models:
+            call_kwargs["fallback_models"] = self._fallback_models
+        call_kwargs["num_retries"] = self._num_retries
+
+        if format == "json":
+            call_kwargs["response_format"] = {"type": "json_object"}
+
         result = await acall_llm(
             self.model,
             messages,
             timeout=timeout,
-            **self._kwargs,
+            **call_kwargs,
         )
         return result.content
 

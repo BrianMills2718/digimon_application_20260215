@@ -56,4 +56,4 @@ def set_llm_stream_logfunc(func):
 
 def _llm_stream_log(msg):
     if _print_level in ["INFO"]:
-        print(msg, end="")
+        print(msg, end="", file=sys.stderr)

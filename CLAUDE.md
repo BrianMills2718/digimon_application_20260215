@@ -138,7 +138,12 @@ Agent SDK models (`codex`, `claude-code`) work but cause recursive subprocess is
 - `gemini/gemini-2.5-flash` — $0.30/M. Good balance of quality and cost.
 - `openai/o4-mini` — Strong reasoning with chain-of-thought.
 
-Graph building uses `llm.model` (`gemini/gemini-2.5-flash`, cheap/fast). API keys auto-loaded by llm_client from `~/.secrets/api_keys.env`. Use `get_config` to inspect, `set_agentic_model` to override at runtime.
+Graph building uses `llm.model` (`gemini/gemini-2.5-flash`, cheap/fast) via `LLMClientAdapter` with automatic fallback chain (`fallback_models` in Config2.yaml). Both `llm` and `agentic_llm` now route through `llm_client.acall_llm` — smart retry, fallback models, structured error types, and cost tracking come for free. API keys auto-loaded by llm_client from `~/.secrets/api_keys.env`. Use `get_config` to inspect, `set_agentic_model` to override at runtime.
+
+**Graph build resilience**:
+- **Checkpointing**: ERGraph persists progress after each batch of 50 chunks. If the build is interrupted (rate limit, crash, kill), restart and it resumes from the checkpoint automatically.
+- **Fallback chain**: Configure `llm.fallback_models` in Config2.yaml (e.g., `[deepseek/deepseek-chat, openai/gpt-4o-mini]`). If the primary model fails all retries, llm_client automatically falls over to the next model.
+- **Per-chunk error isolation**: `asyncio.gather(return_exceptions=True)` — individual chunk extraction failures don't kill the batch. Failed chunks are logged and skipped.
 
 ### Previous Work: MCP Integration
 

@@ -83,7 +83,15 @@ class BaseGraph(ABC):
 
         is_exist = await self._load_graph(force)
         if force or not is_exist:
-            await self._clear()
+            # Check if a checkpoint exists — if so, we're resuming a partial build.
+            # Don't clear the graph in that case; the checkpoint tracks what's done.
+            has_checkpoint = hasattr(self, '_load_checkpoint') and self._load_checkpoint()
+            if has_checkpoint:
+                logger.info("Checkpoint found — resuming partial build (skipping graph clear)")
+                # Load the partially-built graph from disk
+                await self._load_graph(force=False)
+            else:
+                await self._clear()
             # Build the graph based on the input chunks
             build_successful = await self._build_graph(chunks)
             if build_successful:
@@ -97,10 +105,10 @@ class BaseGraph(ABC):
             build_successful = True  # Loading existing graph is a form of success
 
         if build_successful:
-            logger.info("✅ Finished the graph building stage successfully.")
+            logger.info("Finished the graph building stage successfully.")
         else:
-            logger.error("❌ Finished the graph building stage with errors.")
-        
+            logger.error("Finished the graph building stage with errors.")
+
         return build_successful
 
     async def _load_graph(self, force: bool = False):

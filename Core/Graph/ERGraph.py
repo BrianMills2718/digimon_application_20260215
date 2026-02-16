@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from collections import defaultdict
 from typing import Any, List
 from Core.Graph.BaseGraph import BaseGraph
@@ -156,8 +157,44 @@ class ERGraph(DelimiterExtractionMixin, BaseGraph):
     # Graph building orchestration
     # ------------------------------------------------------------------
 
+    def _checkpoint_path(self) -> str | None:
+        """Return path for checkpoint file, or None if no namespace set."""
+        if self._graph and getattr(self._graph, 'namespace', None):
+            import os
+            save_dir = self._graph.namespace.get_save_path()
+            return os.path.join(save_dir, "_checkpoint_processed.json")
+        return None
+
+    def _load_checkpoint(self) -> set[int]:
+        """Load set of already-processed chunk indices from checkpoint file."""
+        path = self._checkpoint_path()
+        if path and os.path.exists(path):
+            try:
+                with open(path, 'r') as f:
+                    return set(json.loads(f.read()))
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"Could not load checkpoint: {e}")
+        return set()
+
+    def _save_checkpoint(self, processed: set[int]) -> None:
+        """Persist set of processed chunk indices."""
+        path = self._checkpoint_path()
+        if path:
+            import os
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'w') as f:
+                f.write(json.dumps(sorted(processed)))
+
+    def clear_checkpoint(self) -> None:
+        """Remove checkpoint file (called after successful complete build)."""
+        path = self._checkpoint_path()
+        if path and os.path.exists(path):
+            os.remove(path)
+            logger.info("Cleared build checkpoint")
+
     async def _build_graph(self, chunk_list: List[Any]) -> bool:
         from Core.Common.TokenBudgetManager import TokenBudgetManager
+        import os
 
         try:
             # Only generate ontology when explicitly enabled via config
@@ -190,24 +227,70 @@ class ERGraph(DelimiterExtractionMixin, BaseGraph):
                     else:
                         logger.warning("Failed to generate custom ontology, proceeding with generic extraction")
 
-            # Process chunks in batches if needed
-            if len(chunk_list) > 100:
-                logger.info(f"Processing {len(chunk_list)} chunks in batches to manage memory")
-                batch_size = 50
-                for i in range(0, len(chunk_list), batch_size):
-                    batch = chunk_list[i:i + batch_size]
-                    logger.info(f"Processing batch {i//batch_size + 1}/{(len(chunk_list) + batch_size - 1)//batch_size}")
-                    results = await asyncio.gather(
-                        *[self._extract_entity_relationship(chunk) for chunk in batch])
-                    await self.__graph__(results)
-            else:
-                results = await asyncio.gather(
-                    *[self._extract_entity_relationship(chunk) for chunk in chunk_list])
-                await self.__graph__(results)
+            # Load checkpoint — skip already-processed chunks on resume
+            already_processed = self._load_checkpoint()
+            if already_processed:
+                logger.info(f"Resuming from checkpoint: {len(already_processed)}/{len(chunk_list)} chunks already processed")
 
+            # Index all chunks so we can track by position
+            indexed_chunks = list(enumerate(chunk_list))
+            remaining = [(i, c) for i, c in indexed_chunks if i not in already_processed]
+
+            if not remaining:
+                logger.info("All chunks already processed (checkpoint), skipping extraction")
+                return True
+
+            logger.info(f"Processing {len(remaining)} chunks ({len(already_processed)} already done)")
+
+            batch_size = 50
+            total_batches = (len(remaining) + batch_size - 1) // batch_size
+
+            for batch_start in range(0, len(remaining), batch_size):
+                batch = remaining[batch_start:batch_start + batch_size]
+                batch_num = batch_start // batch_size + 1
+                logger.info(f"Processing batch {batch_num}/{total_batches} ({len(batch)} chunks)")
+
+                results = await asyncio.gather(
+                    *[self._extract_entity_relationship(chunk) for _, chunk in batch],
+                    return_exceptions=True,
+                )
+
+                # Separate successes from failures
+                good_results = []
+                batch_indices = []
+                failed_count = 0
+                for (idx, _chunk), result in zip(batch, results):
+                    if isinstance(result, Exception):
+                        failed_count += 1
+                        logger.warning(f"Chunk {idx} extraction failed: {result}")
+                    else:
+                        good_results.append(result)
+                        batch_indices.append(idx)
+
+                if failed_count:
+                    logger.warning(f"Batch {batch_num}: {failed_count} failures, {len(good_results)} successes")
+
+                if good_results:
+                    await self.__graph__(good_results)
+
+                # Update checkpoint with successfully processed indices
+                already_processed.update(batch_indices)
+                self._save_checkpoint(already_processed)
+                await self._persist_graph(force=True)
+                logger.info(f"Checkpoint saved: {len(already_processed)}/{len(chunk_list)} chunks processed")
+
+            # Build complete — clear checkpoint
+            self.clear_checkpoint()
             logger.info("Successfully built graph")
             return True
         except Exception as e:
+            # Persist whatever we've built so far
+            if already_processed:
+                logger.warning(f"Build interrupted after {len(already_processed)}/{len(chunk_list)} chunks. Progress saved to checkpoint.")
+                try:
+                    await self._persist_graph(force=True)
+                except Exception as persist_err:
+                    logger.error(f"Failed to persist partial graph: {persist_err}")
             logger.exception(f"Error building graph: {e}")
             return False
         finally:
