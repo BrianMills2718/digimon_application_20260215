@@ -340,15 +340,15 @@ Based on the dependency analysis and essential vs overengineering classification
 
 ## Open Questions
 
-1. **Will entity canonicalization hurt precision?** Over-merging distinct entities (the known prompt quality issue) could *decrease* EM if "Bob Smith the politician" gets merged with "Bob Smith the scientist." Need to test on real data.
+1. **Will entity canonicalization hurt precision?** Over-merging distinct entities (the known prompt quality issue) could *decrease* EM if "Bob Smith the politician" gets merged with "Bob Smith the scientist." Need to test on real data. **Mitigation**: Make merge aggressiveness configurable. `auto_merge_threshold` already exists as a parameter in `match_entities_to_concepts()` (concept_dedup.py:150). The prompt rules (lines 14-33 in `match_concepts.yaml`) should also be templatized with a `merge_aggressiveness` Jinja variable: `conservative` (only exact abbreviation/case matches, current "when in doubt, return null"), `moderate` (loosen place qualifiers + title variants), `aggressive` (merge on semantic similarity). This is consistent with prompts-as-data — the prompt is already YAML/Jinja, just needs one more variable.
 
-2. **2WikiMultiHopQA vs HotPotQA?** 2Wiki has smallest corpus (6,119 paragraphs vs 9,811) so fastest to build. But HotPotQA is the most-reported benchmark. Which to prioritize?
+2. **2WikiMultiHopQA vs HotPotQA?** **Decision: 2WikiMultiHopQA first.** Smallest corpus (6,119 paragraphs), fastest graph build, and multi-hop QA is what KG-RAG is supposed to excel at. HotPotQA second (9,811 paragraphs, most-reported).
 
 3. **corpus_prepare auto-detection**: Can `corpus_format_parsers.py` handle HippoRAG corpus JSON directly? It auto-detects `text` field — might work for corpus. But question file still needs custom conversion regardless.
 
 4. **Graph build cost for 10K paragraphs**: HotpotQA_200 (1,800 chunks) cost ~$X for graph build. HotpotQA full (9,811 paragraphs → ~10K chunks) will cost ~5x more. With fallback chain, Gemini rate limits may force fallback to DeepSeek/OpenAI, changing extraction quality.
 
-5. **Canonicalization timing**: Should canonicalization run during build (after each batch) or post-build (one pass over complete graph)? Post-build is simpler but means the graph is messy during construction. During-build is more complex but catches duplicates early.
+5. **Canonicalization timing: post-build.** During-build is quadratic: each of ~360 batches checks new entities against a growing graph (batch 1: 50 vs 0, batch 360: 50 vs 17K). Total LLM token cost grows as O(chunks × cumulative_entities). Post-build is linear: collect all N nodes once, batch into groups of ~100, make ~N/100 LLM calls. For 17K nodes = ~170 calls, done once, O(N). Post-build also gives better dedup decisions because the LLM sees the full entity population.
 
 ---
 
