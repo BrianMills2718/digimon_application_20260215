@@ -64,10 +64,11 @@ arbitrary retrieval DAGs by calling operators sequentially, using `list_operator
 `get_compatible_successors` for discovery. 10 reference pipelines also available as
 shortcuts via `execute_method`.
 
-**Orchestration architecture** (see `docs/adr/001-agent-orchestration-architecture.md`):
-Two non-exclusive modes — DIGIMON's internal brain (`agentic_model`) handles mid-pipeline
-LLM calls and auto_compose; a capable client (Claude Code, Codex) can override and drive
-directly via individual operators or execute_method. Both are always available.
+**Architecture decisions**:
+- ADR-001: Agent orchestration — two non-exclusive modes (internal brain vs client-as-brain)
+- ADR-002: Universal graph schema — prompts as data, ontology modes, reification, post-build enrichment
+- ADR-003: Three graph tool suites — creation (7 tools), retrieval (27 operators + 10 methods), mutation (proposed)
+See `docs/adr/` for full details.
 
 **New components**:
 - `Core/Provider/LLMClientAdapter.py` — wraps `llm_client.acall_llm` behind BaseLLM interface
