@@ -142,7 +142,7 @@ Graph building uses `llm.model` (`gemini/gemini-2.5-flash`, cheap/fast) via `LLM
 
 **Graph build resilience**:
 - **Checkpointing**: ERGraph persists progress after each batch of 50 chunks. If the build is interrupted (rate limit, crash, kill), restart and it resumes from the checkpoint automatically.
-- **Fallback chain**: Configure `llm.fallback_models` in Config2.yaml (e.g., `[deepseek/deepseek-chat, openai/gpt-4o-mini]`). If the primary model fails all retries, llm_client automatically falls over to the next model.
+- **Fallback chain**: Configure `llm.fallback_models` in Config2.yaml (e.g., `[deepseek/deepseek-chat, gpt-5-mini]`). If the primary model fails all retries, llm_client automatically falls over to the next model.
 - **Per-chunk error isolation**: `asyncio.gather(return_exceptions=True)` — individual chunk extraction failures don't kill the batch. Failed chunks are logged and skipped.
 
 ### Previous Work: MCP Integration
