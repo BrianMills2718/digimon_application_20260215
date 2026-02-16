@@ -32,7 +32,7 @@ async def judge_one(question: str, gold: str, predicted: str, model: str) -> dic
         gold=gold,
         predicted=predicted,
     )
-    result = await acall_llm(model, messages, timeout=30, num_retries=3)
+    result = await acall_llm(model, messages, timeout=30, num_retries=3, task="llm_judge")
     try:
         parsed = json.loads(strip_fences(result.content))
         return {

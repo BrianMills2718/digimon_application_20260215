@@ -61,8 +61,14 @@ class LLMClientAdapter(BaseLLM):
         self.pricing_plan = model
         self.aclient = None
 
+        self._task: str | None = None
+
         fb_info = f", fallbacks={self._fallback_models}" if self._fallback_models else ""
         logger.info(f"LLMClientAdapter initialized: {model}{fb_info}, retries={num_retries}")
+
+    def set_task(self, task: str | None) -> None:
+        """Set the task label for io_log tagging on subsequent LLM calls."""
+        self._task = task
 
     async def _achat_completion(
         self,
@@ -83,6 +89,7 @@ class LLMClientAdapter(BaseLLM):
             self.model,
             messages,
             timeout=timeout,
+            task=self._task,
             **call_kwargs,
         )
 
@@ -124,6 +131,7 @@ class LLMClientAdapter(BaseLLM):
             self.model,
             messages,
             timeout=timeout,
+            task=self._task,
             **call_kwargs,
         )
         return result.content

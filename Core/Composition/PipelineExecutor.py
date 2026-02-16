@@ -86,6 +86,10 @@ class PipelineExecutor:
             # Pre-dispatch validation: check slot names and types match the operator descriptor
             self._validate_inputs_against_descriptor(op_desc, inputs, tool_call, step.step_id)
 
+            # Tag LLM calls with the operator ID for io_log tracking
+            if self.ctx.llm is not None and hasattr(self.ctx.llm, "set_task"):
+                self.ctx.llm.set_task(tool_call.tool_id)
+
             # Execute operator
             try:
                 result = await op_desc.implementation(

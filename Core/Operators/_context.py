@@ -22,3 +22,4 @@ class OperatorContext:
     config: Optional[Any] = None  # RetrieverConfig / QueryConfig
     sparse_matrices: Optional[Dict[str, Any]] = field(default_factory=dict)
     # sparse_matrices keys: "entity_to_rel", "rel_to_chunk" (scipy CSR)
+    llm_task: Optional[str] = None  # Set by PipelineExecutor before each operator

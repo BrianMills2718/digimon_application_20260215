@@ -84,6 +84,7 @@ async def select_method(
             model,
             messages,
             response_model=CompositionDecision,
+            task="auto_compose",
         )
         logger.info(
             f"auto_compose: LLM selected '{decision.method_name}' "

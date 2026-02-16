@@ -57,14 +57,12 @@ from mcp.server.fastmcp import FastMCP
 logger = logging.getLogger(__name__)
 
 # Benchmark mode levels:
-#   0 / unset: all tools exposed
-#   1: prune non-retrieval tools (graph_visualize, corpus_prepare, graph_analyze)
-#   2: also prune pipeline shortcuts (auto_compose, execute_method, list_methods)
-#      — forces agent to compose operators individually
+#   0 / unset: all tools exposed (including build, pipeline shortcuts, etc.)
+#   1+: prune non-retrieval tools (graph build, corpus_prepare, graph_analyze,
+#        auto_compose, execute_method, list_methods, build_sparse_matrices, etc.)
+#        — agent must compose operators individually
 _bm_raw = os.environ.get("DIGIMON_BENCHMARK_MODE", "").strip().lower()
-if _bm_raw in ("2",):
-    BENCHMARK_MODE = 2
-elif _bm_raw in ("1", "true", "yes"):
+if _bm_raw in ("1", "2", "true", "yes"):
     BENCHMARK_MODE = 1
 else:
     BENCHMARK_MODE = 0
@@ -189,6 +187,20 @@ async def _ensure_initialized():
 
     _state["initialized"] = True
 
+    # Auto-preload graph and VDB when running in benchmark mode.
+    # Set DIGIMON_PRELOAD_DATASET=<dataset_name> to load pre-built artifacts on startup.
+    preload_dataset = os.environ.get("DIGIMON_PRELOAD_DATASET", "").strip()
+    if preload_dataset:
+        logger.info(f"Pre-loading graph and VDB for dataset '{preload_dataset}'")
+        try:
+            await graph_build_er(preload_dataset)
+            graph_id = f"{preload_dataset}_ERGraph"
+            vdb_name = f"{preload_dataset}_entities"
+            await entity_vdb_build(graph_id, vdb_name)
+            logger.info(f"Pre-loaded: graph={graph_id}, vdb={vdb_name}")
+        except Exception as e:
+            logger.warning(f"Pre-load failed for '{preload_dataset}': {e}")
+
 
 def _format_result(result: Any) -> str:
     """Convert tool output to readable string."""
@@ -301,7 +313,6 @@ if not BENCHMARK_MODE:
 # GRAPH CONSTRUCTION TOOLS
 # =============================================================================
 
-@mcp.tool()
 async def graph_build_er(dataset_name: str, force_rebuild: bool = False,
                           input_directory: str = None,
                           config_overrides: dict = None) -> str:
@@ -341,7 +352,6 @@ async def graph_build_er(dataset_name: str, force_rebuild: bool = False,
     return _format_result(result)
 
 
-@mcp.tool()
 async def graph_build_rk(dataset_name: str, force_rebuild: bool = False,
                           input_directory: str = None,
                           config_overrides: dict = None) -> str:
@@ -377,7 +387,6 @@ async def graph_build_rk(dataset_name: str, force_rebuild: bool = False,
     return _format_result(result)
 
 
-@mcp.tool()
 async def graph_build_tree(dataset_name: str, force_rebuild: bool = False,
                             input_directory: str = None,
                             config_overrides: dict = None) -> str:
@@ -414,7 +423,6 @@ async def graph_build_tree(dataset_name: str, force_rebuild: bool = False,
     return _format_result(result)
 
 
-@mcp.tool()
 async def graph_build_tree_balanced(dataset_name: str, force_rebuild: bool = False,
                                      input_directory: str = None,
                                      config_overrides: dict = None) -> str:
@@ -450,7 +458,6 @@ async def graph_build_tree_balanced(dataset_name: str, force_rebuild: bool = Fal
     return _format_result(result)
 
 
-@mcp.tool()
 async def graph_build_passage(dataset_name: str, force_rebuild: bool = False,
                                input_directory: str = None,
                                config_overrides: dict = None) -> str:
@@ -489,7 +496,6 @@ async def graph_build_passage(dataset_name: str, force_rebuild: bool = False,
 # ENTITY TOOLS
 # =============================================================================
 
-@mcp.tool()
 async def entity_vdb_build(graph_reference_id: str, vdb_collection_name: str,
                            force_rebuild: bool = False) -> str:
     """Build a vector database index from entities in a graph. Required before entity_vdb_search.
@@ -513,6 +519,17 @@ async def entity_vdb_build(graph_reference_id: str, vdb_collection_name: str,
     )
     result = await entity_vdb_build_tool(inputs, _state["context"])
     return _format_result(result)
+
+# Register build/infrastructure tools only when NOT in benchmark mode.
+# In benchmark mode, the graph and VDB are pre-built — exposing these wastes
+# ~15s/question on redundant no-op calls.
+if not BENCHMARK_MODE:
+    graph_build_er = mcp.tool()(graph_build_er)
+    graph_build_rk = mcp.tool()(graph_build_rk)
+    graph_build_tree = mcp.tool()(graph_build_tree)
+    graph_build_tree_balanced = mcp.tool()(graph_build_tree_balanced)
+    graph_build_passage = mcp.tool()(graph_build_passage)
+    entity_vdb_build = mcp.tool()(entity_vdb_build)
 
 
 @mcp.tool()
@@ -967,7 +984,6 @@ if not BENCHMARK_MODE:
 # COMMUNITY TOOLS
 # =============================================================================
 
-@mcp.tool()
 async def build_communities(dataset_name: str, force_rebuild: bool = False) -> str:
     """Run Leiden clustering on an existing graph and generate community reports.
 
@@ -1043,6 +1059,9 @@ async def build_communities(dataset_name: str, force_rebuild: bool = False) -> s
         "dataset": dataset_name,
         "num_communities": num_communities,
     }, indent=2)
+
+if not BENCHMARK_MODE:
+    build_communities = mcp.tool()(build_communities)
 
 
 @mcp.tool()
@@ -1189,7 +1208,6 @@ async def subgraph_agent_path(user_question: str,
 # CONTEXT INSPECTION TOOLS
 # =============================================================================
 
-@mcp.tool()
 async def list_available_resources() -> str:
     """List all currently available graphs, VDBs, communities, sparse matrices, and datasets."""
     await _ensure_initialized()
@@ -1221,6 +1239,9 @@ async def list_available_resources() -> str:
         "working_dir": str(config.working_dir),
         "data_root": str(config.data_root),
     }, indent=2)
+
+if not BENCHMARK_MODE:
+    list_available_resources = mcp.tool()(list_available_resources)
 
 
 # =============================================================================
@@ -1349,7 +1370,7 @@ async def auto_compose(query: str, dataset_name: str,
 
     return json.dumps(result, indent=2, default=str)
 
-if BENCHMARK_MODE < 2:
+if not BENCHMARK_MODE:
     auto_compose = mcp.tool()(auto_compose)
 
 
@@ -1357,7 +1378,6 @@ if BENCHMARK_MODE < 2:
 # RELATIONSHIP VDB BUILD + SEARCH
 # =============================================================================
 
-@mcp.tool()
 async def relationship_vdb_build(graph_reference_id: str, vdb_collection_name: str,
                                   force_rebuild: bool = False) -> str:
     """Build a vector database index from relationships in a graph. Required before relationship_vdb_search.
@@ -1381,6 +1401,9 @@ async def relationship_vdb_build(graph_reference_id: str, vdb_collection_name: s
     )
     result = await relationship_vdb_build_tool(inputs, _state["context"])
     return _format_result(result)
+
+if not BENCHMARK_MODE:
+    relationship_vdb_build = mcp.tool()(relationship_vdb_build)
 
 @mcp.tool()
 async def relationship_vdb_search(vdb_reference_id: str, query_text: str,
@@ -1415,7 +1438,6 @@ async def relationship_vdb_search(vdb_reference_id: str, query_text: str,
 # SPARSE MATRIX BUILD
 # =============================================================================
 
-@mcp.tool()
 async def build_sparse_matrices(dataset_name: str, force_rebuild: bool = False) -> str:
     """Build sparse CSR matrices mapping entities→relationships→chunks for a graph.
 
@@ -1497,6 +1519,9 @@ async def build_sparse_matrices(dataset_name: str, force_rebuild: bool = False) 
         "entity_to_rel_shape": list(e2r.shape),
         "rel_to_chunk_shape": list(r2c.shape),
     }, indent=2)
+
+if not BENCHMARK_MODE:
+    build_sparse_matrices = mcp.tool()(build_sparse_matrices)
 
 
 # =============================================================================
@@ -1975,7 +2000,7 @@ async def execute_method(method_name: str, query: str, dataset_name: str,
 
     return json.dumps(result, indent=2, default=str)
 
-if BENCHMARK_MODE < 2:
+if not BENCHMARK_MODE:
     list_methods = mcp.tool()(list_methods)
     execute_method = mcp.tool()(execute_method)
 
@@ -2507,6 +2532,7 @@ async def select_analysis_mode(
     try:
         decision, meta = await acall_llm_structured(
             model, messages, response_model=AnalysisModeDecision,
+            task="select_analysis_mode",
         )
         logger.info(
             f"select_analysis_mode: recommended '{decision.recommended_mode}' "
@@ -2531,6 +2557,29 @@ async def list_modality_conversions() -> str:
     """
     from Core.AgentTools.cross_modal_tools import list_all_conversions
     return json.dumps(list_all_conversions(), indent=2)
+
+
+# =============================================================================
+# BENCHMARK-ONLY: STRUCTURED ANSWER SUBMISSION
+# =============================================================================
+
+if BENCHMARK_MODE:
+    @mcp.tool()
+    async def submit_answer(reasoning: str, answer: str) -> str:
+        """Submit your final answer with reasoning. YOU MUST call this tool as your last action.
+
+        Args:
+            reasoning: Why this is the correct answer. Reference the specific source text
+                      and explain how it answers the question. If the source contains
+                      multiple related facts (e.g. total capacity vs seated capacity),
+                      explain which one matches what the question asked.
+            answer: The precise answer to the question. Just the fact, no explanation.
+                   For yes/no questions: "yes" or "no".
+
+        Returns:
+            Confirmation of submitted answer.
+        """
+        return json.dumps({"status": "submitted", "answer": answer})
 
 
 # =============================================================================
