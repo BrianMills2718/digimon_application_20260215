@@ -27,32 +27,36 @@ class BaseGraphBuildOutputs(BaseModel):
 # =========================
 class ERGraphConfigOverrides(BaseModel):
     extract_two_step: Optional[bool] = Field(
-        default=None, 
+        default=None,
         validation_alias=AliasChoices('extract_two_step', 'two_step_extraction', 'extraction_strategy', 'extraction_mode'),
         description="Override default for two-step entity/relation extraction."
     )
     enable_entity_description: Optional[bool] = Field(
-        default=None, 
+        default=None,
         validation_alias=AliasChoices('enable_entity_description', 'include_entity_descriptions', 'entity_descriptions'),
         description="Override for enabling entity descriptions."
     )
     enable_entity_type: Optional[bool] = Field(
-        default=None, 
+        default=None,
         validation_alias=AliasChoices('enable_entity_type', 'include_entity_types', 'entity_types'),
         description="Override for enabling entity types."
     )
     enable_edge_description: Optional[bool] = Field(
-        default=None, 
+        default=None,
         validation_alias=AliasChoices('enable_edge_description', 'include_edge_descriptions', 'edge_descriptions'),
         description="Override for enabling edge descriptions."
     )
     enable_edge_name: Optional[bool] = Field(
-        default=None, 
+        default=None,
         validation_alias=AliasChoices('enable_edge_name', 'include_edge_names', 'edge_names'),
         description="Override for enabling edge names."
     )
+    max_gleaning: Optional[int] = Field(
+        default=None,
+        description="Number of gleaning iterations (1=off, 2-3 recommended). Extra passes extract missed entities."
+    )
     custom_ontology_path_override: Optional[str] = Field(
-        default=None, 
+        default=None,
         validation_alias=AliasChoices('custom_ontology_path_override', 'custom_ontology_path', 'ontology_path'),
         description="Path to a custom ontology JSON file to use for this build."
     )

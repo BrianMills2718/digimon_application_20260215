@@ -77,6 +77,10 @@ directly via individual operators or execute_method. Both are always available.
 - `Option/Config2.py` — `agentic_model` field for separate LLM for meta operators
 - `Core/AgentTools/corpus_format_parsers.py` — multi-format file parsers for corpus_prepare
 
+**Graph build config_overrides**: All 5 graph_build_* tools accept `config_overrides: dict`
+parameter to override graph config at build time (e.g. `{"max_gleaning": 2, "enable_entity_description": true}`).
+Validated against per-graph-type Pydantic models in `Core/AgentSchema/graph_construction_tool_contracts.py`.
+
 **MCP tools (49 total)**:
 - 5 graph build (er, rk, tree, tree_balanced, passage) + 1 corpus (prepare)
 - 7 entity (vdb_build, vdb_search, onehop, ppr, agent, link, tfidf)
@@ -294,9 +298,11 @@ meta_decompose_question("Who founded the company that employed Jane Doe?")
 - `eval/_llm_counter.py` — CountingLLMWrapper for fixed pipeline token tracking
 - `eval/_chunk_lookup.py` — ChunkLookup adapter for OperatorContext
 
-**Existing baselines** (from `test_qa_evaluation_pipeline.py`):
-- basic_local pipeline: 50% accuracy on HotPotQAsmallest (10 questions, 2-5s/question)
-- Uses LLM judge for flexible answer matching (handles verbose answers)
+**Baselines** (HotPotQAsmallest, 10 questions):
+- basic_local pipeline: 50% EM (fixed pipeline, no agent)
+- gemini-3-flash agent (v1.1 prompt): **70% EM, 84.2% F1** ($1.09, 17.1 tool calls/q avg)
+- codex agent (AoT prompt): 75% EM, 87.5% F1 (8/10 completed, 2 timeouts)
+- Config: gleaning=2, entity/edge descriptions ON, IDF-weighted PPR enabled
 
 ### Phase 17: Cross-Modal MCP Tools (DONE)
 

@@ -253,7 +253,8 @@ async def corpus_prepare(input_directory: str, dataset_name: str) -> str:
 
 @mcp.tool()
 async def graph_build_er(dataset_name: str, force_rebuild: bool = False,
-                          input_directory: str = None) -> str:
+                          input_directory: str = None,
+                          config_overrides: dict = None) -> str:
     """Build an Entity-Relationship (ER) knowledge graph from a prepared corpus.
     Extracts entities (with types and descriptions) and relationships using LLM.
     Best for general-purpose KG. Uses single-step delimiter extraction by default,
@@ -265,6 +266,10 @@ async def graph_build_er(dataset_name: str, force_rebuild: bool = False,
         dataset_name: Name of the dataset (must have corpus prepared, or pass input_directory)
         force_rebuild: Force rebuild even if graph exists
         input_directory: Path to source files for auto corpus preparation (optional)
+        config_overrides: Optional dict of graph config overrides. Supported fields:
+            enable_entity_description (bool), enable_entity_type (bool),
+            enable_edge_description (bool), enable_edge_name (bool),
+            max_gleaning (int, 1=off, 2-3 recommended), extract_two_step (bool)
 
     Returns:
         graph_id: str, status: str, num_nodes: int, num_edges: int
@@ -272,11 +277,13 @@ async def graph_build_er(dataset_name: str, force_rebuild: bool = False,
     await _ensure_initialized()
     await _ensure_corpus(dataset_name, input_directory)
     from Core.AgentTools.graph_construction_tools import build_er_graph
-    from Core.AgentSchema.graph_construction_tool_contracts import BuildERGraphInputs
+    from Core.AgentSchema.graph_construction_tool_contracts import BuildERGraphInputs, ERGraphConfigOverrides
 
+    overrides = ERGraphConfigOverrides(**config_overrides) if config_overrides else None
     inputs = BuildERGraphInputs(
         target_dataset_name=dataset_name,
         force_rebuild=force_rebuild,
+        config_overrides=overrides,
     )
     result = await build_er_graph(inputs, _state["config"], _state["llm"],
                                    _state["encoder"], _state["chunk_factory"])
@@ -286,7 +293,8 @@ async def graph_build_er(dataset_name: str, force_rebuild: bool = False,
 
 @mcp.tool()
 async def graph_build_rk(dataset_name: str, force_rebuild: bool = False,
-                          input_directory: str = None) -> str:
+                          input_directory: str = None,
+                          config_overrides: dict = None) -> str:
     """Build an RK (Relationship-Keyword) graph. Like ER but with keyword-enriched edges.
 
     If no Corpus.json exists and input_directory is provided, auto-prepares the corpus first.
@@ -295,6 +303,9 @@ async def graph_build_rk(dataset_name: str, force_rebuild: bool = False,
         dataset_name: Name of the dataset (must have corpus prepared, or pass input_directory)
         force_rebuild: Force rebuild even if graph exists
         input_directory: Path to source files for auto corpus preparation (optional)
+        config_overrides: Optional dict of graph config overrides. Supported fields:
+            enable_edge_keywords (bool), max_gleaning (int),
+            enable_entity_description (bool)
 
     Returns:
         graph_id: str, status: str, num_nodes: int, num_edges: int
@@ -302,11 +313,13 @@ async def graph_build_rk(dataset_name: str, force_rebuild: bool = False,
     await _ensure_initialized()
     await _ensure_corpus(dataset_name, input_directory)
     from Core.AgentTools.graph_construction_tools import build_rk_graph
-    from Core.AgentSchema.graph_construction_tool_contracts import BuildRKGraphInputs
+    from Core.AgentSchema.graph_construction_tool_contracts import BuildRKGraphInputs, RKGraphConfigOverrides
 
+    overrides = RKGraphConfigOverrides(**config_overrides) if config_overrides else None
     inputs = BuildRKGraphInputs(
         target_dataset_name=dataset_name,
         force_rebuild=force_rebuild,
+        config_overrides=overrides,
     )
     result = await build_rk_graph(inputs, _state["config"], _state["llm"],
                                    _state["encoder"], _state["chunk_factory"])
@@ -316,7 +329,8 @@ async def graph_build_rk(dataset_name: str, force_rebuild: bool = False,
 
 @mcp.tool()
 async def graph_build_tree(dataset_name: str, force_rebuild: bool = False,
-                            input_directory: str = None) -> str:
+                            input_directory: str = None,
+                            config_overrides: dict = None) -> str:
     """Build a hierarchical Tree graph (RAPTOR-style). Clusters chunks and creates summaries at multiple levels.
 
     If no Corpus.json exists and input_directory is provided, auto-prepares the corpus first.
@@ -325,6 +339,10 @@ async def graph_build_tree(dataset_name: str, force_rebuild: bool = False,
         dataset_name: Name of the dataset (must have corpus prepared, or pass input_directory)
         force_rebuild: Force rebuild even if graph exists
         input_directory: Path to source files for auto corpus preparation (optional)
+        config_overrides: Optional dict of tree config overrides. Supported fields:
+            num_layers (int), reduction_dimension (int), threshold (float),
+            summarization_length (int), max_length_in_cluster (int),
+            cluster_metric (str), random_seed (int)
 
     Returns:
         graph_id: str, status: str, num_nodes: int, num_edges: int
@@ -332,11 +350,13 @@ async def graph_build_tree(dataset_name: str, force_rebuild: bool = False,
     await _ensure_initialized()
     await _ensure_corpus(dataset_name, input_directory)
     from Core.AgentTools.graph_construction_tools import build_tree_graph
-    from Core.AgentSchema.graph_construction_tool_contracts import BuildTreeGraphInputs
+    from Core.AgentSchema.graph_construction_tool_contracts import BuildTreeGraphInputs, TreeGraphConfigOverrides
 
+    overrides = TreeGraphConfigOverrides(**config_overrides) if config_overrides else None
     inputs = BuildTreeGraphInputs(
         target_dataset_name=dataset_name,
         force_rebuild=force_rebuild,
+        config_overrides=overrides,
     )
     result = await build_tree_graph(inputs, _state["config"], _state["llm"],
                                      _state["encoder"], _state["chunk_factory"])
@@ -346,7 +366,8 @@ async def graph_build_tree(dataset_name: str, force_rebuild: bool = False,
 
 @mcp.tool()
 async def graph_build_tree_balanced(dataset_name: str, force_rebuild: bool = False,
-                                     input_directory: str = None) -> str:
+                                     input_directory: str = None,
+                                     config_overrides: dict = None) -> str:
     """Build a balanced Tree graph using K-Means clustering for more uniform cluster sizes.
 
     If no Corpus.json exists and input_directory is provided, auto-prepares the corpus first.
@@ -355,6 +376,9 @@ async def graph_build_tree_balanced(dataset_name: str, force_rebuild: bool = Fal
         dataset_name: Name of the dataset (must have corpus prepared, or pass input_directory)
         force_rebuild: Force rebuild even if graph exists
         input_directory: Path to source files for auto corpus preparation (optional)
+        config_overrides: Optional dict of tree config overrides. Supported fields:
+            num_layers (int), summarization_length (int), size_of_clusters (int),
+            max_size_percentage (float), max_iter (int), tol (float), random_seed (int)
 
     Returns:
         graph_id: str, status: str, num_nodes: int, num_edges: int
@@ -362,11 +386,13 @@ async def graph_build_tree_balanced(dataset_name: str, force_rebuild: bool = Fal
     await _ensure_initialized()
     await _ensure_corpus(dataset_name, input_directory)
     from Core.AgentTools.graph_construction_tools import build_tree_graph_balanced
-    from Core.AgentSchema.graph_construction_tool_contracts import BuildTreeGraphBalancedInputs
+    from Core.AgentSchema.graph_construction_tool_contracts import BuildTreeGraphBalancedInputs, TreeGraphBalancedConfigOverrides
 
+    overrides = TreeGraphBalancedConfigOverrides(**config_overrides) if config_overrides else None
     inputs = BuildTreeGraphBalancedInputs(
         target_dataset_name=dataset_name,
         force_rebuild=force_rebuild,
+        config_overrides=overrides,
     )
     result = await build_tree_graph_balanced(inputs, _state["config"], _state["llm"],
                                               _state["encoder"], _state["chunk_factory"])
@@ -376,7 +402,8 @@ async def graph_build_tree_balanced(dataset_name: str, force_rebuild: bool = Fal
 
 @mcp.tool()
 async def graph_build_passage(dataset_name: str, force_rebuild: bool = False,
-                               input_directory: str = None) -> str:
+                               input_directory: str = None,
+                               config_overrides: dict = None) -> str:
     """Build a Passage graph where nodes are text passages linked by shared entities.
 
     If no Corpus.json exists and input_directory is provided, auto-prepares the corpus first.
@@ -385,6 +412,8 @@ async def graph_build_passage(dataset_name: str, force_rebuild: bool = False,
         dataset_name: Name of the dataset (must have corpus prepared, or pass input_directory)
         force_rebuild: Force rebuild even if graph exists
         input_directory: Path to source files for auto corpus preparation (optional)
+        config_overrides: Optional dict of passage graph config overrides. Supported fields:
+            prior_prob (float)
 
     Returns:
         graph_id: str, status: str, num_nodes: int, num_edges: int
@@ -392,11 +421,13 @@ async def graph_build_passage(dataset_name: str, force_rebuild: bool = False,
     await _ensure_initialized()
     await _ensure_corpus(dataset_name, input_directory)
     from Core.AgentTools.graph_construction_tools import build_passage_graph
-    from Core.AgentSchema.graph_construction_tool_contracts import BuildPassageGraphInputs
+    from Core.AgentSchema.graph_construction_tool_contracts import BuildPassageGraphInputs, PassageGraphConfigOverrides
 
+    overrides = PassageGraphConfigOverrides(**config_overrides) if config_overrides else None
     inputs = BuildPassageGraphInputs(
         target_dataset_name=dataset_name,
         force_rebuild=force_rebuild,
+        config_overrides=overrides,
     )
     result = await build_passage_graph(inputs, _state["config"], _state["llm"],
                                         _state["encoder"], _state["chunk_factory"])
