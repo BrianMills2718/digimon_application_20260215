@@ -169,6 +169,7 @@ hotpot_dev_distractor_v1.json
 
 # Large data files
 Data/HotpotQA/
+Data/HotpotQA_200/
 Data/HotpotQAsmallest/
 # Add other large datasets as needed
 
