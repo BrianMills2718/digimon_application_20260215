@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Agent-driven benchmark: any LLM composes operators per question via MCP.
 
-Supports two agent backends (selected by --model):
+Supports three agent backends (selected by --model):
 - Codex SDK: model="codex" or "codex/gpt-5" — Codex CLI spawns MCP servers
+- Claude Agent SDK: model="claude-code" or "claude-code/opus" — Claude Code spawns MCP servers
 - MCP agent loop: any litellm model (e.g. "gemini/gemini-3-flash-preview") —
   llm_client starts MCP servers and runs a tool-calling loop
 
@@ -128,6 +129,17 @@ def _is_codex_model(model: str) -> bool:
     return lower == "codex" or lower.startswith("codex/")
 
 
+def _is_claude_code_model(model: str) -> bool:
+    """Check if model routes through the Claude Agent SDK."""
+    lower = model.lower()
+    return lower == "claude-code" or lower.startswith("claude-code/")
+
+
+def _is_agent_sdk_model(model: str) -> bool:
+    """Check if model uses any agent SDK (codex or claude-code)."""
+    return _is_codex_model(model) or _is_claude_code_model(model)
+
+
 def _model_slug(model: str) -> str:
     """Convert model string to filesystem-safe slug. e.g. 'gemini/gemini-3-flash-preview' -> 'gemini-3-flash-preview'."""
     # Use last segment after /
@@ -176,6 +188,17 @@ async def run_agent(
                 approval_policy="never",
                 sandbox_mode="workspace-write",
                 model_reasoning_effort=reasoning_effort,
+                mcp_servers=DIGIMON_MCP_SERVERS,
+            )
+        elif _is_claude_code_model(model):
+            # Claude Agent SDK path
+            result = await acall_llm(
+                model,
+                messages,
+                timeout=timeout,
+                cwd=project_root,
+                permission_mode="bypassPermissions",
+                max_turns=max_turns,
                 mcp_servers=DIGIMON_MCP_SERVERS,
             )
         elif mcp_session_pool is not None:
@@ -291,15 +314,20 @@ async def main() -> None:
     log_file = open(log_path, "a")
     print(f"Log: {log_path}")
     print(f"JSON: {output_path}")
-    backend = "Codex SDK" if _is_codex_model(args.model) else "MCP agent loop"
+    if _is_codex_model(args.model):
+        backend = "Codex SDK"
+    elif _is_claude_code_model(args.model):
+        backend = "Claude Agent SDK"
+    else:
+        backend = "MCP agent loop"
     print(f"Model: {args.model} ({backend}, timeout={args.timeout}s)")
 
     print(f"\n{'='*70}")
     print(f"AGENT BENCHMARK: {args.dataset} ({len(questions)} questions)")
     print(f"{'='*70}\n")
 
-    # Use MCPSessionPool for non-Codex models to avoid per-question server restarts
-    use_session_pool = not _is_codex_model(args.model)
+    # Use MCPSessionPool for non-agent-SDK models to avoid per-question server restarts
+    use_session_pool = not _is_agent_sdk_model(args.model)
     if use_session_pool:
         from llm_client import MCPSessionPool
         pool_cm = MCPSessionPool(DIGIMON_MCP_SERVERS)

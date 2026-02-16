@@ -170,8 +170,11 @@ hotpot_dev_distractor_v1.json
 # Large data files
 Data/HotpotQA/
 Data/HotpotQA_200/
+Data/HotpotQA_full/
 Data/HotpotQAsmallest/
-# Add other large datasets as needed
+Data/2WikiMultiHopQA/
+Data/MuSiQue/
+Data/hipporag_benchmark/
 
 # Build artifacts
 *.graphml

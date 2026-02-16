@@ -74,3 +74,68 @@ def check_graph_ready(dataset_name: str, working_dir: str = "./results") -> bool
     """Check if an ER graph has been built for a dataset."""
     graph_dir = Path(working_dir) / dataset_name / "er_graph"
     return graph_dir.exists() and any(graph_dir.iterdir())
+
+
+# HippoRAG benchmark format → DIGIMON format
+# Source: Data/hipporag_benchmark/{name}.json (JSON array) + {name}_corpus.json
+# Target: Data/{Name}/Question.json (JSONL) + Data/{Name}/corpus_input/corpus.jsonl
+
+HIPPORAG_DATASETS = {
+    "hotpotqa": "HotpotQA_full",
+    "2wikimultihopqa": "2WikiMultiHopQA",
+    "musique": "MuSiQue",
+}
+
+
+def convert_hipporag_dataset(
+    name: str,
+    data_root: str = "./Data",
+) -> str:
+    """Convert a HippoRAG benchmark dataset to DIGIMON format.
+
+    Args:
+        name: HippoRAG dataset name ('hotpotqa', '2wikimultihopqa', 'musique')
+        data_root: Root data directory
+
+    Returns:
+        Path to created dataset directory
+    """
+    if name not in HIPPORAG_DATASETS:
+        raise ValueError(f"Unknown dataset: {name}. Choose from {list(HIPPORAG_DATASETS)}")
+
+    src_dir = Path(data_root) / "hipporag_benchmark"
+    dst_name = HIPPORAG_DATASETS[name]
+    dst_dir = Path(data_root) / dst_name
+    dst_dir.mkdir(exist_ok=True)
+
+    # Convert questions: JSON array → JSONL
+    with open(src_dir / f"{name}.json") as f:
+        questions = json.load(f)
+
+    with open(dst_dir / "Question.json", "w") as f:
+        for i, q in enumerate(questions):
+            out = {
+                "id": q.get("id", f"q{i}"),
+                "question": q["question"],
+                "answer": q["answer"],
+            }
+            if "type" in q:
+                out["type"] = q["type"]
+            if "level" in q:
+                out["level"] = q["level"]
+            f.write(json.dumps(out) + "\n")
+
+    # Convert corpus: JSON array → JSONL in corpus_input/
+    corpus_input = dst_dir / "corpus_input"
+    corpus_input.mkdir(exist_ok=True)
+    with open(src_dir / f"{name}_corpus.json") as f:
+        corpus = json.load(f)
+
+    with open(corpus_input / "corpus.jsonl", "w") as f:
+        for doc in corpus:
+            f.write(json.dumps({"title": doc["title"], "content": doc["text"]}) + "\n")
+
+    logger.info(
+        f"Converted {name}: {len(questions)} questions, {len(corpus)} corpus docs → {dst_dir}"
+    )
+    return str(dst_dir.resolve())
