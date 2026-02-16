@@ -88,19 +88,27 @@ def extract_tool_calls(raw_response: object) -> list[dict]:
 
 # --- Prompt ---
 
-PROMPT_TEMPLATE = Path(__file__).parent.parent / "prompts" / "agent_benchmark.yaml"
+PROMPT_TEMPLATES = {
+    "fixed": Path(__file__).parent.parent / "prompts" / "agent_benchmark.yaml",
+    "adaptive": Path(__file__).parent.parent / "prompts" / "agent_benchmark_adaptive.yaml",
+}
 
 
-def build_messages(question: str, dataset_name: str) -> list[dict]:
+def build_messages(question: str, dataset_name: str, mode: str = "fixed") -> list[dict]:
     """Render the agent benchmark prompt from YAML template."""
     from llm_client import render_prompt
-    return render_prompt(PROMPT_TEMPLATE, question=question, dataset_name=dataset_name)
+    template = PROMPT_TEMPLATES.get(mode, PROMPT_TEMPLATES["fixed"])
+    return render_prompt(template, question=question, dataset_name=dataset_name)
 
 
 # --- MCP server config ---
 
-def _build_mcp_servers() -> dict:
-    """Build MCP server config with API keys forwarded from current env."""
+def _build_mcp_servers(benchmark_mode: int = 1) -> dict:
+    """Build MCP server config with API keys forwarded from current env.
+
+    Args:
+        benchmark_mode: 0=all tools, 1=prune viz/corpus, 2=also prune pipeline shortcuts
+    """
     import llm_client  # triggers auto-load of ~/.secrets/api_keys.env
     env = {}
     for key in ("OPENAI_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY",
@@ -108,8 +116,7 @@ def _build_mcp_servers() -> dict:
         val = os.environ.get(key)
         if val:
             env[key] = val
-    # Enable benchmark mode — prunes non-retrieval tools (graph_visualize, corpus_prepare, graph_analyze)
-    env["DIGIMON_BENCHMARK_MODE"] = "1"
+    env["DIGIMON_BENCHMARK_MODE"] = str(benchmark_mode)
     return {
         "digimon-kgrag": {
             "command": "/home/brian/miniconda3/envs/digimon/bin/python",
@@ -118,7 +125,8 @@ def _build_mcp_servers() -> dict:
         },
     }
 
-DIGIMON_MCP_SERVERS = _build_mcp_servers()
+# Default — overridden in main() based on --mode
+DIGIMON_MCP_SERVERS = _build_mcp_servers(1)
 
 
 # --- Agent model detection ---
@@ -159,6 +167,7 @@ async def run_agent(
     reasoning_effort: str = "high",
     max_turns: int = 20,
     mcp_session_pool: object = None,
+    mode: str = "fixed",
 ) -> dict:
     """Run an agent on a single question via llm_client.
 
@@ -168,13 +177,14 @@ async def run_agent(
     Args:
         mcp_session_pool: Optional MCPSessionPool for reusing MCP connections
             across questions (non-Codex models only).
+        mode: Prompt mode ('fixed' or 'adaptive')
 
     Returns dict with: answer, tool_calls, usage, cost, latency_s, error
     """
     from llm_client import acall_llm
 
     project_root = str(Path(__file__).parent.parent)
-    messages = build_messages(question, dataset_name)
+    messages = build_messages(question, dataset_name, mode=mode)
 
     t0 = time.monotonic()
     try:
@@ -265,7 +275,14 @@ async def main() -> None:
     parser.add_argument("--effort", default="high", help="Reasoning effort (Codex only): minimal/low/medium/high")
     parser.add_argument("--max-turns", type=int, default=20, help="Max tool-calling loop iterations (non-Codex only)")
     parser.add_argument("--data-root", default="./Data", help="Data root directory")
+    parser.add_argument("--mode", default="fixed", choices=["fixed", "adaptive"],
+                        help="Prompt mode: 'fixed' (prescribed workflow) or 'adaptive' (agent composes freely)")
     args = parser.parse_args()
+
+    # Rebuild MCP servers with correct benchmark mode
+    global DIGIMON_MCP_SERVERS
+    benchmark_mode = 2 if args.mode == "adaptive" else 1
+    DIGIMON_MCP_SERVERS = _build_mcp_servers(benchmark_mode)
 
     dataset_path = Path(args.data_root) / args.dataset
     if not dataset_path.exists():
@@ -365,6 +382,7 @@ async def main() -> None:
                     reasoning_effort=args.effort,
                     max_turns=args.max_turns,
                     mcp_session_pool=session_pool,
+                    mode=args.mode,
                 )
 
                 predicted = agent_result["answer"]
@@ -479,6 +497,7 @@ async def main() -> None:
             "avg_latency_s": round(avg_latency, 1),
             "total_input_tokens": total_input,
             "total_output_tokens": total_output,
+            "mode": args.mode,
             "timeout": args.timeout,
             "max_turns": args.max_turns,
             "results_file": str(output_path),

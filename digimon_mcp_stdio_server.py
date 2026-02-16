@@ -56,8 +56,18 @@ from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
 
-# Benchmark mode: skip non-retrieval tools to reduce agent confusion
-BENCHMARK_MODE = os.environ.get("DIGIMON_BENCHMARK_MODE", "").strip() in ("1", "true", "yes")
+# Benchmark mode levels:
+#   0 / unset: all tools exposed
+#   1: prune non-retrieval tools (graph_visualize, corpus_prepare, graph_analyze)
+#   2: also prune pipeline shortcuts (auto_compose, execute_method, list_methods)
+#      — forces agent to compose operators individually
+_bm_raw = os.environ.get("DIGIMON_BENCHMARK_MODE", "").strip().lower()
+if _bm_raw in ("2",):
+    BENCHMARK_MODE = 2
+elif _bm_raw in ("1", "true", "yes"):
+    BENCHMARK_MODE = 1
+else:
+    BENCHMARK_MODE = 0
 
 # --- Initialize MCP Server ---
 mcp = FastMCP("digimon-kgrag", instructions="""
@@ -1273,7 +1283,6 @@ async def set_agentic_model(model: str) -> str:
 # AUTO-COMPOSE (LLM-driven method selection)
 # =============================================================================
 
-@mcp.tool()
 async def auto_compose(query: str, dataset_name: str,
                        auto_build: bool = True,
                        return_context_only: bool = False) -> str:
@@ -1339,6 +1348,9 @@ async def auto_compose(query: str, dataset_name: str,
     }
 
     return json.dumps(result, indent=2, default=str)
+
+if BENCHMARK_MODE < 2:
+    auto_compose = mcp.tool()(auto_compose)
 
 
 # =============================================================================
@@ -1814,7 +1826,6 @@ async def get_compatible_successors(operator_id: str) -> str:
 # METHOD-LEVEL TOOLS
 # =============================================================================
 
-@mcp.tool()
 async def list_methods() -> str:
     """List all 10 available retrieval methods with rich metadata.
 
@@ -1890,7 +1901,6 @@ async def list_graph_types() -> str:
     return json.dumps(graph_types, indent=2)
 
 
-@mcp.tool()
 async def execute_method(method_name: str, query: str, dataset_name: str,
                           return_context_only: bool = False,
                           auto_build: bool = False) -> str:
@@ -1964,6 +1974,10 @@ async def execute_method(method_name: str, query: str, dataset_name: str,
         }, indent=2)
 
     return json.dumps(result, indent=2, default=str)
+
+if BENCHMARK_MODE < 2:
+    list_methods = mcp.tool()(list_methods)
+    execute_method = mcp.tool()(execute_method)
 
 
 async def _auto_build_prerequisites(profile, op_ctx, dataset_name: str) -> list[str]:
