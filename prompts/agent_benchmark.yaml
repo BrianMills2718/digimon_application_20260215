@@ -36,9 +36,11 @@ messages:
       - entity_onehop: graph neighbors of known entities
       - entity_ppr: PageRank from seed entities (IDF-weighted, rare entities rank higher)
       - relationship_onehop: relationships connected to entities
+      - relationship_vdb_search: vector search for relationships by description
       - chunk_get_text: retrieve source text for specific entities
       - chunk_from_relationships: retrieve text for specific relationships
       - chunk_occurrence: chunks where entity pairs co-occur
+      - chunk_text_search: TF-IDF keyword search over raw chunk text (bypasses entity lookup)
       - meta_extract_entities: LLM-based entity extraction from text
       - meta_generate_answer: generate answer from query + context chunks
 

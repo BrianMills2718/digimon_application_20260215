@@ -8,7 +8,7 @@ Old Retriever/Query classes have been deleted. The operator pipeline is the cano
 ### Operator Pipeline Status
 ```
 Phase 1:  Type System        [DONE] SlotTypes, OperatorDescriptor, GraphCapabilities
-Phase 2:  Operators (26)     [DONE] 7 entity + 4 relationship + 3 chunk + 3 subgraph + 2 community + 7 meta
+Phase 2:  Operators (27)     [DONE] 7 entity + 4 relationship + 4 chunk + 3 subgraph + 2 community + 7 meta
 Phase 3:  Registry           [DONE] OperatorRegistry with composition helpers
 Phase 4:  Composition Engine [DONE] ChainValidator, PipelineExecutor, Adapters
 Phase 5:  Method Plans (10)  [DONE] All 10 methods expressed as ExecutionPlans, all validate
@@ -28,7 +28,7 @@ Phase 17: Cross-Modal MCP   [DONE] 4 tools: convert_modality, validate_conversio
 
 ### Key Architecture: Operator Pipeline
 
-**Uniform operator signature** (all 26 operators):
+**Uniform operator signature** (all 27 operators):
 ```python
 async def op(inputs: Dict[str, SlotValue], ctx: OperatorContext, params: Dict) -> Dict[str, SlotValue]
 ```
@@ -36,17 +36,17 @@ async def op(inputs: Dict[str, SlotValue], ctx: OperatorContext, params: Dict) -
 **Key files**:
 - `Core/Schema/SlotTypes.py` — 7 SlotKinds + typed records (EntityRecord, RelationshipRecord, etc.)
 - `Core/Schema/OperatorDescriptor.py` — Machine-readable operator metadata
-- `Core/Operators/` — 26 operators in entity/, relationship/, chunk/, subgraph/, community/, meta/
+- `Core/Operators/` — 27 operators in entity/, relationship/, chunk/, subgraph/, community/, meta/
 - `Core/Operators/registry.py` — OperatorRegistry with composition helpers
 - `Core/Composition/` — ChainValidator, PipelineExecutor, Adapters, auto_compose
 - `Core/Methods/` — 10 reference pipelines as ExecutionPlan factories (convenience shortcuts, not the core abstraction)
 - `Core/AgentSchema/plan.py` — Extended with LoopConfig, ConditionalBranch
 
-**Operator registry** (26 operators across 6 categories):
+**Operator registry** (27 operators across 6 categories):
 ```
 entity:       vdb, ppr, onehop, link, tfidf, agent, rel_node
 relationship: onehop, vdb, score_agg, agent
-chunk:        from_relation, occurrence, aggregator
+chunk:        from_relation, occurrence, aggregator, text_search
 subgraph:     khop_paths, steiner_tree, agent_path
 community:    from_entity, from_level
 meta:         extract_entities, reason_step, rerank, generate_answer, pcst_optimize, decompose_question, synthesize_answers
@@ -81,11 +81,11 @@ directly via individual operators or execute_method. Both are always available.
 parameter to override graph config at build time (e.g. `{"max_gleaning": 2, "enable_entity_description": true}`).
 Validated against per-graph-type Pydantic models in `Core/AgentSchema/graph_construction_tool_contracts.py`.
 
-**MCP tools (49 total)**:
+**MCP tools (50 total)**:
 - 5 graph build (er, rk, tree, tree_balanced, passage) + 1 corpus (prepare)
 - 7 entity (vdb_build, vdb_search, onehop, ppr, agent, link, tfidf)
 - 5 relationship (onehop, score_agg, agent, vdb_build, vdb_search)
-- 4 chunk (from_relationships, occurrence, get_text, aggregator)
+- 5 chunk (from_relationships, occurrence, get_text, aggregator, text_search)
 - 2 graph analysis (analyze, visualize) + 3 subgraph (khop_paths, steiner_tree, agent_path)
 - 3 community (build_communities, detect_from_entities, get_layer)
 - 5 meta (extract_entities, generate_answer, pcst_optimize, decompose_question, synthesize_answers)
@@ -143,7 +143,7 @@ Graph building uses `llm.model` (`gemini/gemini-2.5-flash`, cheap/fast). API key
 ### Previous Work: MCP Integration
 
 MCP server, client manager, context store, and tool migration complete (checkpoints 1.1-2.3).
-Operator pipeline phases 1-12 complete. All 24 operators and 10 reference pipelines operational via MCP.
+Operator pipeline phases 1-12 complete. All 27 operators and 10 reference pipelines operational via MCP.
 
 ---
 
@@ -276,12 +276,12 @@ meta_decompose_question("Who founded the company that employed Jane Doe?")
 
 **Two benchmark modes:**
 
-1. **Agent benchmark** (`eval/run_agent_benchmark.py`) — Codex agent freely composes operators via MCP
-   - Uses `acall_llm("codex", ..., mcp_servers=...)` from llm_client (Codex SDK, not subprocess)
+1. **Agent benchmark** (`eval/run_agent_benchmark.py`) — agent freely composes operators via MCP
+   - Codex models: uses `acall_llm("codex", ..., mcp_servers=...)` (Codex SDK, not subprocess)
+   - Other models (e.g. gemini-3-flash): uses `MCPSessionPool` for persistent MCP connections across questions
    - **Only loads `digimon-kgrag` MCP server** (not all 17 global servers) via `mcp_servers` kwarg
+   - `DIGIMON_BENCHMARK_MODE=1` prunes non-retrieval tools (graph_visualize, corpus_prepare, graph_analyze)
    - Agent discovers and calls digimon-kgrag MCP tools autonomously
-   - Structured `McpToolCallItem` extraction from `Turn.items` (exact tool tracking)
-   - Real token counts and cost from SDK `Usage` object
    - CLI: `python eval/run_agent_benchmark.py --dataset HotpotQAsmallest --n 10`
    - Options: `--model codex` `--effort high` `--timeout 120`
    - Output: `results/{dataset}_agent_benchmark.json` + `.log`

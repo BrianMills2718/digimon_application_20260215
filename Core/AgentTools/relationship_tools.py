@@ -327,34 +327,35 @@ async def relationship_vdb_search_tool(
         )
     
     try:
-        # Perform search
+        # Perform search using FaissIndex.retrieval() (same pattern as entity_vdb_search)
         if params.query_text:
             logger.info(f"Searching with text query: '{params.query_text}'")
-            results = await vdb_instance.search(
+            results = await vdb_instance.retrieval(
                 query=params.query_text,
-                k=params.top_k
+                top_k=params.top_k,
             )
         else:
-            logger.info("Searching with pre-computed embedding")
-            results = await vdb_instance.search_by_embedding(
-                embedding=params.query_embedding,
-                k=params.top_k
+            logger.error("Relationship.VDB.Search: query_embedding not supported, use query_text")
+            return RelationshipVDBSearchOutputs(
+                similar_relationships=[],
+                metadata={"error": "query_embedding not supported, use query_text"},
             )
-        
-        # Process results
+
+        # Process NodeWithScore results (same as entity_vdb_search_tool)
         similar_relationships = []
-        for result in results:
-            # Extract relationship info from result
-            rel_id = result.get('id', 'unknown')
-            rel_desc = result.get('content', '')
-            similarity_score = result.get('score', 0.0)
-            
+        for node_with_score in results:
+            node = node_with_score.node
+            similarity_score = float(node_with_score.score) if node_with_score.score is not None else 0.0
+
             # Apply score threshold if specified
             if params.score_threshold and similarity_score < params.score_threshold:
                 continue
-            
-            similar_relationships.append((rel_id, rel_desc, float(similarity_score)))
-        
+
+            rel_id = node.metadata.get("id", node.node_id)
+            rel_desc = node.text or ""
+
+            similar_relationships.append((str(rel_id), rel_desc, similarity_score))
+
         # Sort by score (highest first)
         similar_relationships.sort(key=lambda x: x[2], reverse=True)
         

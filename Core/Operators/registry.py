@@ -153,6 +153,7 @@ def _register_all():
     from Core.Operators.chunk.from_relation import chunk_from_relation
     from Core.Operators.chunk.occurrence import chunk_occurrence
     from Core.Operators.chunk.aggregator import chunk_aggregator
+    from Core.Operators.chunk.text_search import chunk_text_search
     from Core.Operators.subgraph.khop_paths import subgraph_khop_paths
     from Core.Operators.subgraph.steiner_tree import subgraph_steiner_tree
     from Core.Operators.subgraph.agent_path import subgraph_agent_path
@@ -338,6 +339,20 @@ def _register_all():
             requires_sparse_matrices=True,
             when_to_use="Propagate PPR scores through sparse matrices to chunks. Used in FastGraphRAG/HippoRAG.",
             implementation=chunk_aggregator,
+        ),
+        OperatorDescriptor(
+            operator_id="chunk.text_search",
+            display_name="Chunk Text Search (TF-IDF)",
+            category="chunk",
+            input_slots=[
+                SlotSpec("query", SlotKind.QUERY_TEXT),
+                SlotSpec("entities", SlotKind.ENTITY_SET, required=False,
+                         description="Optional entity set to pre-filter chunks"),
+            ],
+            output_slots=[SlotSpec("chunks", SlotKind.CHUNK_SET)],
+            cost_tier=CostTier.CHEAP,
+            when_to_use="Keyword/TF-IDF search over raw chunk text. Use when entity-based retrieval misses relevant passages, or as a complementary signal to VDB search.",
+            implementation=chunk_text_search,
         ),
 
         # === Subgraph operators ===

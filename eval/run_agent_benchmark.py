@@ -107,6 +107,8 @@ def _build_mcp_servers() -> dict:
         val = os.environ.get(key)
         if val:
             env[key] = val
+    # Enable benchmark mode — prunes non-retrieval tools (graph_visualize, corpus_prepare, graph_analyze)
+    env["DIGIMON_BENCHMARK_MODE"] = "1"
     return {
         "digimon-kgrag": {
             "command": "/home/brian/miniconda3/envs/digimon/bin/python",
@@ -144,11 +146,16 @@ async def run_agent(
     model: str = "codex",
     reasoning_effort: str = "high",
     max_turns: int = 20,
+    mcp_session_pool: object = None,
 ) -> dict:
     """Run an agent on a single question via llm_client.
 
     For Codex models: uses Codex SDK with MCP servers.
     For other models: uses llm_client's MCP agent loop (litellm + tool calling).
+
+    Args:
+        mcp_session_pool: Optional MCPSessionPool for reusing MCP connections
+            across questions (non-Codex models only).
 
     Returns dict with: answer, tool_calls, usage, cost, latency_s, error
     """
@@ -171,8 +178,17 @@ async def run_agent(
                 model_reasoning_effort=reasoning_effort,
                 mcp_servers=DIGIMON_MCP_SERVERS,
             )
+        elif mcp_session_pool is not None:
+            # MCP agent loop with persistent session pool
+            result = await acall_llm(
+                model,
+                messages,
+                timeout=timeout,
+                mcp_sessions=mcp_session_pool,
+                max_turns=max_turns,
+            )
         else:
-            # MCP agent loop — any litellm model
+            # MCP agent loop — fresh server per call (legacy)
             result = await acall_llm(
                 model,
                 messages,
@@ -282,104 +298,119 @@ async def main() -> None:
     print(f"AGENT BENCHMARK: {args.dataset} ({len(questions)} questions)")
     print(f"{'='*70}\n")
 
+    # Use MCPSessionPool for non-Codex models to avoid per-question server restarts
+    use_session_pool = not _is_codex_model(args.model)
+    if use_session_pool:
+        from llm_client import MCPSessionPool
+        pool_cm = MCPSessionPool(DIGIMON_MCP_SERVERS)
+    else:
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def _noop():
+            yield None
+        pool_cm = _noop()
+
     try:
-        for i, q in enumerate(questions):
-            q_id = q.get("id", f"q{i}")
-            if q_id in completed_ids:
-                continue
+        async with pool_cm as session_pool:
+            for i, q in enumerate(questions):
+                q_id = q.get("id", f"q{i}")
+                if q_id in completed_ids:
+                    continue
 
-            gold = q["answer"]
-            question = q["question"]
-            q_type = q.get("type", "?")
+                gold = q["answer"]
+                question = q["question"]
+                q_type = q.get("type", "?")
 
-            header = f"--- [{q_id}] ({n_done+1}/{len(questions)}) [{q_type}] ---"
-            print(f"\n{header}")
-            print(f"Q: {question}")
-            print(f"Gold: {gold}")
-            log_file.write(f"\n{header}\nQ: {question}\nGold: {gold}\n")
-            log_file.flush()
+                header = f"--- [{q_id}] ({n_done+1}/{len(questions)}) [{q_type}] ---"
+                print(f"\n{header}")
+                print(f"Q: {question}")
+                print(f"Gold: {gold}")
+                log_file.write(f"\n{header}\nQ: {question}\nGold: {gold}\n")
+                log_file.flush()
 
-            # Run agent
-            agent_result = await run_agent(
-                question, args.dataset,
-                timeout=args.timeout,
-                model=args.model,
-                reasoning_effort=args.effort,
-                max_turns=args.max_turns,
-            )
+                # Run agent
+                agent_result = await run_agent(
+                    question, args.dataset,
+                    timeout=args.timeout,
+                    model=args.model,
+                    reasoning_effort=args.effort,
+                    max_turns=args.max_turns,
+                    mcp_session_pool=session_pool,
+                )
 
-            predicted = agent_result["answer"]
-            error = agent_result["error"]
-            tool_calls = agent_result["tool_calls"]
-            usage = agent_result["usage"]
-            cost = agent_result["cost"]
-            elapsed = agent_result["latency_s"]
+                predicted = agent_result["answer"]
+                error = agent_result["error"]
+                tool_calls = agent_result["tool_calls"]
+                usage = agent_result["usage"]
+                cost = agent_result["cost"]
+                elapsed = agent_result["latency_s"]
 
-            # Score
-            em = int(exact_match(predicted, gold)) if predicted else 0
-            f1, prec, recall = token_f1(predicted, gold) if predicted else (0.0, 0.0, 0.0)
+                # Score
+                em = int(exact_match(predicted, gold)) if predicted else 0
+                f1, prec, recall = token_f1(predicted, gold) if predicted else (0.0, 0.0, 0.0)
 
-            # Tool call summary
-            tool_names = [tc["tool"] for tc in tool_calls]
-            n_tools = len(tool_calls)
+                # Tool call summary
+                tool_names = [tc["tool"] for tc in tool_calls]
+                n_tools = len(tool_calls)
 
-            # Token counts
-            input_tokens = usage.get("input_tokens", 0)
-            output_tokens = usage.get("output_tokens", 0)
-            cached_tokens = usage.get("cached_input_tokens", 0)
-            fresh_tokens = input_tokens - cached_tokens
+                # Token counts
+                input_tokens = usage.get("input_tokens", 0)
+                output_tokens = usage.get("output_tokens", 0)
+                cached_tokens = usage.get("cached_input_tokens", 0)
+                fresh_tokens = input_tokens - cached_tokens
 
-            # Print results
-            if error:
-                print(f"  ERROR: {error}")
-            print(f"  Predicted: {predicted[:200]}")
-            print(f"  EM={em}  F1={f1:.2f}  ({elapsed:.1f}s, ${cost:.4f})")
-            print(f"  Tools: {n_tools} calls {tool_names}")
-            print(f"  Tokens: {fresh_tokens:,} fresh + {cached_tokens:,} cached = {input_tokens:,} in, {output_tokens:,} out")
+                # Print results
+                if error:
+                    print(f"  ERROR: {error}")
+                print(f"  Predicted: {predicted[:200]}")
+                print(f"  EM={em}  F1={f1:.2f}  ({elapsed:.1f}s, ${cost:.4f})")
+                print(f"  Tools: {n_tools} calls {tool_names}")
+                print(f"  Tokens: {fresh_tokens:,} fresh + {cached_tokens:,} cached = {input_tokens:,} in, {output_tokens:,} out")
 
-            log_file.write(
-                f"  Predicted: {predicted}\n"
-                f"  EM={em}  F1={f1:.2f}  ({elapsed:.1f}s, ${cost:.4f})\n"
-                f"  Tools: {n_tools} calls {tool_names}\n"
-                f"  Tokens: {input_tokens} in + {output_tokens} out\n"
-            )
-            if error:
-                log_file.write(f"  ERROR: {error}\n")
+                log_file.write(
+                    f"  Predicted: {predicted}\n"
+                    f"  EM={em}  F1={f1:.2f}  ({elapsed:.1f}s, ${cost:.4f})\n"
+                    f"  Tools: {n_tools} calls {tool_names}\n"
+                    f"  Tokens: {input_tokens} in + {output_tokens} out\n"
+                )
+                if error:
+                    log_file.write(f"  ERROR: {error}\n")
 
-            # Update running totals
-            n_done += 1
-            total_em += em
-            total_f1 += f1
-            total_cost += cost
+                # Update running totals
+                n_done += 1
+                total_em += em
+                total_f1 += f1
+                total_cost += cost
 
-            running = f"  Running: EM={100*total_em/n_done:.1f}%  F1={100*total_f1/n_done:.1f}%  ${total_cost:.2f}  ({n_done} done)"
-            print(running)
-            log_file.write(running + "\n\n")
-            log_file.flush()
+                running = f"  Running: EM={100*total_em/n_done:.1f}%  F1={100*total_f1/n_done:.1f}%  ${total_cost:.2f}  ({n_done} done)"
+                print(running)
+                log_file.write(running + "\n\n")
+                log_file.flush()
 
-            # Save incrementally
-            result_record = {
-                "id": q_id,
-                "question": question,
-                "gold": gold,
-                "predicted": predicted,
-                "type": q_type,
-                "em": em,
-                "f1": f1,
-                "latency_s": elapsed,
-                "cost": cost,
-                "n_tool_calls": n_tools,
-                "tool_calls": tool_names,
-                "tool_details": tool_calls,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "cached_input_tokens": cached_tokens,
-                "error": error,
-            }
-            results.append(result_record)
+                # Save incrementally
+                result_record = {
+                    "id": q_id,
+                    "question": question,
+                    "gold": gold,
+                    "predicted": predicted,
+                    "type": q_type,
+                    "em": em,
+                    "f1": f1,
+                    "latency_s": elapsed,
+                    "cost": cost,
+                    "n_tool_calls": n_tools,
+                    "tool_calls": tool_names,
+                    "tool_details": tool_calls,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cached_input_tokens": cached_tokens,
+                    "error": error,
+                }
+                results.append(result_record)
 
-            _save_results(output_path, args.dataset, args.model, len(questions),
-                          n_done, total_em, total_f1, total_cost, results)
+                _save_results(output_path, args.dataset, args.model, len(questions),
+                              n_done, total_em, total_f1, total_cost, results)
 
     except KeyboardInterrupt:
         print(f"\n\nInterrupted after {n_done} questions.")

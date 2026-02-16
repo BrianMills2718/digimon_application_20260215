@@ -26,6 +26,9 @@ from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
 
+# Benchmark mode: skip non-retrieval tools to reduce agent confusion
+BENCHMARK_MODE = os.environ.get("DIGIMON_BENCHMARK_MODE", "").strip() in ("1", "true", "yes")
+
 # --- Initialize MCP Server ---
 mcp = FastMCP("digimon-kgrag", instructions="""
 DIGIMON KG-RAG Tools: Build knowledge graphs from documents and query them.
@@ -213,7 +216,6 @@ async def _register_graph_if_built(result: Any) -> None:
 # CORPUS TOOLS
 # =============================================================================
 
-@mcp.tool()
 async def corpus_prepare(input_directory: str, dataset_name: str) -> str:
     """Prepare documents from a directory into a Corpus.json for DIGIMON processing.
 
@@ -245,6 +247,9 @@ async def corpus_prepare(input_directory: str, dataset_name: str) -> str:
     )
     result = await prepare_corpus_from_directory(inputs, _state["config"])
     return _format_result(result)
+
+if not BENCHMARK_MODE:
+    corpus_prepare = mcp.tool()(corpus_prepare)
 
 
 # =============================================================================
@@ -806,45 +811,111 @@ async def chunk_get_text(graph_reference_id: str, entity_ids: list[str],
     return _format_result(result)
 
 
+@mcp.tool()
+async def chunk_text_search(query_text: str, dataset_name: str,
+                             top_k: int = 10,
+                             entity_names: list[str] = None) -> str:
+    """Keyword/TF-IDF search over raw chunk text. Bypasses entity-based retrieval.
+
+    Use when entity VDB search misses relevant passages, or as a complementary
+    signal. Searches the actual document text directly using TF-IDF cosine similarity.
+
+    Args:
+        query_text: Search query (keywords or natural language)
+        dataset_name: Dataset whose chunks to search
+        top_k: Number of top chunks to return
+        entity_names: Optional entity names to pre-filter chunks (search only chunks associated with these entities)
+
+    Returns:
+        chunks: list of {chunk_id: str, text: str, score: float}
+    """
+    await _ensure_initialized()
+    from Core.Operators.chunk.text_search import chunk_text_search as _text_search
+    from Core.Schema.SlotTypes import EntityRecord, SlotKind, SlotValue
+
+    inputs = {"query": SlotValue(kind=SlotKind.QUERY_TEXT, data=query_text, producer="mcp")}
+
+    # Optionally add entity filter
+    if entity_names:
+        # Look up entity source_ids from the graph
+        ctx = _state["context"]
+        entity_records = []
+        graph_id = None
+        if hasattr(ctx, "list_graphs"):
+            for gid in ctx.list_graphs():
+                if dataset_name in gid:
+                    graph_id = gid
+                    break
+        if graph_id:
+            gi = ctx.get_graph_instance(graph_id)
+            if gi and hasattr(gi, "_graph") and hasattr(gi._graph, "graph"):
+                nx_graph = gi._graph.graph
+                for name in entity_names:
+                    if name in nx_graph:
+                        node_data = nx_graph.nodes[name]
+                        entity_records.append(EntityRecord(
+                            entity_name=name,
+                            source_id=node_data.get("source_id", ""),
+                        ))
+        if entity_records:
+            inputs["entities"] = SlotValue(
+                kind=SlotKind.ENTITY_SET, data=entity_records, producer="mcp",
+            )
+
+    op_ctx = await _build_operator_context_for_dataset(dataset_name)
+    result = await _text_search(inputs=inputs, ctx=op_ctx, params={"top_k": top_k})
+
+    chunks = result.get("chunks")
+    if chunks and hasattr(chunks, "data"):
+        return json.dumps({
+            "chunks": [
+                {"chunk_id": c.chunk_id, "text": c.text[:500], "score": c.score}
+                for c in chunks.data
+            ]
+        }, indent=2, default=str)
+    return json.dumps({"chunks": []})
+
+
 # =============================================================================
 # GRAPH ANALYSIS TOOLS
 # =============================================================================
 
-@mcp.tool()
-async def graph_analyze(graph_id: str) -> str:
-    """Get statistics and metrics about a built graph (node count, edge count, centrality, clustering, etc).
+if not BENCHMARK_MODE:
+    @mcp.tool()
+    async def graph_analyze(graph_id: str) -> str:
+        """Get statistics and metrics about a built graph (node count, edge count, centrality, clustering, etc).
 
-    Args:
-        graph_id: ID of the graph to analyze
+        Args:
+            graph_id: ID of the graph to analyze
 
-    Returns:
-        node_count: int, edge_count: int, density: float, avg_degree: float, centrality_stats: {...}, clustering_coefficient: float
-    """
-    await _ensure_initialized()
-    from Core.AgentTools.graph_analysis_tools import analyze_graph
+        Returns:
+            node_count: int, edge_count: int, density: float, avg_degree: float, centrality_stats: {...}, clustering_coefficient: float
+        """
+        await _ensure_initialized()
+        from Core.AgentTools.graph_analysis_tools import analyze_graph
 
-    inputs = {"graph_id": graph_id}
-    result = analyze_graph(inputs, _state["context"])
-    return _format_result(result)
+        inputs = {"graph_id": graph_id}
+        result = analyze_graph(inputs, _state["context"])
+        return _format_result(result)
 
 
-@mcp.tool()
-async def graph_visualize(graph_id: str, output_format: str = "JSON_NODES_EDGES") -> str:
-    """Export a graph's structure for visualization (nodes and edges as JSON).
+    @mcp.tool()
+    async def graph_visualize(graph_id: str, output_format: str = "JSON_NODES_EDGES") -> str:
+        """Export a graph's structure for visualization (nodes and edges as JSON).
 
-    Args:
-        graph_id: ID of the graph to export
-        output_format: Format - 'JSON_NODES_EDGES' or 'GML'
+        Args:
+            graph_id: ID of the graph to export
+            output_format: Format - 'JSON_NODES_EDGES' or 'GML'
 
-    Returns:
-        nodes: list of {id: str, label: str, ...}, edges: list of {source: str, target: str, ...}
-    """
-    await _ensure_initialized()
-    from Core.AgentTools.graph_visualization_tools import visualize_graph
+        Returns:
+            nodes: list of {id: str, label: str, ...}, edges: list of {source: str, target: str, ...}
+        """
+        await _ensure_initialized()
+        from Core.AgentTools.graph_visualization_tools import visualize_graph
 
-    inputs = {"graph_id": graph_id, "output_format": output_format}
-    result = visualize_graph(inputs, _state["context"])
-    return _format_result(result)
+        inputs = {"graph_id": graph_id, "output_format": output_format}
+        result = visualize_graph(inputs, _state["context"])
+        return _format_result(result)
 
 
 # =============================================================================
