@@ -234,8 +234,16 @@ async def run_agent(
 
         tool_calls = extract_tool_calls(result.raw_response)
 
+        # Agent SDKs return ALL text blocks concatenated. The final answer
+        # is the last non-empty line (prompt instructs: answer only, no explanation).
+        answer = result.content.strip()
+        if _is_agent_sdk_model(model) and "\n" in answer:
+            lines = [l.strip() for l in answer.split("\n") if l.strip()]
+            answer = lines[-1] if lines else answer
+
         return {
-            "answer": result.content.strip(),
+            "answer": answer,
+            "full_response": result.content.strip() if _is_agent_sdk_model(model) else None,
             "tool_calls": tool_calls,
             "usage": result.usage,
             "cost": result.cost,
@@ -435,11 +443,13 @@ async def main() -> None:
                 log_file.flush()
 
                 # Save incrementally
+                full_response = agent_result.get("full_response")
                 result_record = {
                     "id": q_id,
                     "question": question,
                     "gold": gold,
                     "predicted": predicted,
+                    "full_response": full_response,
                     "type": q_type,
                     "em": em,
                     "f1": f1,
