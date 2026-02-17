@@ -141,6 +141,12 @@ Agent SDK models (`codex`, `claude-code`) work but cause recursive subprocess is
 
 Graph building uses `llm.model` (`gemini/gemini-2.5-flash`, cheap/fast) via `LLMClientAdapter` with automatic fallback chain (`fallback_models` in Config2.yaml). Both `llm` and `agentic_llm` now route through `llm_client.acall_llm` — smart retry, fallback models, structured error types, and cost tracking come for free. API keys auto-loaded by llm_client from `~/.secrets/api_keys.env`. Use `get_config` to inspect, `set_agentic_model` to override at runtime.
 
+**Observability (trace_id + cost tracking)**:
+- `execute_method` and `auto_compose` auto-generate a `trace_id` (e.g., `basic_local_Social_abc123`) and propagate it through `LLMClientAdapter.set_trace_id()` and `LLMClientEmbedding.llm_trace_id`.
+- All LLM and embedding calls within a query are correlated in `~/projects/data/llm_observability.db` via `trace_id`.
+- `PipelineExecutor` propagates `trace_id` from `OperatorContext` to the LLM adapter alongside `task`.
+- Query costs: `python -m llm_client cost --project Digimon_for_KG_application` or `--trace-id <id>`.
+
 **Graph build resilience**:
 - **Checkpointing**: ERGraph persists progress after each batch of 50 chunks. If the build is interrupted (rate limit, crash, kill), restart and it resumes from the checkpoint automatically.
 - **Fallback chain**: Configure `llm.fallback_models` in Config2.yaml (e.g., `[deepseek/deepseek-chat, gpt-5-mini]`). If the primary model fails all retries, llm_client automatically falls over to the next model.
