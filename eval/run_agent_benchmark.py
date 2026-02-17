@@ -63,6 +63,7 @@ def extract_tool_calls(raw_response: object) -> list[dict]:
             {
                 "server": r.server,
                 "tool": r.tool,
+                "arguments": r.arguments,
                 "has_result": r.result is not None,
                 "has_error": r.error is not None,
                 "error": r.error[:500] if r.error else None,
