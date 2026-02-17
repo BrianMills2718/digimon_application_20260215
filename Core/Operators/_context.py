@@ -16,6 +16,7 @@ class OperatorContext:
     graph: Any  # NetworkXStorage / BaseGraphStorage instance
     entities_vdb: Optional[Any] = None  # BaseIndex for entity search
     relations_vdb: Optional[Any] = None  # BaseIndex for relationship search
+    chunks_vdb: Optional[Any] = None  # BaseIndex for semantic chunk search
     doc_chunks: Optional[Any] = None  # ChunkKVStorage for text retrieval
     community: Optional[Any] = None  # Community detection results
     llm: Optional[Any] = None  # BaseLLM instance

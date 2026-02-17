@@ -12,8 +12,13 @@ _print_level = "INFO"
 def define_log_level(print_level="INFO", logfile_level="DEBUG", name: str = None):
     """Adjust the log level to above level"""
     global _print_level
-    # Force DEBUG for all logging
-    print_level = "DEBUG"
+    # Allow DIGIMON_LOG_LEVEL env var to control stderr verbosity
+    # (file logging always stays at DEBUG for diagnostics)
+    env_level = os.environ.get("DIGIMON_LOG_LEVEL", "").upper()
+    if env_level in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+        print_level = env_level
+    else:
+        print_level = "DEBUG"
     logfile_level = "DEBUG"
     _print_level = print_level
 
@@ -29,14 +34,6 @@ def define_log_level(print_level="INFO", logfile_level="DEBUG", name: str = None
 
     _logger.remove()
     _logger.add(sys.stderr, level=print_level)
-
-    # DIAGNOSTIC: Write actual log_name to a temp file
-    try:
-        with open("/tmp/logger_actual_path.txt", "w") as f_log_path_diag:
-            f_log_path_diag.write(f"Logger.py: Calculated log_name for file sink: {log_name}\n")
-    except Exception as e_log_path_write:
-        # If this fails, something is very wrong with basic file I/O even here
-        pass # Avoid crashing logger setup
 
     _logger.add(f"{log_name}", level=logfile_level)
     return _logger

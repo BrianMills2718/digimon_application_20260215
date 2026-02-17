@@ -384,13 +384,184 @@ class BaseGraph(ABC):
         logger.info(f"✅ Finished string similarity augmentation ({len(maybe_edges)} edges)")
         return len(maybe_edges)
 
+    async def augment_graph_by_chunk_cooccurrence(self, weight: float = 0.5) -> int:
+        """Add chunk_cooccurrence edges between entities sharing a source chunk.
+
+        Reads all nodes, groups by source_id chunks, and creates edges for
+        entity pairs that co-occur in the same chunk but lack an explicit edge.
+        Can be run on an existing graph without rebuilding.
+
+        Returns the number of edges added.
+        """
+        from itertools import combinations
+
+        all_node_data = await self._graph.get_nodes_data()
+        logger.info(f"Chunk co-occurrence: scanning {len(all_node_data)} nodes")
+
+        # Group entity names by chunk
+        chunk_to_entities: dict[str, list[str]] = defaultdict(list)
+        for node in all_node_data:
+            name = node.get("entity_name", node.get("id", ""))
+            source_id = node.get("source_id", "")
+            for chunk_id in source_id.split(GRAPH_FIELD_SEP):
+                if chunk_id:
+                    chunk_to_entities[chunk_id].append(name)
+
+        # Create edges for co-occurring pairs without existing edges
+        maybe_edges: dict[tuple[str, str], list] = defaultdict(list)
+        for chunk_id, entities in chunk_to_entities.items():
+            unique = list(set(entities))
+            for a, b in combinations(unique, 2):
+                pair = tuple(sorted((a, b)))
+                if pair in maybe_edges:
+                    continue
+                if await self._graph.has_edge(a, b) or await self._graph.has_edge(b, a):
+                    continue
+                maybe_edges[pair].append(Relationship(
+                    src_id=a,
+                    tgt_id=b,
+                    source_id=chunk_id,
+                    relation_name="chunk_cooccurrence",
+                    weight=weight,
+                    description="",
+                ))
+
+        logger.info(f"Chunk co-occurrence: adding {len(maybe_edges)} edges")
+
+        if maybe_edges:
+            await asyncio.gather(
+                *[self._merge_edges_then_upsert(k[0], k[1], v) for k, v in maybe_edges.items()]
+            )
+            await self._persist_graph(force=True)
+
+        logger.info(f"✅ Finished chunk co-occurrence augmentation ({len(maybe_edges)} edges)")
+        return len(maybe_edges)
+
+    async def augment_graph_with_centrality(self) -> dict:
+        """Compute centrality metrics and store as node attributes.
+
+        Computes PageRank, degree centrality, and betweenness centrality,
+        then stores them directly on each node. These persist with the graph.
+
+        Returns dict with metric names and value ranges.
+        """
+        import networkx as nx
+
+        G = self._graph._graph  # underlying NetworkX graph
+
+        if len(G) == 0:
+            logger.warning("Centrality: graph is empty, nothing to compute")
+            return {"nodes": 0}
+
+        pagerank = nx.pagerank(G, weight="weight")
+        degree_cent = nx.degree_centrality(G)
+        # betweenness is O(VE) — skip for very large graphs
+        if len(G) <= 5000:
+            betweenness = nx.betweenness_centrality(G, weight="weight")
+        else:
+            logger.info(f"Centrality: skipping betweenness for {len(G)}-node graph (too large)")
+            betweenness = {}
+
+        for node_id in G.nodes():
+            G.nodes[node_id]["pagerank"] = pagerank.get(node_id, 0.0)
+            G.nodes[node_id]["degree_centrality"] = degree_cent.get(node_id, 0.0)
+            if betweenness:
+                G.nodes[node_id]["betweenness"] = betweenness.get(node_id, 0.0)
+
+        await self._persist_graph(force=True)
+
+        stats = {
+            "nodes_updated": len(G),
+            "pagerank_max": max(pagerank.values()) if pagerank else 0,
+            "degree_centrality_max": max(degree_cent.values()) if degree_cent else 0,
+        }
+        if betweenness:
+            stats["betweenness_max"] = max(betweenness.values())
+        logger.info(f"✅ Centrality metrics stored on {len(G)} nodes: {stats}")
+        return stats
+
+    async def augment_graph_by_synonym_detection(
+        self, entity_vdb, threshold: float = 0.92, max_per_entity: int = 3
+    ) -> int:
+        """Detect near-duplicate entities via VDB embedding similarity and add SYNONYM edges.
+
+        Entities above the similarity threshold that don't already share an edge
+        get a 'synonym' edge. This helps entity linking at query time.
+
+        Args:
+            entity_vdb: Built entity VDB (FaissIndex) with .retrieval()
+            threshold: Cosine similarity threshold (default 0.92 — very high to avoid false positives)
+            max_per_entity: Max synonym candidates per entity
+
+        Returns the number of synonym edges added.
+        """
+        nodes = await self._graph.nodes()
+        if not nodes:
+            return 0
+
+        added = 0
+        seen_pairs: set[tuple[str, str]] = set()
+
+        for node_name in nodes:
+            try:
+                results = await entity_vdb.retrieval(query=node_name, top_k=max_per_entity + 1)
+            except Exception as e:
+                logger.debug(f"Synonym search failed for '{node_name}': {e}")
+                continue
+
+            if not results:
+                continue
+
+            # Normalize scores (same logic as augment_graph_by_similarity_search)
+            max_score = max(ns.score for ns in results)
+            if max_score == 0:
+                continue
+            is_euclidean = results[0].score == 0
+
+            for i, ns in enumerate(results):
+                match_name = ns.metadata.get("entity_name") if ns.metadata else None
+                if not match_name or match_name == node_name:
+                    continue
+                score = (1 - ns.score / max_score) if is_euclidean else (ns.score / max_score)
+                if score < threshold:
+                    continue
+
+                pair = tuple(sorted((node_name, match_name)))
+                if pair in seen_pairs:
+                    continue
+                seen_pairs.add(pair)
+
+                if await self._graph.has_edge(node_name, match_name) or await self._graph.has_edge(match_name, node_name):
+                    continue
+
+                await self._graph.upsert_edge(
+                    node_name, match_name,
+                    edge_data=dict(
+                        weight=score,
+                        source_id="",
+                        relation_name="synonym",
+                        keywords="",
+                        description=f"Embedding similarity {score:.3f}",
+                        src_id=node_name,
+                        tgt_id=match_name,
+                    ),
+                )
+                added += 1
+
+        if added:
+            await self._persist_graph(force=True)
+        logger.info(f"✅ Synonym detection: added {added} edges (threshold={threshold})")
+        return added
+
     async def __graph__(self, elements: list):
         """
         Build the graph based on the input elements.
         """
         import asyncio
+        from itertools import combinations
         from Core.Common.Logger import logger
-        
+        from Core.Schema.EntityRelation import Relationship
+
         # Initialize dictionaries to hold aggregated node and edge information
         maybe_nodes, maybe_edges = defaultdict(list), defaultdict(list)
 
@@ -403,6 +574,34 @@ class BaseGraph(ABC):
             # Aggregate edge information
             for k, v in m_edges.items():
                 maybe_edges[tuple(sorted(k))].extend(v)
+
+        # Add co-occurrence edges if enabled in config
+        if getattr(self.config, "enable_chunk_cooccurrence", False):
+            chunk_to_entities: dict[str, list[str]] = defaultdict(list)
+            for entity_name, entity_list in maybe_nodes.items():
+                for entity in entity_list:
+                    for chunk_id in entity.source_id.split(GRAPH_FIELD_SEP):
+                        if chunk_id:
+                            chunk_to_entities[chunk_id].append(entity_name)
+
+            cooccur_count = 0
+            for chunk_id, entities in chunk_to_entities.items():
+                unique_entities = list(set(entities))
+                for a, b in combinations(unique_entities, 2):
+                    edge_key = tuple(sorted((a, b)))
+                    if edge_key not in maybe_edges:
+                        maybe_edges[edge_key].append(Relationship(
+                            src_id=a,
+                            tgt_id=b,
+                            source_id=chunk_id,
+                            relation_name="chunk_cooccurrence",
+                            weight=0.5,
+                            description="",
+                        ))
+                        cooccur_count += 1
+
+            if cooccur_count:
+                logger.info(f"Added {cooccur_count} chunk co-occurrence edges")
 
         # Asynchronously merge and upsert nodes
         await asyncio.gather(*[self._merge_nodes_then_upsert(k, v) for k, v in maybe_nodes.items()])

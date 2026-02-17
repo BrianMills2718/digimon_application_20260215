@@ -55,12 +55,17 @@ class ERGraphConfigOverrides(BaseModel):
         default=None,
         description="Number of gleaning iterations (1=off, 2-3 recommended). Extra passes extract missed entities."
     )
+    enable_chunk_cooccurrence: Optional[bool] = Field(
+        default=None,
+        validation_alias=AliasChoices('enable_chunk_cooccurrence', 'chunk_cooccurrence', 'cooccurrence_edges'),
+        description="Add implicit edges between entities that co-occur in the same source chunk."
+    )
     custom_ontology_path_override: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices('custom_ontology_path_override', 'custom_ontology_path', 'ontology_path'),
         description="Path to a custom ontology JSON file to use for this build."
     )
-    
+
     class Config:
         populate_by_name = True  # Allows use of alias as field name
 
@@ -78,6 +83,7 @@ class BuildERGraphOutputs(BaseGraphBuildOutputs):
 class RKGraphConfigOverrides(BaseModel):
     enable_edge_keywords: Optional[bool] = Field(default=None, description="Selects between ENTITY_EXTRACTION and ENTITY_EXTRACTION_KEYWORD prompts.")
     max_gleaning: Optional[int] = Field(default=None, description="Maximum number of gleaning iterations or items.")
+    enable_chunk_cooccurrence: Optional[bool] = Field(default=None, description="Add implicit edges between entities that co-occur in the same source chunk.")
     custom_ontology_path_override: Optional[str] = Field(default=None, description="Path to a custom ontology JSON file to use for this build.")
     enable_entity_description: Optional[bool] = Field(default=None, description="Override for enabling entity descriptions (if applicable).")
 

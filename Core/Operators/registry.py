@@ -154,6 +154,7 @@ def _register_all():
     from Core.Operators.chunk.occurrence import chunk_occurrence
     from Core.Operators.chunk.aggregator import chunk_aggregator
     from Core.Operators.chunk.text_search import chunk_text_search
+    from Core.Operators.chunk.vdb import chunk_vdb
     from Core.Operators.subgraph.khop_paths import subgraph_khop_paths
     from Core.Operators.subgraph.steiner_tree import subgraph_steiner_tree
     from Core.Operators.subgraph.agent_path import subgraph_agent_path
@@ -353,6 +354,16 @@ def _register_all():
             cost_tier=CostTier.CHEAP,
             when_to_use="Keyword/TF-IDF search over raw chunk text. Use when entity-based retrieval misses relevant passages, or as a complementary signal to VDB search.",
             implementation=chunk_text_search,
+        ),
+        OperatorDescriptor(
+            operator_id="chunk.vdb",
+            display_name="Chunk VDB Search (Embedding)",
+            category="chunk",
+            input_slots=[SlotSpec("query", SlotKind.QUERY_TEXT)],
+            output_slots=[SlotSpec("chunks", SlotKind.CHUNK_SET)],
+            cost_tier=CostTier.CHEAP,
+            when_to_use="Semantic embedding search over raw chunk text. Use alongside chunk.text_search for dual retrieval (EcphoryRAG pattern). Requires chunk VDB built first.",
+            implementation=chunk_vdb,
         ),
 
         # === Subgraph operators ===

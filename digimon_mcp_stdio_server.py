@@ -71,18 +71,14 @@ else:
 # Tools hidden in benchmark mode. In benchmark, only retrieval + submit_answer are exposed.
 # This list is checked after MCP server init to remove unnecessary tools.
 _BENCHMARK_HIDDEN_TOOLS: set[str] = {
-    # Graph analysis / visualization
-    "graph_analyze", "graph_visualize",
-    # Community
+    # Community (no communities built for QA benchmarks)
     "community_detect_from_entities", "community_get_layer",
-    # Subgraph
-    "subgraph_khop_paths", "subgraph_steiner_tree", "subgraph_agent_path",
-    # Meta (LLM-based operators — agent should reason directly, not delegate)
-    "meta_extract_entities", "meta_generate_answer", "meta_pcst_optimize",
+    # LLM wrapper agents (outer agent IS an LLM — these are redundant and waste budget)
+    "entity_agent", "relationship_agent", "subgraph_agent_path",
+    # Meta LLM wrappers (agent should reason directly, not delegate to inner LLM)
+    "meta_extract_entities", "meta_generate_answer",
     "meta_decompose_question", "meta_synthesize_answers",
-    # Agent operators (internal LLM calls — waste budget)
-    "entity_agent", "relationship_agent",
-    # Config / discovery (not useful for answering questions)
+    # Config / discovery (redundant with prompt)
     "get_config", "set_agentic_model", "list_operators", "get_compatible_successors",
     "list_graph_types",
     # Cross-modal (not relevant for QA)
@@ -106,7 +102,11 @@ _BENCHMARK_SHORT_DESCS: dict[str, str] = {
     "chunk_get_text": "Get source text for given entities.",
     "chunk_text_search": "Keyword search over source text chunks.",
     "chunk_aggregator": "Score chunks by relationship/PPR scores via sparse matrices.",
-    "submit_answer": "Submit your final answer with reasoning.",
+    "subgraph_khop_paths": "Find all paths between entities within k hops.",
+    "subgraph_steiner_tree": "Minimal subgraph connecting a set of entities.",
+    "meta_pcst_optimize": "Prize-collecting Steiner tree optimization (algorithmic).",
+    "list_available_resources": "List loaded graphs, VDBs, and sparse matrices.",
+    "submit_answer": "Submit your final answer. Call once with your best answer.",
 }
 
 
@@ -260,6 +260,27 @@ async def _ensure_initialized():
             vdb_name = f"{preload_dataset}_entities"
             await entity_vdb_build(graph_id, vdb_name)
             logger.info(f"Pre-loaded: graph={graph_id}, vdb={vdb_name}")
+            # Also load chunk VDB if it exists on disk
+            chunk_vdb_id = f"{preload_dataset}_chunks"
+            chunk_vdb_path = Path(f"storage/vdb/{chunk_vdb_id}")
+            if chunk_vdb_path.exists() and any(chunk_vdb_path.iterdir()):
+                try:
+                    from Core.Index.FaissIndex import FaissIndex
+                    from Core.AgentTools.index_config_helper import create_faiss_index_config
+                    cfg = create_faiss_index_config(
+                        persist_path=str(chunk_vdb_path),
+                        embed_model=context.embedding_provider,
+                        name=chunk_vdb_id,
+                    )
+                    chunk_vdb = FaissIndex(cfg)
+                    loaded = await chunk_vdb.load()
+                    if loaded:
+                        context.add_vdb_instance(chunk_vdb_id, chunk_vdb)
+                        logger.info(f"Pre-loaded chunk VDB: {chunk_vdb_id}")
+                    else:
+                        logger.warning(f"Chunk VDB exists on disk but failed to load: {chunk_vdb_id}")
+                except Exception as ce:
+                    logger.warning(f"Chunk VDB pre-load failed: {ce}")
         except Exception as e:
             logger.warning(f"Pre-load failed for '{preload_dataset}': {e}")
 
@@ -446,6 +467,7 @@ async def graph_build_er(dataset_name: str, force_rebuild: bool = False,
         config_overrides: Optional dict of graph config overrides. Supported fields:
             enable_entity_description (bool), enable_entity_type (bool),
             enable_edge_description (bool), enable_edge_name (bool),
+            enable_chunk_cooccurrence (bool, add implicit edges between co-occurring entities),
             max_gleaning (int, 1=off, 2-3 recommended), extract_two_step (bool)
 
     Returns:
@@ -1076,6 +1098,74 @@ async def chunk_text_search(query_text: str, dataset_name: str,
     return json.dumps({"chunks": []})
 
 
+async def chunk_vdb_build(dataset_name: str, vdb_collection_name: str = "",
+                           force_rebuild: bool = False) -> str:
+    """Build a vector database (embedding index) over document chunks.
+
+    Enables semantic chunk retrieval via chunk_vdb_search. Complements the keyword-based
+    chunk_text_search (TF-IDF) — together they form dual retrieval (EcphoryRAG pattern).
+
+    Args:
+        dataset_name: Dataset whose chunks to index
+        vdb_collection_name: VDB ID (default: '{dataset_name}_chunks')
+        force_rebuild: Force rebuild even if VDB exists
+
+    Returns:
+        vdb_id: str, num_chunks_indexed: int, status: str
+    """
+    await _ensure_initialized()
+    from Core.AgentTools.chunk_vdb_tools import chunk_vdb_build_tool
+
+    result = await chunk_vdb_build_tool(
+        dataset_name=dataset_name,
+        graphrag_context=_state["context"],
+        vdb_collection_name=vdb_collection_name or None,
+        force_rebuild=force_rebuild,
+    )
+    return json.dumps(result, indent=2, default=str)
+
+if not BENCHMARK_MODE:
+    chunk_vdb_build = mcp.tool()(chunk_vdb_build)
+
+
+@mcp.tool()
+async def chunk_vdb_search(query_text: str, dataset_name: str,
+                            top_k: int = 10) -> str:
+    """Semantic embedding search over document chunks. Finds passages similar in meaning to the query.
+
+    Use alongside chunk_text_search for dual retrieval — embedding search catches
+    semantic matches that keyword search misses, and vice versa.
+
+    Args:
+        query_text: Natural language search query
+        dataset_name: Dataset whose chunk VDB to search
+        top_k: Number of top chunks to return
+
+    Returns:
+        chunks: list of {chunk_id: str, text: str, score: float}
+    """
+    await _ensure_initialized()
+    from Core.Operators.chunk.vdb import chunk_vdb as _chunk_vdb_op
+    from Core.Schema.SlotTypes import SlotKind, SlotValue
+
+    inputs = {"query": SlotValue(kind=SlotKind.QUERY_TEXT, data=query_text, producer="mcp")}
+    op_ctx = await _build_operator_context_for_dataset(dataset_name)
+
+    if op_ctx.chunks_vdb is None:
+        return json.dumps({"error": "Chunk VDB not built. Run chunk_vdb_build first.", "chunks": []})
+
+    result = await _chunk_vdb_op(inputs=inputs, ctx=op_ctx, params={"top_k": top_k})
+
+    chunks = result.get("chunks")
+    if chunks and hasattr(chunks, "data"):
+        deduped = []
+        for c in chunks.data:
+            is_new, text = _dedup_chunk(c.chunk_id, c.text)
+            deduped.append({"chunk_id": c.chunk_id, "text": text, "score": c.score})
+        return json.dumps({"chunks": deduped}, indent=2, default=str)
+    return json.dumps({"chunks": []})
+
+
 # =============================================================================
 # GRAPH ANALYSIS TOOLS
 # =============================================================================
@@ -1116,6 +1206,94 @@ if not BENCHMARK_MODE:
         inputs = {"graph_id": graph_id, "output_format": output_format}
         result = visualize_graph(inputs, _state["context"])
         return _format_result(result)
+
+
+    @mcp.tool()
+    async def augment_chunk_cooccurrence(dataset_name: str, weight: float = 0.5) -> str:
+        """Add chunk co-occurrence edges to an existing graph without rebuilding.
+
+        Entities that share a source chunk but lack an explicit extracted edge
+        get an implicit 'chunk_cooccurrence' edge. Useful for improving recall
+        on multi-hop questions where entities are mentioned together.
+
+        Args:
+            dataset_name: Name of the dataset (must have graph built)
+            weight: Edge weight for co-occurrence edges (default 0.5)
+
+        Returns:
+            edges_added: int, status: str
+        """
+        await _ensure_initialized()
+        ctx = _state["context"]
+        graph = None
+        for gid in ctx.list_graphs():
+            if dataset_name in gid:
+                graph = ctx.get_graph_instance(gid)
+                break
+        if graph is None:
+            return _format_result({"status": "error", "message": f"No graph found for dataset '{dataset_name}'. Build one first."})
+        count = await graph.augment_graph_by_chunk_cooccurrence(weight=weight)
+        return _format_result({"edges_added": count, "status": "success"})
+
+    @mcp.tool()
+    async def augment_centrality(dataset_name: str) -> str:
+        """Compute centrality metrics (PageRank, degree, betweenness) and store as node attributes.
+
+        Pre-computing centrality enables fast retrieval-time prioritization
+        of important entities without re-computing graph metrics each query.
+
+        Args:
+            dataset_name: Name of the dataset (must have graph built)
+
+        Returns:
+            nodes_updated: int, pagerank_max: float, degree_centrality_max: float
+        """
+        await _ensure_initialized()
+        ctx = _state["context"]
+        graph = None
+        for gid in ctx.list_graphs():
+            if dataset_name in gid:
+                graph = ctx.get_graph_instance(gid)
+                break
+        if graph is None:
+            return _format_result({"status": "error", "message": f"No graph found for dataset '{dataset_name}'. Build one first."})
+        stats = await graph.augment_graph_with_centrality()
+        stats["status"] = "success"
+        return _format_result(stats)
+
+    @mcp.tool()
+    async def augment_synonym_edges(dataset_name: str, threshold: float = 0.92) -> str:
+        """Detect near-duplicate entities via embedding similarity and add SYNONYM edges.
+
+        Entities whose VDB embeddings are above the similarity threshold
+        get a 'synonym' edge if they don't already share an edge.
+        Requires entity VDB to be built.
+
+        Args:
+            dataset_name: Name of the dataset (must have graph and entity VDB built)
+            threshold: Cosine similarity threshold (default 0.92, very high to avoid false positives)
+
+        Returns:
+            edges_added: int, status: str
+        """
+        await _ensure_initialized()
+        ctx = _state["context"]
+        graph = None
+        entity_vdb = None
+        for gid in ctx.list_graphs():
+            if dataset_name in gid:
+                graph = ctx.get_graph_instance(gid)
+                break
+        for vid in ctx.list_vdbs():
+            if dataset_name in vid and "entit" in vid.lower():
+                entity_vdb = ctx.get_vdb_instance(vid)
+                break
+        if graph is None:
+            return _format_result({"status": "error", "message": f"No graph found for dataset '{dataset_name}'."})
+        if entity_vdb is None:
+            return _format_result({"status": "error", "message": f"No entity VDB found for dataset '{dataset_name}'. Build one first."})
+        count = await graph.augment_graph_by_synonym_detection(entity_vdb, threshold=threshold)
+        return _format_result({"edges_added": count, "status": "success"})
 
 
 # =============================================================================
@@ -1378,8 +1556,7 @@ async def list_available_resources() -> str:
         "data_root": str(config.data_root),
     }, indent=2)
 
-if not BENCHMARK_MODE:
-    list_available_resources = mcp.tool()(list_available_resources)
+list_available_resources = mcp.tool()(list_available_resources)
 
 
 # =============================================================================
@@ -2347,6 +2524,7 @@ async def _build_operator_context_for_dataset(dataset_name: str, *, trace_id: st
         sparse_matrices = _try_load_sparse_matrices(dataset_name)
 
     # Check context-level VDBs
+    chunks_vdb = None
     if hasattr(ctx, "list_vdbs"):
         for vdb_id in ctx.list_vdbs():
             vdb_inst = ctx.get_vdb_instance(vdb_id)
@@ -2355,6 +2533,8 @@ async def _build_operator_context_for_dataset(dataset_name: str, *, trace_id: st
                     entities_vdb = vdb_inst
                 elif "relation" in vdb_id and relations_vdb is None:
                     relations_vdb = vdb_inst
+                elif "chunks" in vdb_id and chunks_vdb is None:
+                    chunks_vdb = vdb_inst
 
     # Build doc_chunks from ChunkFactory storage
     chunk_storage = getattr(ctx, "chunk_storage_manager", None) or _state.get("chunk_factory")
@@ -2383,7 +2563,7 @@ async def _build_operator_context_for_dataset(dataset_name: str, *, trace_id: st
         llm.set_trace_id(trace_id)
 
     # Set trace_id on VDB embedding models if they're LLMClientEmbedding instances
-    for vdb in (entities_vdb, relations_vdb):
+    for vdb in (entities_vdb, relations_vdb, chunks_vdb):
         if vdb is not None:
             embed_model = getattr(vdb, "_embed_model", None)
             if embed_model is not None and hasattr(embed_model, "llm_trace_id"):
@@ -2393,6 +2573,7 @@ async def _build_operator_context_for_dataset(dataset_name: str, *, trace_id: st
         graph=graph,
         entities_vdb=entities_vdb,
         relations_vdb=relations_vdb,
+        chunks_vdb=chunks_vdb,
         doc_chunks=doc_chunks,
         community=community,
         llm=llm,
@@ -2727,48 +2908,21 @@ async def list_modality_conversions() -> str:
 # =============================================================================
 
 if BENCHMARK_MODE:
-    _submit_state = {"count": 0}
-
     @mcp.tool()
-    async def submit_answer(reasoning: str, answer: str, confirmed: bool = False) -> str:
-        """Submit your final answer with reasoning.
-
-        On first call, this returns a verification challenge — re-read the question
-        and check your answer before calling again with confirmed=true.
+    async def submit_answer(reasoning: str, answer: str) -> str:
+        """Submit your final answer. Call once with your best answer.
 
         Args:
             reasoning: Why this is the correct answer. Reference the specific source text
                       and explain how it answers the question.
             answer: The precise answer to the question. Just the fact, no explanation.
                    For yes/no questions: "yes" or "no".
-            confirmed: Set to true on your second call to finalize the answer.
 
         Returns:
-            Verification challenge on first call, confirmation on second call.
+            Confirmation with submitted answer.
         """
-        _submit_state["count"] += 1
-
-        if not confirmed and _submit_state["count"] == 1:
-            return json.dumps({
-                "status": "pending_verification",
-                "proposed_answer": answer,
-                "verification": (
-                    "STOP. Before confirming, answer these questions honestly:\n"
-                    "1. If your answer is WRONG, what is the most likely reason? "
-                    "Did you pick the wrong fact from a sentence with multiple facts? "
-                    "Did you answer yes/no when a name was asked? Did you confuse "
-                    "a related but different detail? Did you give the wrong "
-                    "level of specificity (e.g. country vs city)?\n"
-                    "2. What is the best ALTERNATIVE answer, and what evidence "
-                    "supports it over your current answer?\n"
-                    "3. After considering both, call submit_answer with "
-                    "confirmed=true — keeping or revising your answer."
-                )
-            })
-        else:
-            _submit_state["count"] = 0  # reset for next question
-            _reset_chunk_dedup()  # reset seen chunks for next question
-            return json.dumps({"status": "submitted", "answer": answer})
+        _reset_chunk_dedup()  # reset seen chunks for next question
+        return json.dumps({"status": "submitted", "answer": answer})
 
 
 # =============================================================================

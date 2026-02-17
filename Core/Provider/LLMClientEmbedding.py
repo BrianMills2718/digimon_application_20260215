@@ -20,6 +20,11 @@ class LLMClientEmbedding(BaseEmbedding):
     llm_task: str | None = None
     llm_trace_id: str | None = None
 
+    @property
+    def dimensions(self) -> int | None:
+        """Expose embedding dimensions for FaissIndex compatibility."""
+        return self.llm_dimensions
+
     def _get_text_embedding(self, text: str) -> list[float]:
         from llm_client import embed
 

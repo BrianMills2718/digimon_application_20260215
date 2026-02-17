@@ -52,6 +52,9 @@ class GraphConfig(YamlModel):
     custom_ontology_path: Optional[str] = "Config/custom_ontology.json"  # Default path for the custom ontology file
     loaded_custom_ontology: Optional[Dict[str, Any]] = None  # Populated at runtime after loading
 
+    # Post-extraction edge enrichment (applied at end of __graph__ build)
+    enable_chunk_cooccurrence: bool = False  # Add edges between entities co-occurring in same chunk
+
     # For graph augmentation
     similarity_threshold: float = 0.8
     similarity_top_k: int = 10

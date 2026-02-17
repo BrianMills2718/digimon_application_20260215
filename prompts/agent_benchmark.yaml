@@ -39,15 +39,13 @@ messages:
       For bridge questions (X's Y): find X → onehop to Y → get text for Y.
 
       ## Answering
-      When you have enough evidence, call `submit_answer` with:
+      When you have enough evidence, call `submit_answer` once with your best answer:
       - `reasoning`: cite the source text and explain why it answers the question
       - `answer`: just the fact, nothing else
 
-      The first call to `submit_answer` returns a verification challenge. Questions can
-      be tricky — source text may contain multiple similar facts (dates, numbers, names)
-      where only one precisely matches what was asked. Re-read the original question
-      word by word, think carefully about which fact from the source text logically
-      answers it, then call `submit_answer` again with `confirmed=true` (revising if needed).
+      Before submitting, re-read the original question word by word. Source text may
+      contain multiple similar facts — make sure you pick the one that precisely
+      matches what was asked.
 
       **Budget**: You have at most ~15 tool calls. If after 10 calls you haven't found
       a perfect answer, call `submit_answer` with your best guess from the evidence so far.

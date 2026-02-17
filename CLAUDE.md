@@ -8,7 +8,7 @@ Old Retriever/Query classes have been deleted. The operator pipeline is the cano
 ### Operator Pipeline Status
 ```
 Phase 1:  Type System        [DONE] SlotTypes, OperatorDescriptor, GraphCapabilities
-Phase 2:  Operators (27)     [DONE] 7 entity + 4 relationship + 4 chunk + 3 subgraph + 2 community + 7 meta
+Phase 2:  Operators (28)     [DONE] 7 entity + 4 relationship + 5 chunk + 3 subgraph + 2 community + 7 meta
 Phase 3:  Registry           [DONE] OperatorRegistry with composition helpers
 Phase 4:  Composition Engine [DONE] ChainValidator, PipelineExecutor, Adapters
 Phase 5:  Method Plans (10)  [DONE] All 10 methods expressed as ExecutionPlans, all validate
@@ -46,7 +46,7 @@ async def op(inputs: Dict[str, SlotValue], ctx: OperatorContext, params: Dict) -
 ```
 entity:       vdb, ppr, onehop, link, tfidf, agent, rel_node
 relationship: onehop, vdb, score_agg, agent
-chunk:        from_relation, occurrence, aggregator, text_search
+chunk:        from_relation, occurrence, aggregator, text_search, vdb
 subgraph:     khop_paths, steiner_tree, agent_path
 community:    from_entity, from_level
 meta:         extract_entities, reason_step, rerank, generate_answer, pcst_optimize, decompose_question, synthesize_answers
@@ -82,12 +82,12 @@ See `docs/adr/` for full details.
 parameter to override graph config at build time (e.g. `{"max_gleaning": 2, "enable_entity_description": true}`).
 Validated against per-graph-type Pydantic models in `Core/AgentSchema/graph_construction_tool_contracts.py`.
 
-**MCP tools (50 total)**:
+**MCP tools (55 total, 19 in benchmark mode)**:
 - 5 graph build (er, rk, tree, tree_balanced, passage) + 1 corpus (prepare)
 - 7 entity (vdb_build, vdb_search, onehop, ppr, agent, link, tfidf)
 - 5 relationship (onehop, score_agg, agent, vdb_build, vdb_search)
-- 5 chunk (from_relationships, occurrence, get_text, aggregator, text_search)
-- 2 graph analysis (analyze, visualize) + 3 subgraph (khop_paths, steiner_tree, agent_path)
+- 7 chunk (from_relationships, occurrence, get_text, aggregator, text_search, vdb_build, vdb_search)
+- 2 graph analysis (analyze, visualize) + 3 graph enrichment (augment_chunk_cooccurrence, augment_centrality, augment_synonym_edges) + 3 subgraph (khop_paths, steiner_tree, agent_path)
 - 3 community (build_communities, detect_from_entities, get_layer)
 - 5 meta (extract_entities, generate_answer, pcst_optimize, decompose_question, synthesize_answers)
 - 1 prerequisite build (build_sparse_matrices)
@@ -248,6 +248,20 @@ meta_decompose_question("Who founded the company that employed Jane Doe?")
 - `extract_two_step=True`: NER + OpenIE JSON-based extraction (KG-level) — names and relations only, no descriptions
 - `extract_two_step=False` + `enable_edge_keywords=True`: RKG-level with keywords
 
+**Post-extraction edge enrichment** (config flags or post-hoc augmentation):
+
+| Edge Type | Build-time Flag | Post-hoc Method / MCP Tool | `relation_name` |
+|-----------|----------------|---------------------------|-----------------|
+| Chunk co-occurrence | `enable_chunk_cooccurrence` | `augment_chunk_cooccurrence` (MCP) | `chunk_cooccurrence` |
+| Vector similarity | — | `augment_graph_by_similarity_search()` (code only) | `similarity` |
+| String/name similarity | — | `augment_graph_by_string_similarity()` (code only) | `name_similarity` |
+
+- **Chunk co-occurrence**: Entities sharing a source chunk get implicit edges (weight=0.5). No LLM call. Inspired by EcphoryRAG.
+- **Vector similarity**: Entity embedding cosine similarity above `similarity_threshold` (default 0.8). Requires entity VDB.
+- **String/name similarity**: Fuzzy name match via SequenceMatcher above `string_similarity_threshold` (default 0.65). No LLM call.
+
+All enrichment config lives in `Config/GraphConfig.py`. Post-hoc methods live on `BaseGraph` in `Core/Graph/BaseGraph.py`.
+
 **Shared code**: `DelimiterExtractionMixin` (Core/Graph/DelimiterExtraction.py) used by both ERGraph and RKGraph.
 
 **Test results**:
@@ -293,8 +307,9 @@ meta_decompose_question("Who founded the company that employed Jane Doe?")
    - **Only loads `digimon-kgrag` MCP server** (not all 17 global servers) via `mcp_servers` kwarg
    - **Direct backend** (`--backend direct`): imports DIGIMON tool functions in-process, no subprocess/stdio/JSON-RPC overhead. Uses `python_tools=` kwarg on `acall_llm`. ~1.4K tokens for tool schemas (vs ~2K+ with MCP). Works with any litellm model.
    - Two prompt modes (`--mode`):
-     - `fixed` (default): prescribed workflow (VDB→onehop→chunk), `BENCHMARK_MODE=1` (47 tools)
-     - `adaptive`: open-ended strategy guide, `BENCHMARK_MODE=2` (44 tools — hides `auto_compose`, `execute_method`, `list_methods`)
+     - `fixed` (default): prescribed workflow (VDB→onehop→chunk), `BENCHMARK_MODE=1` (~19 tools)
+     - `adaptive`: open-ended strategy guide, `BENCHMARK_MODE=1` (~19 tools)
+   - **Benchmark tool filtering**: 18 tools hidden (LLM wrappers, discovery, config, cross-modal, communities). 3 deterministic tools added (subgraph_khop_paths, subgraph_steiner_tree, meta_pcst_optimize). `list_available_resources` always shown. Direct backend dynamically filters based on available VDBs/sparse matrices. submit_answer simplified to single call (no verification step).
    - Agent SDK answer extraction: takes last non-empty line of full response (agent SDKs concatenate all text blocks)
    - CLI: `python eval/run_agent_benchmark.py --dataset HotpotQAsmallest --num 10 --model claude-code --mode adaptive`
    - CLI: `python eval/run_agent_benchmark.py --dataset HotpotQA --num 50 --model gemini/gemini-3-flash --backend direct`

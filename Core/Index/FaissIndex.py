@@ -154,8 +154,10 @@ class FaissIndex(BaseIndex):
     async def _update_index(self, datas: list[dict[str, Any]], meta_data_keys: list):
         logger.info(f"Starting FaissIndex._update_index with {len(datas)} data elements.")
         if not hasattr(self.config, 'embed_model') or self.config.embed_model is None:
-            logger.error("FaissIndex config is missing 'embed_model'. Cannot proceed with VDB update.")
-            return
+            raise RuntimeError(
+                "FaissIndex config is missing 'embed_model'. "
+                "Pass an embedding model via create_faiss_index_config(embed_model=...)."
+            )
         logger.info(f"Using embedding model: {type(self.config.embed_model)}")
         embed_dims = None
         if hasattr(self.config.embed_model, 'dimensions'):
@@ -165,8 +167,11 @@ class FaissIndex(BaseIndex):
             embed_dims = self.config.embed_model.embed_dim
             logger.info(f"Attempting to use embed_dim: {embed_dims}")
         else:
-            logger.error("Cannot determine embedding dimensions. Faiss index creation will likely fail.")
-            return
+            raise RuntimeError(
+                f"Cannot determine embedding dimensions from {type(self.config.embed_model).__name__}. "
+                f"Model must expose 'dimensions' or 'embed_dim' attribute. "
+                f"Available attrs: {[a for a in dir(self.config.embed_model) if 'dim' in a.lower()]}"
+            )
         Settings.embed_model = self.config.embed_model
         nodes_to_insert = []
         all_texts_to_embed = [data["content"] for data in datas]
@@ -186,11 +191,11 @@ class FaissIndex(BaseIndex):
                 for text_to_embed in all_texts_to_embed:
                     text_embeddings.append(await self.config.embed_model.aget_text_embedding(text_to_embed) if hasattr(self.config.embed_model, 'aget_text_embedding') else self.config.embed_model.get_text_embedding(text_to_embed))
         except Exception as e:
-            logger.error(f"Error during text embedding batch: {e}", exc_info=True)
-            return
+            raise RuntimeError(f"Embedding failed for {len(all_texts_to_embed)} texts: {e}") from e
         if len(text_embeddings) != len(datas):
-            logger.error(f"Mismatch in number of embeddings ({len(text_embeddings)}) and data elements ({len(datas)}). Aborting VDB update.")
-            return
+            raise RuntimeError(
+                f"Embedding count mismatch: got {len(text_embeddings)} embeddings for {len(datas)} data elements"
+            )
         logger.info(f"Successfully generated {len(text_embeddings)} embeddings.")
         for i, data_item in enumerate(datas):
             node_metadata_dict = {}
@@ -212,8 +217,10 @@ class FaissIndex(BaseIndex):
         if not self._index:
             logger.info("FaissIndex: Creating new FaissVectorStore and VectorStoreIndex in _update_index.")
             if embed_dims is None:
-                logger.error("FaissIndex: CRITICAL - Cannot determine embedding_model dimensions for Faiss IndexHNSWFlat creation. Aborting VDB update logic in _update_index.")
-                return
+                raise RuntimeError(
+                    "Cannot determine embedding dimensions for FAISS index creation. "
+                    "This should have been caught earlier — indicates a logic error."
+                )
             logger.info(f"FaissIndex: Initializing Faiss IndexHNSWFlat with dimensions: {embed_dims}.")
             faiss_index_instance = faiss.IndexHNSWFlat(embed_dims, 32)
             vector_store = FaissVectorStore(faiss_index=faiss_index_instance)

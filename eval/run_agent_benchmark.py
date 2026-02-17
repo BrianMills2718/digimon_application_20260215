@@ -131,6 +131,10 @@ def _build_mcp_servers(benchmark_mode: int = 1, dataset_name: str = "") -> dict:
         if val:
             env[key] = val
     env["DIGIMON_BENCHMARK_MODE"] = str(benchmark_mode)
+    # Propagate log level to MCP subprocess
+    digimon_log_level = os.environ.get("DIGIMON_LOG_LEVEL", "")
+    if digimon_log_level:
+        env["DIGIMON_LOG_LEVEL"] = digimon_log_level
     if dataset_name:
         env["DIGIMON_PRELOAD_DATASET"] = dataset_name
     return {
@@ -182,34 +186,45 @@ async def _init_direct_tools(dataset_name: str) -> list:
         dms.chunk_occurrence,
         dms.chunk_get_text,
         dms.chunk_text_search,
+        dms.chunk_vdb_search,
         dms.chunk_aggregator,
         dms.list_available_resources,
+        dms.subgraph_khop_paths,
+        dms.subgraph_steiner_tree,
+        dms.meta_pcst_optimize,
     ]
 
     # submit_answer is conditionally defined in BENCHMARK_MODE.
-    # It's defined at module scope when BENCHMARK_MODE is truthy.
     if hasattr(dms, "submit_answer"):
         _BENCHMARK_TOOLS.append(dms.submit_answer)
     else:
-        # Define a local submit_answer if the module didn't create one
-        _submit_state = {"count": 0}
-
-        async def submit_answer(reasoning: str, answer: str, confirmed: bool = False) -> str:
-            """Submit your final answer with reasoning."""
-            _submit_state["count"] += 1
-            if not confirmed and _submit_state["count"] == 1:
-                return json.dumps({
-                    "status": "pending_verification",
-                    "proposed_answer": answer,
-                    "verification": "Call again with confirmed=true to finalize.",
-                })
-            _submit_state["count"] = 0
+        async def submit_answer(reasoning: str, answer: str) -> str:
+            """Submit your final answer. Call once with your best answer."""
             dms._reset_chunk_dedup()
             return json.dumps({"status": "submitted", "answer": answer})
 
         _BENCHMARK_TOOLS.append(submit_answer)
 
-    print(f"Direct backend: {len(_BENCHMARK_TOOLS)} Python tools loaded in-process", file=sys.stderr)
+    # Dynamic filtering: only include tools whose prerequisites exist
+    ctx = dms._state.get("context")
+    if ctx:
+        vdbs = ctx.list_vdbs() if hasattr(ctx, "list_vdbs") else []
+        vdb_names = " ".join(vdbs)
+
+        if "entities" not in vdb_names:
+            _BENCHMARK_TOOLS = [t for t in _BENCHMARK_TOOLS if t.__name__ != "entity_vdb_search"]
+        if "relationship" not in vdb_names:
+            _BENCHMARK_TOOLS = [t for t in _BENCHMARK_TOOLS if t.__name__ != "relationship_vdb_search"]
+        if "chunk" not in vdb_names:
+            _BENCHMARK_TOOLS = [t for t in _BENCHMARK_TOOLS if t.__name__ != "chunk_vdb_search"]
+
+        # chunk_aggregator needs sparse matrices
+        e2r_path, r2c_path = dms._sparse_matrix_paths(dataset_name)
+        if not (e2r_path.exists() and r2c_path.exists()):
+            _BENCHMARK_TOOLS = [t for t in _BENCHMARK_TOOLS if t.__name__ != "chunk_aggregator"]
+
+    tool_names = [t.__name__ for t in _BENCHMARK_TOOLS]
+    print(f"Direct backend: {len(_BENCHMARK_TOOLS)} Python tools loaded: {tool_names}", file=sys.stderr)
     return _BENCHMARK_TOOLS
 
 
@@ -446,7 +461,13 @@ async def main() -> None:
                         help="Comma-separated fallback models if primary fails (default: deepseek/deepseek-chat). Set to 'none' to disable.")
     parser.add_argument("--num-retries", type=int, default=2,
                         help="Number of retries per LLM call with exponential backoff (default: 2). Set higher for flaky models.")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Show full DIGIMON debug logs on stderr. Default: quiet (WARNING+ only on stderr, DEBUG in log file).")
     args = parser.parse_args()
+
+    # Suppress DIGIMON internal logging on stderr unless --verbose
+    if not args.verbose:
+        os.environ["DIGIMON_LOG_LEVEL"] = "WARNING"
 
     # Rebuild MCP servers with correct benchmark mode + dataset pre-loading
     global DIGIMON_MCP_SERVERS, DIRECT_TOOLS
@@ -608,7 +629,7 @@ async def main() -> None:
     def _format_output(record: dict, n_done_now: int, n_total: int,
                        total_em_now: int, total_f1_now: float, total_cost_now: float,
                        total_llm_em_now: int | None = None) -> str:
-        """Format a result record for console + log output."""
+        """Format a result record — verbose multi-line (for .log file)."""
         lines = []
         q_id = record["id"]
         q_type = record["type"]
@@ -634,6 +655,23 @@ async def main() -> None:
         llm_em_running = f"  LLM_EM={100*total_llm_em_now/n_done_now:.1f}%" if total_llm_em_now is not None else ""
         lines.append(f"  Running: EM={100*total_em_now/n_done_now:.1f}%{llm_em_running}  F1={100*total_f1_now/n_done_now:.1f}%  ${total_cost_now:.2f}  ({n_done_now} done)")
         return "\n".join(lines)
+
+    def _format_compact(record: dict, n_done_now: int, n_total: int,
+                        total_em_now: int, total_f1_now: float, total_cost_now: float,
+                        total_llm_em_now: int | None = None) -> str:
+        """Format a result record — compact one-liner for clean console output."""
+        q_id = record["id"]
+        em_icon = "+" if record["em"] else "-"
+        llm_em_icon = ""
+        if record.get("llm_em") is not None:
+            llm_em_icon = "L" if record["llm_em"] else "l"
+        err = " ERR" if record.get("error") else ""
+        running_em = 100 * total_em_now / n_done_now
+        running_llm = f" LLM={100*total_llm_em_now/n_done_now:.0f}%" if total_llm_em_now is not None else ""
+        return (f"[{n_done_now:3d}/{n_total}] {q_id:5s} {em_icon}{llm_em_icon} "
+                f"F1={record['f1']:.2f} {record['n_tool_calls']:2d}t {record['latency_s']:5.1f}s "
+                f"${record['cost']:.4f}{err}  "
+                f"| EM={running_em:.1f}%{running_llm} ${total_cost_now:.2f}")
 
     async def _process_question(q: dict, session_pool: object) -> dict:
         """Run agent on one question, then score + log under lock."""
@@ -672,12 +710,20 @@ async def main() -> None:
             if total_llm_em is not None and llm_em_val is not None:
                 total_llm_em += llm_em_val
 
-            output = _format_output(record, n_done, len(questions),
-                                    total_em, total_f1, total_cost,
-                                    total_llm_em)
-            print(output)
-            log_file.write(output + "\n\n")
+            verbose_output = _format_output(record, n_done, len(questions),
+                                            total_em, total_f1, total_cost,
+                                            total_llm_em)
+            # Always write verbose to log file
+            log_file.write(verbose_output + "\n\n")
             log_file.flush()
+
+            # Console: compact by default, verbose with --verbose
+            if args.verbose:
+                print(verbose_output)
+            else:
+                print(_format_compact(record, n_done, len(questions),
+                                      total_em, total_f1, total_cost,
+                                      total_llm_em))
 
             results.append(record)
             _save_results(output_path, args.dataset, args.model, len(questions),
