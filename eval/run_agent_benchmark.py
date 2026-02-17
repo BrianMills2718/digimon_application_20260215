@@ -36,7 +36,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 os.chdir(str(Path(__file__).parent.parent))
 
-from eval.benchmark import exact_match, token_f1
+from eval.benchmark import exact_match, llm_judge, token_f1
 from eval.data_prep import load_questions
 from llm_client import MCPAgentResult
 
@@ -254,6 +254,7 @@ async def run_agent(
     mode: str = "fixed",
     backend: str = "mcp",
     python_tools: list | None = None,
+    fallback_models: list[str] | None = None,
 ) -> dict:
     """Run an agent on a single question via llm_client.
 
@@ -289,6 +290,7 @@ async def run_agent(
                 timeout=timeout,
                 python_tools=python_tools,
                 max_turns=max_turns,
+                **({"fallback_models": fallback_models} if fallback_models else {}),
             )
         elif _is_codex_model(model):
             # Codex SDK path — agent-specific kwargs
@@ -321,6 +323,7 @@ async def run_agent(
                 timeout=timeout,
                 mcp_sessions=mcp_session_pool,
                 max_turns=max_turns,
+                **({"fallback_models": fallback_models} if fallback_models else {}),
             )
         else:
             # MCP agent loop — fresh server per call (legacy)
@@ -330,6 +333,7 @@ async def run_agent(
                 timeout=timeout,
                 mcp_servers=DIGIMON_MCP_SERVERS,
                 max_turns=max_turns,
+                **({"fallback_models": fallback_models} if fallback_models else {}),
             )
 
         elapsed = time.monotonic() - t0
@@ -432,6 +436,10 @@ async def main() -> None:
                         help="Number of concurrent questions (each gets its own MCP server). Default: 1 (sequential)")
     parser.add_argument("--backend", default="mcp", choices=["mcp", "direct"],
                         help="Tool backend: 'mcp' (subprocess, default) or 'direct' (in-process Python tools)")
+    parser.add_argument("--judge-model", default="deepseek/deepseek-chat",
+                        help="LLM judge model for format-agnostic scoring (default: deepseek/deepseek-chat). Set to 'none' to disable.")
+    parser.add_argument("--fallback-models", default="deepseek/deepseek-chat",
+                        help="Comma-separated fallback models if primary fails (default: deepseek/deepseek-chat). Set to 'none' to disable.")
     args = parser.parse_args()
 
     # Rebuild MCP servers with correct benchmark mode + dataset pre-loading
@@ -493,12 +501,17 @@ async def main() -> None:
     total_em = 0
     total_f1 = 0.0
     total_cost = 0.0
+    judge_model = args.judge_model if args.judge_model.lower() != "none" else ""
+    fallback_models = [m.strip() for m in args.fallback_models.split(",") if m.strip().lower() != "none"] or None
+    total_llm_em: int | None = 0 if judge_model else None
     n_done = len(results)
 
     for r in results:
         total_em += r["em"]
         total_f1 += r["f1"]
         total_cost += r.get("cost", 0.0)
+        if total_llm_em is not None and r.get("llm_em") is not None:
+            total_llm_em += r["llm_em"]
 
     log_file = open(log_path, "a")
     print(f"Log: {log_path}")
@@ -529,7 +542,7 @@ async def main() -> None:
     # Lock protects running totals, results list, log_file, and incremental saves
     output_lock = asyncio.Lock()
 
-    def _score_and_record(q: dict, agent_result: dict) -> dict:
+    def _score_and_record(q: dict, agent_result: dict, llm_em_val: int | None = None) -> dict:
         """Score a question result and build the result record. Pure function."""
         q_id = q["id"]
         gold = q["answer"]
@@ -566,6 +579,7 @@ async def main() -> None:
             "full_response": agent_result.get("full_response"),
             "type": q_type,
             "em": em,
+            "llm_em": llm_em_val,
             "f1": f1,
             "latency_s": elapsed,
             "cost": cost,
@@ -586,7 +600,8 @@ async def main() -> None:
         }
 
     def _format_output(record: dict, n_done_now: int, n_total: int,
-                       total_em_now: int, total_f1_now: float, total_cost_now: float) -> str:
+                       total_em_now: int, total_f1_now: float, total_cost_now: float,
+                       total_llm_em_now: int | None = None) -> str:
         """Format a result record for console + log output."""
         lines = []
         q_id = record["id"]
@@ -602,19 +617,21 @@ async def main() -> None:
             lines.append(f"  Reasoning: {record['reasoning'][:300]}")
         fresh = record["input_tokens"] - record["cached_input_tokens"]
         total_in = record["input_tokens"] + record["cache_read_input_tokens"]
-        lines.append(f"  EM={record['em']}  F1={record['f1']:.2f}  ({record['latency_s']:.1f}s, ${record['cost']:.4f})")
+        llm_em_str = f"  LLM_EM={record['llm_em']}" if record.get("llm_em") is not None else ""
+        lines.append(f"  EM={record['em']}{llm_em_str}  F1={record['f1']:.2f}  ({record['latency_s']:.1f}s, ${record['cost']:.4f})")
         lines.append(f"  Tools: {record['n_tool_calls']} calls {record['tool_calls']}")
         lines.append(f"  Tokens: {fresh:,} fresh + {record['cache_read_input_tokens']:,} cached = {total_in:,} total in, {record['output_tokens']:,} out")
         if record["duration_ms"]:
             api_s = record["duration_api_ms"] / 1000
             oh_s = record["overhead_ms"] / 1000
             lines.append(f"  Timing: {api_s:.1f}s API + {oh_s:.1f}s overhead = {record['duration_ms']/1000:.1f}s ({record['num_turns']} turns)")
-        lines.append(f"  Running: EM={100*total_em_now/n_done_now:.1f}%  F1={100*total_f1_now/n_done_now:.1f}%  ${total_cost_now:.2f}  ({n_done_now} done)")
+        llm_em_running = f"  LLM_EM={100*total_llm_em_now/n_done_now:.1f}%" if total_llm_em_now is not None else ""
+        lines.append(f"  Running: EM={100*total_em_now/n_done_now:.1f}%{llm_em_running}  F1={100*total_f1_now/n_done_now:.1f}%  ${total_cost_now:.2f}  ({n_done_now} done)")
         return "\n".join(lines)
 
     async def _process_question(q: dict, session_pool: object) -> dict:
         """Run agent on one question, then score + log under lock."""
-        nonlocal n_done, total_em, total_f1, total_cost
+        nonlocal n_done, total_em, total_f1, total_cost, total_llm_em
 
         agent_result = await run_agent(
             q["question"], args.dataset,
@@ -626,9 +643,18 @@ async def main() -> None:
             mode=args.mode,
             backend=args.backend,
             python_tools=DIRECT_TOOLS if args.backend == "direct" else None,
+            fallback_models=fallback_models,
         )
 
-        record = _score_and_record(q, agent_result)
+        # LLM judge (runs before lock — it's an independent LLM call)
+        llm_em_val: int | None = None
+        if judge_model and agent_result["answer"]:
+            llm_em_val = int(await llm_judge(
+                q["question"], agent_result["answer"], q["answer"],
+                model=judge_model,
+            ))
+
+        record = _score_and_record(q, agent_result, llm_em_val=llm_em_val)
 
         # Acquire lock for shared state updates + output
         async with output_lock:
@@ -636,9 +662,12 @@ async def main() -> None:
             total_em += record["em"]
             total_f1 += record["f1"]
             total_cost += record["cost"]
+            if total_llm_em is not None and llm_em_val is not None:
+                total_llm_em += llm_em_val
 
             output = _format_output(record, n_done, len(questions),
-                                    total_em, total_f1, total_cost)
+                                    total_em, total_f1, total_cost,
+                                    total_llm_em)
             print(output)
             log_file.write(output + "\n\n")
             log_file.flush()
@@ -734,6 +763,8 @@ async def main() -> None:
         wall_time = time.monotonic() - _wall_t0
         print(f"FINAL: {n_done}/{len(questions)} questions (parallel={parallel})")
         print(f"  EM:    {100*total_em/n_done:.1f}%")
+        if total_llm_em is not None:
+            print(f"  LLM_EM:{100*total_llm_em/n_done:.1f}%  (judge: {judge_model})")
         print(f"  F1:    {100*total_f1/n_done:.1f}%")
         print(f"  Cost:  ${total_cost:.2f}")
         print(f"  Tools: {avg_tools:.1f} calls/question avg")
@@ -743,6 +774,7 @@ async def main() -> None:
 
         # Append to experiment log (tracked in git)
         experiment_log = Path(__file__).parent / "experiment_log.jsonl"
+        avg_llm_em = round(100 * total_llm_em / n_done, 1) if total_llm_em is not None else None
         entry = {
             "timestamp": run_ts,
             "dataset": args.dataset,
@@ -752,6 +784,7 @@ async def main() -> None:
             "n_completed": n_done,
             "n_errors": n_errors,
             "avg_em": round(100 * total_em / n_done, 1),
+            "avg_llm_em": avg_llm_em,
             "avg_f1": round(100 * total_f1 / n_done, 1),
             "total_cost": round(total_cost, 4),
             "avg_tool_calls": round(avg_tools, 1),
@@ -788,6 +821,10 @@ def _save_results(
     total_input = sum(r.get("input_tokens", 0) for r in results)
     total_output = sum(r.get("output_tokens", 0) for r in results)
 
+    # Compute LLM EM if any results have it
+    llm_em_vals = [r["llm_em"] for r in results if r.get("llm_em") is not None]
+    avg_llm_em = 100 * sum(llm_em_vals) / len(llm_em_vals) if llm_em_vals else None
+
     with open(output_path, "w") as f:
         json.dump({
             "dataset": dataset,
@@ -795,6 +832,7 @@ def _save_results(
             "n_questions": n_questions,
             "n_completed": n_done,
             "avg_em": 100 * total_em / n_done if n_done else 0,
+            "avg_llm_em": avg_llm_em,
             "avg_f1": 100 * total_f1 / n_done if n_done else 0,
             "total_cost": round(total_cost, 4),
             "avg_tool_calls": round(avg_tools, 1),

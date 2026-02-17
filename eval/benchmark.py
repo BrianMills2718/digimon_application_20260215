@@ -17,6 +17,8 @@ from typing import Any, Dict, List, Optional
 
 from Core.Common.Logger import logger
 
+JUDGE_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "llm_judge.yaml"
+
 
 # --- Scoring (reuses normalize_answer logic from Core/Utils/Evaluation.py) ---
 
@@ -65,6 +67,47 @@ def score_prediction(predicted: str, gold: str) -> Dict[str, Any]:
         "precision": precision,
         "recall": recall,
     }
+
+
+async def llm_judge(
+    question: str,
+    predicted: str,
+    gold: str,
+    model: str = "deepseek/deepseek-chat",
+) -> bool:
+    """Use an LLM to judge if the predicted answer is correct.
+
+    Returns True if the LLM deems the prediction correct, False otherwise.
+    On any error (timeout, parse failure, API error), returns False.
+    """
+    if not predicted or not predicted.strip():
+        return False
+
+    from llm_client import acall_llm, render_prompt
+
+    messages = render_prompt(
+        JUDGE_PROMPT_PATH,
+        question=question,
+        gold=gold,
+        predicted=predicted,
+    )
+
+    try:
+        result = await acall_llm(model, messages, timeout=15, task="llm_judge")
+        text = result.content.strip().lower()
+        # Parse JSON response
+        if "{" in text:
+            import json as _json
+            try:
+                parsed = _json.loads(text)
+                return bool(parsed.get("correct", False))
+            except _json.JSONDecodeError:
+                pass
+        # Fallback: look for "correct" vs "incorrect" in raw text
+        return "incorrect" not in text and "correct" in text
+    except Exception as e:
+        logger.warning(f"llm_judge failed: {e}")
+        return False
 
 
 # --- Data structures ---
