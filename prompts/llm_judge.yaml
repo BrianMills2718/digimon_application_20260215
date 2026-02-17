@@ -8,13 +8,16 @@ messages:
       determine if the predicted answer is correct.
 
       Rules:
-      - The predicted answer is CORRECT if it conveys the same information as the gold answer.
+      - The predicted answer is CORRECT if it is a valid, factually correct answer to the question.
+      - The gold answer is one known-correct answer. Other answers that correctly answer the question are ALSO correct.
+      - Example: Q="What government position was held by X?" Gold="Chief of Protocol" Predicted="United States ambassador to Ghana" → CORRECT if X held both positions.
       - Minor wording differences are OK: "YG Entertainment" vs "YG Entertainment Inc." → CORRECT
       - Extra correct detail is OK: "Chief of Protocol" vs "Chief of Protocol of the United States" → CORRECT
       - Partial answers are CORRECT if they contain the key information: "Greenwich Village" vs "Greenwich Village, New York City" → CORRECT
       - Wrong answers are INCORRECT: "Lior Suchard" vs "Eenasul Fateh" → INCORRECT
       - "yes"/"no" answers must match exactly.
       - Empty or clearly unrelated answers are INCORRECT.
+      - When in doubt, use your knowledge to verify if the predicted answer is factually correct for the question.
 
       Respond with ONLY a JSON object, no other text:
       {"correct": true/false, "reason": "brief explanation"}
