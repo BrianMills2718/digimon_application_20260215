@@ -16,6 +16,12 @@ Gold answers that are incorrect or unsupported by the provided corpus.
 - **Correct**: Charles Nungesser
 - **Evidence**: Corpus says "Charles Eugène Jules Marie Nungesser" (full name) and "Charles Nungesser and François Coli" flew L'Oiseau Blanc. The gold answer extracted just the first two given names — nobody refers to him as "Charles Eugène." His common name is Charles Nungesser.
 
+### q28 — Gold answer uses abbreviated middle name
+- **Question**: "Kaiser Ventures corporation was founded by an American industrialist who became known as the father of modern American shipbuilding?"
+- **Gold**: Henry J. Kaiser
+- **Correct**: Henry John Kaiser (or Henry J. Kaiser)
+- **Issue**: Corpus text literally says "Henry John Kaiser" — his full legal name. Gold answer abbreviates the middle name to "J." Any model that faithfully extracts from the corpus will say "Henry John Kaiser" and get EM=0 despite being more precise than the gold answer.
+
 ### q15 — Question says "country" but means "county"
 - **Question**: "Brown State Fishing Lake is in a country that has a population of how many inhabitants?"
 - **Gold**: 9,984

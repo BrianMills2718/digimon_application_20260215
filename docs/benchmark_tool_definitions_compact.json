@@ -1,0 +1,404 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "chunk_aggregator",
+      "description": "Score chunks by relationship/PPR scores via sparse matrices.",
+      "parameters": {
+        "properties": {
+          "relationship_scores": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "graph_reference_id": {
+            "type": "string"
+          },
+          "top_k": {
+            "default": 10,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "relationship_scores",
+          "graph_reference_id"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "chunk_from_relationships",
+      "description": "Get text chunks for given relationships.",
+      "parameters": {
+        "properties": {
+          "target_relationships": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "document_collection_id": {
+            "type": "string"
+          },
+          "top_k": {
+            "default": 10,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "target_relationships",
+          "document_collection_id"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "chunk_get_text",
+      "description": "Get source text for given entities.",
+      "parameters": {
+        "properties": {
+          "graph_reference_id": {
+            "type": "string"
+          },
+          "entity_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "max_chunks_per_entity": {
+            "default": 5,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "graph_reference_id",
+          "entity_ids"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "chunk_occurrence",
+      "description": "Find chunks where two entities co-occur.",
+      "parameters": {
+        "properties": {
+          "target_entity_pairs": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "document_collection_id": {
+            "type": "string"
+          },
+          "top_k": {
+            "default": 5,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "target_entity_pairs",
+          "document_collection_id"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "chunk_text_search",
+      "description": "Keyword search over source text chunks.",
+      "parameters": {
+        "properties": {
+          "query_text": {
+            "type": "string"
+          },
+          "dataset_name": {
+            "type": "string"
+          },
+          "top_k": {
+            "default": 10,
+            "type": "integer"
+          },
+          "entity_names": {
+            "default": null,
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "query_text",
+          "dataset_name"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "entity_link",
+      "description": "Match entity names to graph nodes.",
+      "parameters": {
+        "properties": {
+          "source_entities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "vdb_reference_id": {
+            "type": "string"
+          },
+          "similarity_threshold": {
+            "default": 0.5,
+            "type": "number"
+          }
+        },
+        "required": [
+          "source_entities",
+          "vdb_reference_id"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "entity_onehop",
+      "description": "Get all neighbor entities of a given entity.",
+      "parameters": {
+        "properties": {
+          "entity_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "graph_reference_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_ids",
+          "graph_reference_id"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "entity_ppr",
+      "description": "Personalized PageRank from seed entities.",
+      "parameters": {
+        "properties": {
+          "graph_reference_id": {
+            "type": "string"
+          },
+          "seed_entity_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "top_k": {
+            "default": 10,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "graph_reference_id",
+          "seed_entity_ids"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "entity_tfidf",
+      "description": "Find entities by TF-IDF keyword matching.",
+      "parameters": {
+        "properties": {
+          "candidate_entity_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "query_text": {
+            "type": "string"
+          },
+          "graph_reference_id": {
+            "type": "string"
+          },
+          "top_k": {
+            "default": 10,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "candidate_entity_ids",
+          "query_text",
+          "graph_reference_id"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "entity_vdb_search",
+      "description": "Semantic vector search over entities.",
+      "parameters": {
+        "properties": {
+          "vdb_reference_id": {
+            "type": "string"
+          },
+          "query_text": {
+            "type": "string"
+          },
+          "top_k": {
+            "default": 5,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "vdb_reference_id",
+          "query_text"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "relationship_onehop",
+      "description": "Get typed relationships for an entity.",
+      "parameters": {
+        "properties": {
+          "entity_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "graph_reference_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_ids",
+          "graph_reference_id"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "relationship_score_aggregator",
+      "description": "Aggregate entity scores into relationship scores.",
+      "parameters": {
+        "properties": {
+          "entity_scores": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "graph_reference_id": {
+            "type": "string"
+          },
+          "top_k": {
+            "default": 10,
+            "type": "integer"
+          },
+          "aggregation_method": {
+            "default": "sum",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_scores",
+          "graph_reference_id"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "relationship_vdb_search",
+      "description": "Semantic vector search over relationships.",
+      "parameters": {
+        "properties": {
+          "vdb_reference_id": {
+            "type": "string"
+          },
+          "query_text": {
+            "type": "string"
+          },
+          "top_k": {
+            "default": 10,
+            "type": "integer"
+          },
+          "score_threshold": {
+            "default": null,
+            "type": "number"
+          }
+        },
+        "required": [
+          "vdb_reference_id",
+          "query_text"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "submit_answer",
+      "description": "Submit your final answer with reasoning.",
+      "parameters": {
+        "properties": {
+          "reasoning": {
+            "type": "string"
+          },
+          "answer": {
+            "type": "string"
+          },
+          "confirmed": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "reasoning",
+          "answer"
+        ],
+        "type": "object"
+      }
+    }
+  }
+]

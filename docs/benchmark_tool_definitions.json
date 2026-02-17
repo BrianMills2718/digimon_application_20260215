@@ -1,0 +1,462 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "chunk_aggregator",
+      "description": "Propagate relationship/PPR scores to chunks via sparse matrices.\n\n    Used in FastGraphRAG and HippoRAG pipelines. Requires sparse matrices\n    built during graph construction.\n\n    Args:\n        relationship_scores: Dict mapping relationship_id to score\n        graph_reference_id: Graph ID containing the chunks\n        top_k: Maximum chunks to return\n\n    Returns:\n        ranked_aggregated_chunks: list of {chunk_id: str, content: str, relevance_score?: float}\n    ",
+      "parameters": {
+        "properties": {
+          "relationship_scores": {
+            "additionalProperties": true,
+            "title": "Relationship Scores",
+            "type": "object"
+          },
+          "graph_reference_id": {
+            "title": "Graph Reference Id",
+            "type": "string"
+          },
+          "top_k": {
+            "default": 10,
+            "title": "Top K",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "relationship_scores",
+          "graph_reference_id"
+        ],
+        "title": "chunk_aggregatorArguments",
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "chunk_from_relationships",
+      "description": "Retrieve text chunks associated with specified relationships.\n\n    Args:\n        target_relationships: List of relationship identifiers (e.g. 'entity1->entity2')\n        document_collection_id: Graph/collection ID to search\n        top_k: Maximum chunks to return\n\n    Returns:\n        relevant_chunks: list of {chunk_id: str, content: str, relevance_score?: float}\n    ",
+      "parameters": {
+        "properties": {
+          "target_relationships": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Target Relationships",
+            "type": "array"
+          },
+          "document_collection_id": {
+            "title": "Document Collection Id",
+            "type": "string"
+          },
+          "top_k": {
+            "default": 10,
+            "title": "Top K",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "target_relationships",
+          "document_collection_id"
+        ],
+        "title": "chunk_from_relationshipsArguments",
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "chunk_get_text",
+      "description": "Get source text chunks associated with specific entities.\n\n    Args:\n        graph_reference_id: ID of the graph containing the entities\n        entity_ids: List of entity names/IDs to get text for\n        max_chunks_per_entity: Max chunks per entity\n\n    Returns:\n        retrieved_chunks: list of {entity_id?: str, chunk_id: str, text_content: str}, status_message: str\n    ",
+      "parameters": {
+        "properties": {
+          "graph_reference_id": {
+            "title": "Graph Reference Id",
+            "type": "string"
+          },
+          "entity_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Entity Ids",
+            "type": "array"
+          },
+          "max_chunks_per_entity": {
+            "default": 5,
+            "title": "Max Chunks Per Entity",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "graph_reference_id",
+          "entity_ids"
+        ],
+        "title": "chunk_get_textArguments",
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "chunk_occurrence",
+      "description": "Rank chunks by entity pair co-occurrence.\n\n    Args:\n        target_entity_pairs: List of dicts like {\"entity1_id\": \"X\", \"entity2_id\": \"Y\"}\n        document_collection_id: Graph ID to search\n        top_k: Number of top chunks to return\n\n    Returns:\n        ranked_occurrence_chunks: list of {chunk_id: str, content: str, relevance_score?: float}\n    ",
+      "parameters": {
+        "properties": {
+          "target_entity_pairs": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Target Entity Pairs",
+            "type": "array"
+          },
+          "document_collection_id": {
+            "title": "Document Collection Id",
+            "type": "string"
+          },
+          "top_k": {
+            "default": 5,
+            "title": "Top K",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "target_entity_pairs",
+          "document_collection_id"
+        ],
+        "title": "chunk_occurrenceArguments",
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "chunk_text_search",
+      "description": "Keyword/TF-IDF search over raw chunk text. Bypasses entity-based retrieval.\n\n    Use when entity VDB search misses relevant passages, or as a complementary\n    signal. Searches the actual document text directly using TF-IDF cosine similarity.\n\n    Args:\n        query_text: Search query (keywords or natural language)\n        dataset_name: Dataset whose chunks to search\n        top_k: Number of top chunks to return\n        entity_names: Optional entity names to pre-filter chunks (search only chunks associated with these entities)\n\n    Returns:\n        chunks: list of {chunk_id: str, text: str, score: float}\n    ",
+      "parameters": {
+        "properties": {
+          "query_text": {
+            "title": "Query Text",
+            "type": "string"
+          },
+          "dataset_name": {
+            "title": "Dataset Name",
+            "type": "string"
+          },
+          "top_k": {
+            "default": 10,
+            "title": "Top K",
+            "type": "integer"
+          },
+          "entity_names": {
+            "default": null,
+            "items": {
+              "type": "string"
+            },
+            "title": "Entity Names",
+            "type": "array"
+          }
+        },
+        "required": [
+          "query_text",
+          "dataset_name"
+        ],
+        "title": "chunk_text_searchArguments",
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "entity_link",
+      "description": "Link entity mentions to canonical entities in a VDB.\n\n    Args:\n        source_entities: Entity mention strings to link\n        vdb_reference_id: VDB to search for canonical matches\n        similarity_threshold: Minimum score to consider a match\n\n    Returns:\n        linked_entities_results: list of {source_entity_mention: str, linked_entity_id?: str, similarity_score?: float, link_status: str}\n    ",
+      "parameters": {
+        "properties": {
+          "source_entities": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Entities",
+            "type": "array"
+          },
+          "vdb_reference_id": {
+            "title": "Vdb Reference Id",
+            "type": "string"
+          },
+          "similarity_threshold": {
+            "default": 0.5,
+            "title": "Similarity Threshold",
+            "type": "number"
+          }
+        },
+        "required": [
+          "source_entities",
+          "vdb_reference_id"
+        ],
+        "title": "entity_linkArguments",
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "entity_onehop",
+      "description": "Find one-hop neighbor entities in the graph.\n\n    Args:\n        entity_ids: List of entity IDs to find neighbors for\n        graph_reference_id: ID of the graph to search\n\n    Returns:\n        neighbors: {entity_id: [{...}]}, total_neighbors_found: int, message: str\n    ",
+      "parameters": {
+        "properties": {
+          "entity_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Entity Ids",
+            "type": "array"
+          },
+          "graph_reference_id": {
+            "title": "Graph Reference Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_ids",
+          "graph_reference_id"
+        ],
+        "title": "entity_onehopArguments",
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "entity_ppr",
+      "description": "Run Personalized PageRank from seed entities to find related entities.\n\n    Args:\n        graph_reference_id: ID of the graph\n        seed_entity_ids: Starting entity IDs for PPR\n        top_k: Number of top-ranked entities to return\n\n    Returns:\n        ranked_entities: list of [entity_id: str, score: float]\n    ",
+      "parameters": {
+        "properties": {
+          "graph_reference_id": {
+            "title": "Graph Reference Id",
+            "type": "string"
+          },
+          "seed_entity_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Seed Entity Ids",
+            "type": "array"
+          },
+          "top_k": {
+            "default": 10,
+            "title": "Top K",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "graph_reference_id",
+          "seed_entity_ids"
+        ],
+        "title": "entity_pprArguments",
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "entity_tfidf",
+      "description": "Rank candidate entities by TF-IDF similarity to a query.\n\n    Args:\n        candidate_entity_ids: Entity IDs to rank\n        query_text: Query to compare against\n        graph_reference_id: Graph containing the entities\n        top_k: Number of top results\n\n    Returns:\n        ranked_entities: list of [entity_id: str, score: float]\n    ",
+      "parameters": {
+        "properties": {
+          "candidate_entity_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Candidate Entity Ids",
+            "type": "array"
+          },
+          "query_text": {
+            "title": "Query Text",
+            "type": "string"
+          },
+          "graph_reference_id": {
+            "title": "Graph Reference Id",
+            "type": "string"
+          },
+          "top_k": {
+            "default": 10,
+            "title": "Top K",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "candidate_entity_ids",
+          "query_text",
+          "graph_reference_id"
+        ],
+        "title": "entity_tfidfArguments",
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "entity_vdb_search",
+      "description": "Search for entities similar to a query using vector similarity.\n\n    Args:\n        vdb_reference_id: ID of the entity VDB to search\n        query_text: Natural language search query\n        top_k: Number of results to return\n\n    Returns:\n        similar_entities: list of {entity_name: str, score: float, node_id: str}\n    ",
+      "parameters": {
+        "properties": {
+          "vdb_reference_id": {
+            "title": "Vdb Reference Id",
+            "type": "string"
+          },
+          "query_text": {
+            "title": "Query Text",
+            "type": "string"
+          },
+          "top_k": {
+            "default": 5,
+            "title": "Top K",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "vdb_reference_id",
+          "query_text"
+        ],
+        "title": "entity_vdb_searchArguments",
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "relationship_onehop",
+      "description": "Get one-hop relationships for given entities.\n\n    Args:\n        entity_ids: Entity IDs to find relationships for\n        graph_reference_id: ID of the graph\n\n    Returns:\n        one_hop_relationships: list of {relationship_id: str, source_node_id: str, target_node_id: str, type: str, description?: str}\n    ",
+      "parameters": {
+        "properties": {
+          "entity_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Entity Ids",
+            "type": "array"
+          },
+          "graph_reference_id": {
+            "title": "Graph Reference Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_ids",
+          "graph_reference_id"
+        ],
+        "title": "relationship_onehopArguments",
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "relationship_score_aggregator",
+      "description": "Aggregate entity scores (e.g. from PPR) onto relationships and return top-k.\n\n    Args:\n        entity_scores: Dict mapping entity_id to score\n        graph_reference_id: ID of the graph\n        top_k: Number of top relationships to return\n        aggregation_method: How to combine scores: 'sum', 'average', or 'max'\n\n    Returns:\n        scored_relationships: list of [{relationship_id: str, source_node_id: str, target_node_id: str, type: str}, score: float]\n    ",
+      "parameters": {
+        "properties": {
+          "entity_scores": {
+            "additionalProperties": true,
+            "title": "Entity Scores",
+            "type": "object"
+          },
+          "graph_reference_id": {
+            "title": "Graph Reference Id",
+            "type": "string"
+          },
+          "top_k": {
+            "default": 10,
+            "title": "Top K",
+            "type": "integer"
+          },
+          "aggregation_method": {
+            "default": "sum",
+            "title": "Aggregation Method",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_scores",
+          "graph_reference_id"
+        ],
+        "title": "relationship_score_aggregatorArguments",
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "relationship_vdb_search",
+      "description": "Search for relationships similar to a query using vector similarity.\n\n    Args:\n        vdb_reference_id: ID of the relationship VDB to search\n        query_text: Natural language search query\n        top_k: Number of results to return\n        score_threshold: Minimum similarity score (optional)\n\n    Returns:\n        similar_relationships: list of [relationship_id: str, description: str, score: float]\n    ",
+      "parameters": {
+        "properties": {
+          "vdb_reference_id": {
+            "title": "Vdb Reference Id",
+            "type": "string"
+          },
+          "query_text": {
+            "title": "Query Text",
+            "type": "string"
+          },
+          "top_k": {
+            "default": 10,
+            "title": "Top K",
+            "type": "integer"
+          },
+          "score_threshold": {
+            "default": null,
+            "title": "Score Threshold",
+            "type": "number"
+          }
+        },
+        "required": [
+          "vdb_reference_id",
+          "query_text"
+        ],
+        "title": "relationship_vdb_searchArguments",
+        "type": "object"
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "submit_answer",
+      "description": "Submit your final answer with reasoning.\n\n        On first call, this returns a verification challenge \u2014 re-read the question\n        and check your answer before calling again with confirmed=true.\n\n        Args:\n            reasoning: Why this is the correct answer. Reference the specific source text\n                      and explain how it answers the question.\n            answer: The precise answer to the question. Just the fact, no explanation.\n                   For yes/no questions: \"yes\" or \"no\".\n            confirmed: Set to true on your second call to finalize the answer.\n\n        Returns:\n            Verification challenge on first call, confirmation on second call.\n        ",
+      "parameters": {
+        "properties": {
+          "reasoning": {
+            "title": "Reasoning",
+            "type": "string"
+          },
+          "answer": {
+            "title": "Answer",
+            "type": "string"
+          },
+          "confirmed": {
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "reasoning",
+          "answer"
+        ],
+        "title": "submit_answerArguments",
+        "type": "object"
+      }
+    }
+  }
+]

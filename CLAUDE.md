@@ -283,14 +283,16 @@ meta_decompose_question("Who founded the company that employed Jane Doe?")
 **Two benchmark modes:**
 
 1. **Agent benchmark** (`eval/run_agent_benchmark.py`) — agent freely composes operators via MCP
-   - Three agent backends: Codex SDK (`--model codex`), Claude Agent SDK (`--model claude-code`), MCP agent loop (any litellm model)
+   - Four agent backends: Codex SDK (`--model codex`), Claude Agent SDK (`--model claude-code`), MCP agent loop (any litellm model), Direct Python tools (`--backend direct`)
    - **Only loads `digimon-kgrag` MCP server** (not all 17 global servers) via `mcp_servers` kwarg
+   - **Direct backend** (`--backend direct`): imports DIGIMON tool functions in-process, no subprocess/stdio/JSON-RPC overhead. Uses `python_tools=` kwarg on `acall_llm`. ~1.4K tokens for tool schemas (vs ~2K+ with MCP). Works with any litellm model.
    - Two prompt modes (`--mode`):
      - `fixed` (default): prescribed workflow (VDB→onehop→chunk), `BENCHMARK_MODE=1` (47 tools)
      - `adaptive`: open-ended strategy guide, `BENCHMARK_MODE=2` (44 tools — hides `auto_compose`, `execute_method`, `list_methods`)
    - Agent SDK answer extraction: takes last non-empty line of full response (agent SDKs concatenate all text blocks)
    - CLI: `python eval/run_agent_benchmark.py --dataset HotpotQAsmallest --num 10 --model claude-code --mode adaptive`
-   - Options: `--model codex` `--effort high` `--timeout 120` `--mode adaptive` `--resume`
+   - CLI: `python eval/run_agent_benchmark.py --dataset HotpotQA --num 50 --model gemini/gemini-3-flash --backend direct`
+   - Options: `--model codex` `--effort high` `--timeout 120` `--mode adaptive` `--resume` `--backend direct`
    - Output: `results/{dataset}_{model}_{timestamp}.json` + `.log`
 
 2. **Fixed pipeline benchmark** (`eval/run_benchmark.py`) — runs named methods via OperatorComposer

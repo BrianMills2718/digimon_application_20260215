@@ -28,6 +28,7 @@ class RAGEmbeddingFactory(GenericFactory):
             EmbeddingType.OPENAI: self._create_openai,
             EmbeddingType.OLLAMA: self._create_ollama,
             EmbeddingType.HF: self._create_hf,
+            EmbeddingType.LITELLM: self._create_litellm,
         }
         super().__init__(creators)
 
@@ -86,6 +87,18 @@ class RAGEmbeddingFactory(GenericFactory):
             del params["cache_folder"]
         return HuggingFaceEmbedding(**params)
     
+    def _create_litellm(self, config) -> "LLMClientEmbedding":
+        from Core.Provider.LLMClientEmbedding import LLMClientEmbedding
+
+        params: dict = {}
+        if config.embedding.model:
+            params["llm_model"] = config.embedding.model
+        if config.embedding.dimensions:
+            params["llm_dimensions"] = config.embedding.dimensions
+        if config.embedding.embed_batch_size:
+            params["embed_batch_size"] = config.embedding.embed_batch_size
+        return LLMClientEmbedding(**params)
+
     @staticmethod
     def _try_set_model_and_batch_size(params: dict, config):
   

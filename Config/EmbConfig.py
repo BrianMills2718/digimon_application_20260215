@@ -10,6 +10,7 @@ class EmbeddingType(Enum):
     OPENAI = "openai"
     HF = "hf"
     OLLAMA = "ollama"
+    LITELLM = "litellm"
 
 
 class EmbeddingConfig(YamlModel):

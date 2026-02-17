@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 """Agent-driven benchmark: any LLM composes operators per question via MCP.
 
-Supports three agent backends (selected by --model):
+Supports four agent backends (selected by --model and --backend):
 - Codex SDK: model="codex" or "codex/gpt-5" — Codex CLI spawns MCP servers
 - Claude Agent SDK: model="claude-code" or "claude-code/opus" — Claude Code spawns MCP servers
 - MCP agent loop: any litellm model (e.g. "gemini/gemini-3-flash-preview") —
   llm_client starts MCP servers and runs a tool-calling loop
+- Direct Python tools: any litellm model + --backend direct — calls DIGIMON
+  functions in-process via python_tools= (no subprocess, no stdio, no JSON-RPC)
 
 Saves results incrementally (partial runs preserved on Ctrl+C).
+Use --parallel N for concurrent question execution (N MCP server processes).
 
 Usage:
     python eval/run_agent_benchmark.py --dataset HotpotQAsmallest --num 10
     python eval/run_agent_benchmark.py --dataset HotpotQA --num 50 --model gemini/gemini-3-flash-preview
     python eval/run_agent_benchmark.py --dataset HotpotQA --num 50 --model codex --resume
+    python eval/run_agent_benchmark.py --dataset HotpotQA --num 50 --parallel 5
+    python eval/run_agent_benchmark.py --dataset HotpotQA --num 50 --model gemini/gemini-3-flash --backend direct
 """
 
 from __future__ import annotations
@@ -139,6 +144,74 @@ def _build_mcp_servers(benchmark_mode: int = 1, dataset_name: str = "") -> dict:
 DIGIMON_MCP_SERVERS = _build_mcp_servers(1)
 
 
+# --- Direct Python tools backend ---
+
+# Populated by _init_direct_tools() — list of async callables
+DIRECT_TOOLS: list = []
+
+
+async def _init_direct_tools(dataset_name: str) -> list:
+    """Import DIGIMON MCP server module and initialize in-process.
+
+    Returns list of tool functions ready for python_tools= parameter.
+    Must be called once before run_agent with backend="direct".
+    """
+    # Set benchmark mode env vars BEFORE importing the MCP server module
+    os.environ["DIGIMON_BENCHMARK_MODE"] = "1"
+    if dataset_name:
+        os.environ["DIGIMON_PRELOAD_DATASET"] = dataset_name
+
+    import digimon_mcp_stdio_server as dms
+
+    # Initialize DIGIMON context (loads config, graph, VDB)
+    await dms._ensure_initialized()
+
+    # Collect benchmark-relevant tool functions from the MCP server module.
+    # These are the same functions registered with @mcp.tool() minus hidden ones.
+    _BENCHMARK_TOOLS = [
+        dms.entity_vdb_search,
+        dms.entity_onehop,
+        dms.entity_ppr,
+        dms.entity_link,
+        dms.entity_tfidf,
+        dms.relationship_onehop,
+        dms.relationship_score_aggregator,
+        dms.relationship_vdb_search,
+        dms.chunk_from_relationships,
+        dms.chunk_occurrence,
+        dms.chunk_get_text,
+        dms.chunk_text_search,
+        dms.chunk_aggregator,
+        dms.list_available_resources,
+    ]
+
+    # submit_answer is conditionally defined in BENCHMARK_MODE.
+    # It's defined at module scope when BENCHMARK_MODE is truthy.
+    if hasattr(dms, "submit_answer"):
+        _BENCHMARK_TOOLS.append(dms.submit_answer)
+    else:
+        # Define a local submit_answer if the module didn't create one
+        _submit_state = {"count": 0}
+
+        async def submit_answer(reasoning: str, answer: str, confirmed: bool = False) -> str:
+            """Submit your final answer with reasoning."""
+            _submit_state["count"] += 1
+            if not confirmed and _submit_state["count"] == 1:
+                return json.dumps({
+                    "status": "pending_verification",
+                    "proposed_answer": answer,
+                    "verification": "Call again with confirmed=true to finalize.",
+                })
+            _submit_state["count"] = 0
+            dms._reset_chunk_dedup()
+            return json.dumps({"status": "submitted", "answer": answer})
+
+        _BENCHMARK_TOOLS.append(submit_answer)
+
+    print(f"Direct backend: {len(_BENCHMARK_TOOLS)} Python tools loaded in-process", file=sys.stderr)
+    return _BENCHMARK_TOOLS
+
+
 # --- Agent model detection ---
 
 def _is_codex_model(model: str) -> bool:
@@ -178,16 +251,21 @@ async def run_agent(
     max_turns: int = 20,
     mcp_session_pool: object = None,
     mode: str = "fixed",
+    backend: str = "mcp",
+    python_tools: list | None = None,
 ) -> dict:
     """Run an agent on a single question via llm_client.
 
     For Codex models: uses Codex SDK with MCP servers.
     For other models: uses llm_client's MCP agent loop (litellm + tool calling).
+    For backend="direct": calls Python functions in-process via python_tools=.
 
     Args:
         mcp_session_pool: Optional MCPSessionPool for reusing MCP connections
             across questions (non-Codex models only).
         mode: Prompt mode ('fixed' or 'adaptive')
+        backend: 'mcp' (default) or 'direct' (in-process Python tools)
+        python_tools: List of Python callables for direct backend
 
     Returns dict with: answer, tool_calls, usage, cost, latency_s, error
     """
@@ -198,7 +276,20 @@ async def run_agent(
 
     t0 = time.monotonic()
     try:
-        if _is_codex_model(model):
+        if backend == "direct" and python_tools:
+            # Direct Python tool loop — no MCP subprocess
+            # Reset chunk dedup between questions
+            import digimon_mcp_stdio_server as dms
+            dms._reset_chunk_dedup()
+
+            result = await acall_llm(
+                model,
+                messages,
+                timeout=timeout,
+                python_tools=python_tools,
+                max_turns=max_turns,
+            )
+        elif _is_codex_model(model):
             # Codex SDK path — agent-specific kwargs
             result = await acall_llm(
                 model,
@@ -336,12 +427,25 @@ async def main() -> None:
                         help="Prompt mode: 'fixed' (prescribed workflow) or 'adaptive' (agent composes freely)")
     parser.add_argument("--questions", type=str, default=None,
                         help="Comma-separated question IDs to run (e.g. 'q1,q4,q7')")
+    parser.add_argument("--parallel", type=int, default=1,
+                        help="Number of concurrent questions (each gets its own MCP server). Default: 1 (sequential)")
+    parser.add_argument("--backend", default="mcp", choices=["mcp", "direct"],
+                        help="Tool backend: 'mcp' (subprocess, default) or 'direct' (in-process Python tools)")
     args = parser.parse_args()
 
     # Rebuild MCP servers with correct benchmark mode + dataset pre-loading
-    global DIGIMON_MCP_SERVERS
+    global DIGIMON_MCP_SERVERS, DIRECT_TOOLS
     benchmark_mode = 1  # both fixed and adaptive hide build/pipeline tools
     DIGIMON_MCP_SERVERS = _build_mcp_servers(benchmark_mode, dataset_name=args.dataset)
+
+    # Validate backend choice
+    if args.backend == "direct" and _is_agent_sdk_model(args.model):
+        print("ERROR: --backend direct is only for litellm models (not agent SDKs like codex/claude-code)")
+        sys.exit(1)
+
+    # Initialize direct backend if requested
+    if args.backend == "direct":
+        DIRECT_TOOLS = await _init_direct_tools(args.dataset)
 
     dataset_path = Path(args.data_root) / args.dataset
     if not dataset_path.exists():
@@ -398,7 +502,9 @@ async def main() -> None:
     log_file = open(log_path, "a")
     print(f"Log: {log_path}")
     print(f"JSON: {output_path}")
-    if _is_codex_model(args.model):
+    if args.backend == "direct":
+        backend = "Direct Python tools"
+    elif _is_codex_model(args.model):
         backend = "Codex SDK"
     elif _is_claude_code_model(args.model):
         backend = "Claude Agent SDK"
@@ -406,153 +512,209 @@ async def main() -> None:
         backend = "MCP agent loop"
     print(f"Model: {args.model} ({backend}, timeout={args.timeout}s)")
 
+    parallel = max(1, args.parallel)
+    if parallel > 1 and _is_agent_sdk_model(args.model):
+        print(f"WARNING: --parallel ignored for agent SDK models (each spawns its own servers)")
+        parallel = 1
+
     print(f"\n{'='*70}")
-    print(f"AGENT BENCHMARK: {args.dataset} ({len(questions)} questions)")
+    print(f"AGENT BENCHMARK: {args.dataset} ({len(questions)} questions, parallel={parallel})")
     print(f"{'='*70}\n")
 
-    # Use MCPSessionPool for non-agent-SDK models to avoid per-question server restarts
-    use_session_pool = not _is_agent_sdk_model(args.model)
-    if use_session_pool:
-        from llm_client import MCPSessionPool
-        pool_cm = MCPSessionPool(DIGIMON_MCP_SERVERS)
-    else:
-        from contextlib import asynccontextmanager
+    _wall_t0 = time.monotonic()
 
-        @asynccontextmanager
-        async def _noop():
-            yield None
-        pool_cm = _noop()
+    # --- Per-question processing (shared between sequential and parallel) ---
+
+    # Lock protects running totals, results list, log_file, and incremental saves
+    output_lock = asyncio.Lock()
+
+    def _score_and_record(q: dict, agent_result: dict) -> dict:
+        """Score a question result and build the result record. Pure function."""
+        q_id = q["id"]
+        gold = q["answer"]
+        question = q["question"]
+        q_type = q.get("type", "?")
+
+        predicted = agent_result["answer"]
+        reasoning = agent_result.get("reasoning")
+        error = agent_result["error"]
+        tool_calls = agent_result["tool_calls"]
+        usage = agent_result["usage"]
+        cost = agent_result["cost"]
+        elapsed = agent_result["latency_s"]
+
+        em = int(exact_match(predicted, gold)) if predicted else 0
+        f1, prec, recall = token_f1(predicted, gold) if predicted else (0.0, 0.0, 0.0)
+
+        tool_names = [tc["tool"] for tc in tool_calls]
+        input_tokens = usage.get("input_tokens", 0)
+        output_tokens = usage.get("output_tokens", 0)
+        cached_tokens = usage.get("cached_input_tokens", 0)
+        cache_read = usage.get("cache_read_input_tokens", 0)
+        cache_create = usage.get("cache_creation_input_tokens", 0)
+        duration_ms = usage.get("duration_ms", 0)
+        duration_api_ms = usage.get("duration_api_ms", 0)
+        num_turns = usage.get("num_turns", 0)
+
+        return {
+            "id": q_id,
+            "question": question,
+            "gold": gold,
+            "predicted": predicted,
+            "reasoning": reasoning,
+            "full_response": agent_result.get("full_response"),
+            "type": q_type,
+            "em": em,
+            "f1": f1,
+            "latency_s": elapsed,
+            "cost": cost,
+            "n_tool_calls": len(tool_calls),
+            "tool_calls": tool_names,
+            "tool_details": tool_calls,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cached_input_tokens": cached_tokens,
+            "cache_read_input_tokens": cache_read,
+            "cache_creation_input_tokens": cache_create,
+            "duration_ms": duration_ms,
+            "duration_api_ms": duration_api_ms,
+            "overhead_ms": duration_ms - duration_api_ms if duration_ms and duration_api_ms else 0,
+            "num_turns": num_turns,
+            "error": error,
+            "conversation_trace": agent_result.get("conversation_trace"),
+        }
+
+    def _format_output(record: dict, n_done_now: int, n_total: int,
+                       total_em_now: int, total_f1_now: float, total_cost_now: float) -> str:
+        """Format a result record for console + log output."""
+        lines = []
+        q_id = record["id"]
+        q_type = record["type"]
+        header = f"--- [{q_id}] ({n_done_now}/{n_total}) [{q_type}] ---"
+        lines.append(f"\n{header}")
+        lines.append(f"Q: {record['question']}")
+        lines.append(f"Gold: {record['gold']}")
+        if record.get("error"):
+            lines.append(f"  ERROR: {record['error']}")
+        lines.append(f"  Predicted: {record['predicted'][:200]}")
+        if record.get("reasoning"):
+            lines.append(f"  Reasoning: {record['reasoning'][:300]}")
+        fresh = record["input_tokens"] - record["cached_input_tokens"]
+        total_in = record["input_tokens"] + record["cache_read_input_tokens"]
+        lines.append(f"  EM={record['em']}  F1={record['f1']:.2f}  ({record['latency_s']:.1f}s, ${record['cost']:.4f})")
+        lines.append(f"  Tools: {record['n_tool_calls']} calls {record['tool_calls']}")
+        lines.append(f"  Tokens: {fresh:,} fresh + {record['cache_read_input_tokens']:,} cached = {total_in:,} total in, {record['output_tokens']:,} out")
+        if record["duration_ms"]:
+            api_s = record["duration_api_ms"] / 1000
+            oh_s = record["overhead_ms"] / 1000
+            lines.append(f"  Timing: {api_s:.1f}s API + {oh_s:.1f}s overhead = {record['duration_ms']/1000:.1f}s ({record['num_turns']} turns)")
+        lines.append(f"  Running: EM={100*total_em_now/n_done_now:.1f}%  F1={100*total_f1_now/n_done_now:.1f}%  ${total_cost_now:.2f}  ({n_done_now} done)")
+        return "\n".join(lines)
+
+    async def _process_question(q: dict, session_pool: object) -> dict:
+        """Run agent on one question, then score + log under lock."""
+        nonlocal n_done, total_em, total_f1, total_cost
+
+        agent_result = await run_agent(
+            q["question"], args.dataset,
+            timeout=args.timeout,
+            model=args.model,
+            reasoning_effort=args.effort,
+            max_turns=args.max_turns,
+            mcp_session_pool=session_pool,
+            mode=args.mode,
+            backend=args.backend,
+            python_tools=DIRECT_TOOLS if args.backend == "direct" else None,
+        )
+
+        record = _score_and_record(q, agent_result)
+
+        # Acquire lock for shared state updates + output
+        async with output_lock:
+            n_done += 1
+            total_em += record["em"]
+            total_f1 += record["f1"]
+            total_cost += record["cost"]
+
+            output = _format_output(record, n_done, len(questions),
+                                    total_em, total_f1, total_cost)
+            print(output)
+            log_file.write(output + "\n\n")
+            log_file.flush()
+
+            results.append(record)
+            _save_results(output_path, args.dataset, args.model, len(questions),
+                          n_done, total_em, total_f1, total_cost, results)
+
+        return record
+
+    # --- Execution: sequential or parallel ---
+
+    # Filter to pending questions (skip already completed on resume)
+    pending = []
+    for i, q in enumerate(questions):
+        q_id = q.get("id", f"q{i}")
+        if q_id not in completed_ids:
+            pending.append(q)
+
+    use_session_pool = not _is_agent_sdk_model(args.model) and args.backend != "direct"
 
     try:
-        async with pool_cm as session_pool:
-            for i, q in enumerate(questions):
-                q_id = q.get("id", f"q{i}")
-                if q_id in completed_ids:
-                    continue
+        if args.backend == "direct":
+            # --- Direct path: no MCP servers, no session pool ---
+            for q in pending:
+                await _process_question(q, None)
+        elif parallel <= 1:
+            # --- Sequential path (original behavior) ---
+            if use_session_pool:
+                from llm_client import MCPSessionPool
+                pool_cm = MCPSessionPool(DIGIMON_MCP_SERVERS)
+            else:
+                from contextlib import asynccontextmanager
 
-                gold = q["answer"]
-                question = q["question"]
-                q_type = q.get("type", "?")
+                @asynccontextmanager
+                async def _noop():
+                    yield None
+                pool_cm = _noop()
 
-                header = f"--- [{q_id}] ({n_done+1}/{len(questions)}) [{q_type}] ---"
-                print(f"\n{header}")
-                print(f"Q: {question}")
-                print(f"Gold: {gold}")
-                log_file.write(f"\n{header}\nQ: {question}\nGold: {gold}\n")
-                log_file.flush()
+            async with pool_cm as session_pool:
+                for q in pending:
+                    await _process_question(q, session_pool)
+        else:
+            # --- Parallel path: N MCP server processes ---
+            from llm_client import MCPSessionPool
 
-                # Run agent
-                agent_result = await run_agent(
-                    question, args.dataset,
-                    timeout=args.timeout,
-                    model=args.model,
-                    reasoning_effort=args.effort,
-                    max_turns=args.max_turns,
-                    mcp_session_pool=session_pool,
-                    mode=args.mode,
+            print(f"Starting {parallel} MCP server processes...")
+            pools: list[MCPSessionPool] = [
+                MCPSessionPool(DIGIMON_MCP_SERVERS) for _ in range(parallel)
+            ]
+            pool_queue: asyncio.Queue[MCPSessionPool] = asyncio.Queue()
+
+            # Start all pools
+            from contextlib import AsyncExitStack
+            async with AsyncExitStack() as stack:
+                for pool in pools:
+                    session_pool = await stack.enter_async_context(pool)
+                    pool_queue.put_nowait(session_pool)
+                print(f"All {parallel} MCP servers ready.\n")
+
+                async def _run_with_pool(q: dict) -> dict:
+                    pool = await pool_queue.get()
+                    try:
+                        return await _process_question(q, pool)
+                    finally:
+                        pool_queue.put_nowait(pool)
+
+                # Launch all questions concurrently, pool_queue limits concurrency
+                gather_results = await asyncio.gather(
+                    *[_run_with_pool(q) for q in pending],
+                    return_exceptions=True,
                 )
-
-                predicted = agent_result["answer"]
-                reasoning = agent_result.get("reasoning")
-                error = agent_result["error"]
-                tool_calls = agent_result["tool_calls"]
-                usage = agent_result["usage"]
-                cost = agent_result["cost"]
-                elapsed = agent_result["latency_s"]
-
-                # Score
-                em = int(exact_match(predicted, gold)) if predicted else 0
-                f1, prec, recall = token_f1(predicted, gold) if predicted else (0.0, 0.0, 0.0)
-
-                # Tool call summary
-                tool_names = [tc["tool"] for tc in tool_calls]
-                n_tools = len(tool_calls)
-
-                # Token counts
-                input_tokens = usage.get("input_tokens", 0)
-                output_tokens = usage.get("output_tokens", 0)
-                cached_tokens = usage.get("cached_input_tokens", 0)
-                cache_read = usage.get("cache_read_input_tokens", 0)
-                cache_create = usage.get("cache_creation_input_tokens", 0)
-                fresh_tokens = input_tokens - cached_tokens
-
-                # Timing breakdown (Claude Agent SDK provides these)
-                duration_ms = usage.get("duration_ms", 0)
-                duration_api_ms = usage.get("duration_api_ms", 0)
-                num_turns = usage.get("num_turns", 0)
-                overhead_ms = duration_ms - duration_api_ms if duration_ms and duration_api_ms else 0
-
-                # Print results
-                if error:
-                    print(f"  ERROR: {error}")
-                print(f"  Predicted: {predicted[:200]}")
-                if reasoning:
-                    print(f"  Reasoning: {reasoning[:300]}")
-                print(f"  EM={em}  F1={f1:.2f}  ({elapsed:.1f}s, ${cost:.4f})")
-                print(f"  Tools: {n_tools} calls {tool_names}")
-                print(f"  Tokens: {fresh_tokens:,} fresh + {cache_read:,} cached = {input_tokens + cache_read:,} total in, {output_tokens:,} out")
-                if duration_ms:
-                    print(f"  Timing: {duration_api_ms/1000:.1f}s API + {overhead_ms/1000:.1f}s overhead = {duration_ms/1000:.1f}s ({num_turns} turns)")
-
-                log_file.write(
-                    f"  Predicted: {predicted}\n"
-                )
-                if reasoning:
-                    log_file.write(f"  Reasoning: {reasoning}\n")
-                log_file.write(
-                    f"  EM={em}  F1={f1:.2f}  ({elapsed:.1f}s, ${cost:.4f})\n"
-                    f"  Tools: {n_tools} calls {tool_names}\n"
-                    f"  Tokens: {fresh_tokens} fresh + {cache_read} cached = {input_tokens + cache_read} total in, {output_tokens} out\n"
-                )
-                if duration_ms:
-                    log_file.write(f"  Timing: {duration_api_ms/1000:.1f}s API + {overhead_ms/1000:.1f}s overhead = {duration_ms/1000:.1f}s ({num_turns} turns)\n")
-                if error:
-                    log_file.write(f"  ERROR: {error}\n")
-
-                # Update running totals
-                n_done += 1
-                total_em += em
-                total_f1 += f1
-                total_cost += cost
-
-                running = f"  Running: EM={100*total_em/n_done:.1f}%  F1={100*total_f1/n_done:.1f}%  ${total_cost:.2f}  ({n_done} done)"
-                print(running)
-                log_file.write(running + "\n\n")
-                log_file.flush()
-
-                # Save incrementally
-                full_response = agent_result.get("full_response")
-                result_record = {
-                    "id": q_id,
-                    "question": question,
-                    "gold": gold,
-                    "predicted": predicted,
-                    "reasoning": reasoning,
-                    "full_response": full_response,
-                    "type": q_type,
-                    "em": em,
-                    "f1": f1,
-                    "latency_s": elapsed,
-                    "cost": cost,
-                    "n_tool_calls": n_tools,
-                    "tool_calls": tool_names,
-                    "tool_details": tool_calls,
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "cached_input_tokens": cached_tokens,
-                    "cache_read_input_tokens": cache_read,
-                    "cache_creation_input_tokens": cache_create,
-                    "duration_ms": duration_ms,
-                    "duration_api_ms": duration_api_ms,
-                    "overhead_ms": overhead_ms,
-                    "num_turns": num_turns,
-                    "error": error,
-                    "conversation_trace": agent_result.get("conversation_trace"),
-                }
-                results.append(result_record)
-
-                _save_results(output_path, args.dataset, args.model, len(questions),
-                              n_done, total_em, total_f1, total_cost, results)
+                # Log any unhandled exceptions from gather
+                for i, gr in enumerate(gather_results):
+                    if isinstance(gr, BaseException):
+                        q_id = pending[i].get("id", f"q{i}")
+                        print(f"\nERROR [{q_id}]: {gr}", file=sys.stderr)
 
     except KeyboardInterrupt:
         print(f"\n\nInterrupted after {n_done} questions.")
@@ -568,11 +730,13 @@ async def main() -> None:
         n_errors = sum(1 for r in results if r.get("error"))
 
         print(f"\n{'='*70}")
-        print(f"FINAL: {n_done}/{len(questions)} questions")
+        wall_time = time.monotonic() - _wall_t0
+        print(f"FINAL: {n_done}/{len(questions)} questions (parallel={parallel})")
         print(f"  EM:    {100*total_em/n_done:.1f}%")
         print(f"  F1:    {100*total_f1/n_done:.1f}%")
         print(f"  Cost:  ${total_cost:.2f}")
         print(f"  Tools: {avg_tools:.1f} calls/question avg")
+        print(f"  Wall:  {wall_time:.1f}s ({wall_time/n_done:.1f}s/q effective)")
         print(f"{'='*70}")
         print(f"Results saved to {output_path}")
 
@@ -594,6 +758,9 @@ async def main() -> None:
             "total_input_tokens": total_input,
             "total_output_tokens": total_output,
             "mode": args.mode,
+            "backend_type": args.backend,
+            "parallel": parallel,
+            "wall_time_s": round(wall_time, 1),
             "timeout": args.timeout,
             "max_turns": args.max_turns,
             "results_file": str(output_path),
