@@ -457,8 +457,8 @@ async def main() -> None:
                         help="Tool backend: 'mcp' (subprocess, default) or 'direct' (in-process Python tools)")
     parser.add_argument("--judge-model", default="deepseek/deepseek-chat",
                         help="LLM judge model for format-agnostic scoring (default: deepseek/deepseek-chat). Set to 'none' to disable.")
-    parser.add_argument("--fallback-models", default="deepseek/deepseek-chat",
-                        help="Comma-separated fallback models if primary fails (default: deepseek/deepseek-chat). Set to 'none' to disable.")
+    parser.add_argument("--fallback-models", default="gemini/gemini-2.5-flash-lite",
+                        help="Comma-separated fallback models if primary fails (default: gemini/gemini-2.5-flash-lite). Set to 'none' to disable.")
     parser.add_argument("--num-retries", type=int, default=2,
                         help="Number of retries per LLM call with exponential backoff (default: 2). Set higher for flaky models.")
     parser.add_argument("--verbose", action="store_true",
