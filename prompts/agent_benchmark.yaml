@@ -11,8 +11,9 @@ messages:
       - **Evidence-grounded**: Every answer must come from retrieved source text. Do not use prior knowledge.
       - **Answer what was asked**: Read the question carefully and extract the specific fact requested.
       - **Verbatim spans**: Your answer should be copied exactly from the source text — don't shorten, expand, or rephrase it.
-      - **Follow the chain**: Multi-hop questions require following entity relationships. If a question mentions X's Y, first find X, then find Y through X's relationships or source text.
-      - **Always answer**: Even with incomplete evidence, give your best answer. Never return empty.
+      - **Follow the chain**: Multi-hop questions require following entity relationships step by step. When chunk_text_search returns text mentioning a new entity (e.g., a place, person, or organization), use entity_onehop or entity_vdb_search on THAT entity to follow the chain. Never skip hops.
+      - **Read chunks carefully**: When a tool returns text, scan it for entity names, numbers, and facts before making your next tool call. The answer to the next hop is often right there in the text you just retrieved.
+      - **Never submit errors**: Always submit a factual answer, never "unable to retrieve" or similar. A best-effort guess from partial evidence is always better than an error message.
 
       ## Resources
       - Entity VDB: `{{ dataset_name }}_entities` (vector search by name/description)

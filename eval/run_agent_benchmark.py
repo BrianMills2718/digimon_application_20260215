@@ -255,6 +255,7 @@ async def run_agent(
     backend: str = "mcp",
     python_tools: list | None = None,
     fallback_models: list[str] | None = None,
+    num_retries: int = 2,
 ) -> dict:
     """Run an agent on a single question via llm_client.
 
@@ -290,6 +291,7 @@ async def run_agent(
                 timeout=timeout,
                 python_tools=python_tools,
                 max_turns=max_turns,
+                num_retries=num_retries,
                 **({"fallback_models": fallback_models} if fallback_models else {}),
             )
         elif _is_codex_model(model):
@@ -323,6 +325,7 @@ async def run_agent(
                 timeout=timeout,
                 mcp_sessions=mcp_session_pool,
                 max_turns=max_turns,
+                num_retries=num_retries,
                 **({"fallback_models": fallback_models} if fallback_models else {}),
             )
         else:
@@ -333,6 +336,7 @@ async def run_agent(
                 timeout=timeout,
                 mcp_servers=DIGIMON_MCP_SERVERS,
                 max_turns=max_turns,
+                num_retries=num_retries,
                 **({"fallback_models": fallback_models} if fallback_models else {}),
             )
 
@@ -440,6 +444,8 @@ async def main() -> None:
                         help="LLM judge model for format-agnostic scoring (default: deepseek/deepseek-chat). Set to 'none' to disable.")
     parser.add_argument("--fallback-models", default="deepseek/deepseek-chat",
                         help="Comma-separated fallback models if primary fails (default: deepseek/deepseek-chat). Set to 'none' to disable.")
+    parser.add_argument("--num-retries", type=int, default=2,
+                        help="Number of retries per LLM call with exponential backoff (default: 2). Set higher for flaky models.")
     args = parser.parse_args()
 
     # Rebuild MCP servers with correct benchmark mode + dataset pre-loading
@@ -644,6 +650,7 @@ async def main() -> None:
             backend=args.backend,
             python_tools=DIRECT_TOOLS if args.backend == "direct" else None,
             fallback_models=fallback_models,
+            num_retries=args.num_retries,
         )
 
         # LLM judge (runs before lock — it's an independent LLM call)
