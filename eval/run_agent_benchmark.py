@@ -33,6 +33,7 @@ os.chdir(str(Path(__file__).parent.parent))
 
 from eval.benchmark import exact_match, token_f1
 from eval.data_prep import load_questions
+from llm_client import MCPAgentResult
 
 
 # --- Tool call extraction (works with both Codex Turn and MCPAgentResult) ---
@@ -255,10 +256,12 @@ async def run_agent(
                 for tc in result.tool_calls
             ]
 
-        # Extract conversation trace if available (Claude Agent SDK)
+        # Extract conversation trace if available
         conversation_trace = None
         if isinstance(result.raw_response, dict):
             conversation_trace = result.raw_response.get("conversation_trace")
+        elif isinstance(result.raw_response, MCPAgentResult):
+            conversation_trace = result.raw_response.conversation_trace or None
 
         # Extract answer from submit_answer tool call if present
         answer = None
