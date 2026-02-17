@@ -244,25 +244,39 @@ class BaseGraph(ABC):
 
 
         ranking  = {}
+        failed_nodes = []
         import tqdm
         for node in tqdm.tqdm(await self._graph.nodes(), total=len(await self._graph.nodes())):
-            ranking[node] =  await entity_vdb.retrieval(query = node, top_k=self.config.similarity_top_k)
+            try:
+                ranking[node] = await entity_vdb.retrieval(query=node, top_k=self.config.similarity_top_k)
+            except Exception as e:
+                failed_nodes.append(node)
+                logger.warning(f"Vector similarity: skipping node {node!r}: {e}")
+        if failed_nodes:
+            logger.warning(f"Vector similarity: {len(failed_nodes)} nodes failed embedding")
         # For FAISS index, it uses L2-distance 
         is_euclidean_distance = False
         kb_similarity = defaultdict(list)
         for key, rank in ranking.items():
+            if not rank:
+                continue
             max_score = max(ns_item.score for ns_item in rank)  # find the max score
+            if max_score == 0:
+                continue
             for idx, ns_item in enumerate(rank):
+                entity_name = ns_item.metadata.get('entity_name') if ns_item.metadata else None
+                if not entity_name:
+                    continue
                 score = ns_item.score
                 if idx == 0 and score == 0:
-                    # L1 or L2 distance 
+                    # L1 or L2 distance
                     is_euclidean_distance = True
                 if not duplicate and idx == 0:
                     continue
                 if is_euclidean_distance:
-                    kb_similarity[key].append((ns_item.metadata['entity_name'], 1 - score / max_score))
-                else: 
-                    kb_similarity[key].append((ns_item.metadata['entity_name'],  score / max_score))
+                    kb_similarity[key].append((entity_name, 1 - score / max_score))
+                else:
+                    kb_similarity[key].append((entity_name,  score / max_score))
         maybe_edges = defaultdict(list)
         # Refactored second part using dictionary iteration and enumerate
         for src_id, nns in kb_similarity.items():
@@ -289,9 +303,86 @@ class BaseGraph(ABC):
         logger.info(f"Augmenting graph with {len(maybe_edges_aug)} edges")
      
         await asyncio.gather(*[self._merge_edges_then_upsert(k[0], k[1], v) for k, v in maybe_edges.items()])
-        await self._persist_graph()
+        await self._persist_graph(force=True)
         logger.info("✅ Finished augment the existing graph with similariy edges")
 
+    async def augment_graph_by_string_similarity(self) -> int:
+        """Add name_similarity edges between entities with similar names.
+
+        Uses an inverted token index for candidate generation, then scores
+        with difflib.SequenceMatcher. Returns the number of edges added.
+        """
+        import re
+        from difflib import SequenceMatcher
+
+        STOP_WORDS = frozenset({
+            "the", "a", "an", "of", "in", "on", "at", "to", "for", "and",
+            "or", "is", "was", "are", "were", "be", "been", "with", "from",
+            "by", "as", "it", "its", "this", "that", "not", "but", "has",
+            "had", "have", "do", "does", "did", "will", "would", "can",
+            "could", "should", "may", "might",
+        })
+        MIN_TOKEN_LEN = 3
+
+        threshold = getattr(self.config, "string_similarity_threshold", 0.65)
+        min_name_len = getattr(self.config, "string_similarity_min_name_length", 4)
+
+        all_nodes = await self._graph.nodes()
+        logger.info(f"String similarity: scanning {len(all_nodes)} nodes (threshold={threshold})")
+
+        # Filter out short / purely numeric names
+        _numeric_re = re.compile(r"^[\d\s\-/]+$")
+        valid_nodes = [n for n in all_nodes if len(n) >= min_name_len and not _numeric_re.match(n)]
+        logger.info(f"String similarity: {len(valid_nodes)} nodes after filtering")
+
+        # Build inverted token index
+        token_to_nodes: dict[str, list[str]] = defaultdict(list)
+        for node in valid_nodes:
+            tokens = node.lower().split()
+            for tok in tokens:
+                if len(tok) >= MIN_TOKEN_LEN and tok not in STOP_WORDS:
+                    token_to_nodes[tok].append(node)
+
+        # Generate candidate pairs (share at least one token)
+        candidate_pairs: set[tuple[str, str]] = set()
+        for tok, nodes_with_tok in token_to_nodes.items():
+            if len(nodes_with_tok) > 500:
+                # Skip extremely common tokens to avoid quadratic blow-up
+                continue
+            for i in range(len(nodes_with_tok)):
+                for j in range(i + 1, len(nodes_with_tok)):
+                    pair = tuple(sorted((nodes_with_tok[i], nodes_with_tok[j])))
+                    candidate_pairs.add(pair)
+
+        logger.info(f"String similarity: {len(candidate_pairs)} candidate pairs from inverted index")
+
+        # Score candidates
+        maybe_edges: dict[tuple[str, str], list] = defaultdict(list)
+        for a, b in candidate_pairs:
+            # Skip if edge already exists
+            if await self._graph.has_edge(a, b) or await self._graph.has_edge(b, a):
+                continue
+            score = SequenceMatcher(None, a.lower(), b.lower()).ratio()
+            if score >= threshold:
+                relationship = Relationship(
+                    src_id=clean_str(a),
+                    tgt_id=clean_str(b),
+                    source_id="N/A",
+                    weight=score,
+                    relation_name="name_similarity",
+                )
+                maybe_edges[(relationship.src_id, relationship.tgt_id)].append(relationship)
+
+        logger.info(f"String similarity: adding {len(maybe_edges)} name_similarity edges")
+
+        if maybe_edges:
+            await asyncio.gather(
+                *[self._merge_edges_then_upsert(k[0], k[1], v) for k, v in maybe_edges.items()]
+            )
+            await self._persist_graph(force=True)
+
+        logger.info(f"✅ Finished string similarity augmentation ({len(maybe_edges)} edges)")
+        return len(maybe_edges)
 
     async def __graph__(self, elements: list):
         """

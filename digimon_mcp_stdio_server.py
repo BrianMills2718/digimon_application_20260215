@@ -67,6 +67,28 @@ if _bm_raw in ("1", "2", "true", "yes"):
 else:
     BENCHMARK_MODE = 0
 
+# Tools hidden in benchmark mode. In benchmark, only retrieval + submit_answer are exposed.
+# This list is checked after MCP server init to remove unnecessary tools.
+_BENCHMARK_HIDDEN_TOOLS: set[str] = {
+    # Graph analysis / visualization
+    "graph_analyze", "graph_visualize",
+    # Community
+    "community_detect_from_entities", "community_get_layer",
+    # Subgraph
+    "subgraph_khop_paths", "subgraph_steiner_tree", "subgraph_agent_path",
+    # Meta (LLM-based operators — agent should reason directly, not delegate)
+    "meta_extract_entities", "meta_generate_answer", "meta_pcst_optimize",
+    "meta_decompose_question", "meta_synthesize_answers",
+    # Agent operators (internal LLM calls — waste budget)
+    "entity_agent", "relationship_agent",
+    # Config / discovery (not useful for answering questions)
+    "get_config", "set_agentic_model", "list_operators", "get_compatible_successors",
+    "list_graph_types",
+    # Cross-modal (not relevant for QA)
+    "convert_modality", "validate_conversion", "select_analysis_mode",
+    "list_modality_conversions",
+}
+
 # --- Initialize MCP Server ---
 mcp = FastMCP("digimon-kgrag", instructions="""
 DIGIMON KG-RAG Tools: Build knowledge graphs from documents and query them.
@@ -2564,22 +2586,44 @@ async def list_modality_conversions() -> str:
 # =============================================================================
 
 if BENCHMARK_MODE:
+    _submit_state = {"count": 0}
+
     @mcp.tool()
-    async def submit_answer(reasoning: str, answer: str) -> str:
-        """Submit your final answer with reasoning. YOU MUST call this tool as your last action.
+    async def submit_answer(reasoning: str, answer: str, confirmed: bool = False) -> str:
+        """Submit your final answer with reasoning.
+
+        On first call, this returns a verification challenge — re-read the question
+        and check your answer before calling again with confirmed=true.
 
         Args:
             reasoning: Why this is the correct answer. Reference the specific source text
-                      and explain how it answers the question. If the source contains
-                      multiple related facts (e.g. total capacity vs seated capacity),
-                      explain which one matches what the question asked.
+                      and explain how it answers the question.
             answer: The precise answer to the question. Just the fact, no explanation.
                    For yes/no questions: "yes" or "no".
+            confirmed: Set to true on your second call to finalize the answer.
 
         Returns:
-            Confirmation of submitted answer.
+            Verification challenge on first call, confirmation on second call.
         """
-        return json.dumps({"status": "submitted", "answer": answer})
+        _submit_state["count"] += 1
+
+        if not confirmed and _submit_state["count"] == 1:
+            return json.dumps({
+                "status": "pending_verification",
+                "proposed_answer": answer,
+                "verification": (
+                    "STOP. Before confirming, answer this question honestly:\n"
+                    "If your answer is WRONG, what is the most likely reason?\n"
+                    "Think about: Did you pick the wrong fact from a sentence with "
+                    "multiple facts? Did you answer yes/no when a name was asked? "
+                    "Did you confuse a related but different detail?\n"
+                    "After considering how you might be wrong, call submit_answer "
+                    "with confirmed=true — keeping or revising your answer."
+                )
+            })
+        else:
+            _submit_state["count"] = 0  # reset for next question
+            return json.dumps({"status": "submitted", "answer": answer})
 
 
 # =============================================================================
@@ -2587,4 +2631,11 @@ if BENCHMARK_MODE:
 # =============================================================================
 
 if __name__ == "__main__":
+    if BENCHMARK_MODE:
+        for tool_name in _BENCHMARK_HIDDEN_TOOLS:
+            try:
+                mcp.remove_tool(tool_name)
+            except Exception:
+                pass  # tool wasn't registered (already hidden by other guards)
+        print(f"Benchmark mode: removed {len(_BENCHMARK_HIDDEN_TOOLS)} non-retrieval tools", file=sys.stderr)
     mcp.run(transport="stdio")

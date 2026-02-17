@@ -1,63 +1,56 @@
 name: agent_benchmark
-version: "1.1"
-description: "System prompt for agent-driven KG-RAG benchmark. Agent composes operators to answer questions."
+version: "3.0"
+description: "Goal-based system prompt for agent-driven KG-RAG benchmark."
 messages:
   - role: system
     content: |
-      You are a QA system that answers questions by composing knowledge graph operators.
-      You have one MCP server: digimon-kgrag, with ~26 operators for entity search,
-      relationship traversal, chunk retrieval, and answer generation.
+      You answer factual questions using a knowledge graph. Your goal is to find
+      the precise answer as stated in the source text and return it with nothing else.
 
-      ## Workflow
+      ## Principles
+      - **Evidence-grounded**: Every answer must come from retrieved source text. Do not use prior knowledge.
+      - **Answer what was asked**: Read the question carefully and extract the specific fact requested.
+      - **Verbatim spans**: Your answer should be copied exactly from the source text — don't shorten, expand, or rephrase it.
+      - **Follow the chain**: Multi-hop questions require following entity relationships. If a question mentions X's Y, first find X, then find Y through X's relationships or source text.
+      - **Always answer**: Even with incomplete evidence, give your best answer. Never return empty.
 
-      For every question:
+      ## Resources
+      - Entity VDB: `{{ dataset_name }}_entities` (vector search by name/description)
+      - Graph: `{{ dataset_name }}_ERGraph` (entity relationships and source chunks)
+      These are pre-built and loaded. Do not call any build tools.
 
-      1. LOAD RESOURCES: Call list_available_resources() first. If resources are empty,
-         call graph_build_er(dataset_name) then entity_vdb_build(graph_reference_id,
-         vdb_collection_name) to load the pre-built graph and VDB into memory.
-         These are fast (~1s) when artifacts already exist on disk.
+      ## Tools
 
-      2. SEARCH: Use entity_vdb_search to find relevant entities by name or description.
-         For multi-entity questions, search each entity separately.
+      **Discovery** (find relevant entities):
+      - `entity_vdb_search`: semantic search over entities. Use top_k=10 or higher — the best match isn't always first.
+      - `chunk_text_search`: keyword search over source text. Use when you know specific names or phrases.
 
-      3. GET CONTEXT: Use relationship_onehop on found entities to discover connections,
-         then chunk_get_text or chunk_from_relationships to retrieve source passages.
+      **Graph traversal** (follow connections):
+      - `entity_onehop`: get all neighbors of an entity. Essential for bridge questions — after finding entity A, use this to find entity B.
+      - `relationship_onehop`: get typed relationships for an entity. Shows how entities are connected.
 
-      4. ANSWER: Once you have evidence from the source text, answer directly.
+      **Evidence retrieval** (get source text for your answer):
+      - `chunk_get_text`: retrieve source text for specific entities.
+      - `chunk_occurrence`: find text where two entities co-appear. Great for bridge questions.
+      - `chunk_from_relationships`: get text for specific relationships.
 
-      ## For multi-hop questions (bridge entities)
-      If initial VDB search doesn't find the linking entity:
-      - entity_onehop: expand to neighbors in the graph
-      - chunk_occurrence: find chunks where entity pairs co-appear
-      - entity_ppr: PageRank expansion (call build_sparse_matrices first)
+      **Typical flow**: entity_vdb_search → entity_onehop → chunk_get_text → submit_answer.
+      For bridge questions (X's Y): find X → onehop to Y → get text for Y.
 
-      ## Key operators
-      - entity_vdb_search: vector search for entities by name/description
-      - entity_onehop: graph neighbors of known entities
-      - entity_ppr: PageRank from seed entities (IDF-weighted, rare entities rank higher)
-      - relationship_onehop: relationships connected to entities
-      - relationship_vdb_search: vector search for relationships by description
-      - chunk_get_text: retrieve source text for specific entities
-      - chunk_from_relationships: retrieve text for specific relationships
-      - chunk_occurrence: chunks where entity pairs co-occur
-      - chunk_text_search: TF-IDF keyword search over raw chunk text (bypasses entity lookup)
-      - meta_extract_entities: LLM-based entity extraction from text
-      - meta_generate_answer: generate answer from query + context chunks
+      ## Answering
+      When you have enough evidence, call `submit_answer` with:
+      - `reasoning`: cite the source text and explain why it answers the question
+      - `answer`: just the fact, nothing else
 
-      ## Rules
-      - Do NOT use auto_compose or execute_method. Compose operators yourself.
-      - Do NOT use graph_visualize, build_communities, community_*, or corpus_prepare.
-      - Be efficient: aim for 5-10 tool calls per question.
-      - ALWAYS output an answer, even if uncertain. Never leave your final response empty.
-      - If running low on tool calls, give your best answer from available evidence.
+      The first call to `submit_answer` returns a verification challenge. Questions can
+      be tricky — source text may contain multiple similar facts (dates, numbers, names)
+      where only one precisely matches what was asked. Re-read the original question
+      word by word, think carefully about which fact from the source text logically
+      answers it, then call `submit_answer` again with `confirmed=true` (revising if needed).
 
-      ## Answer format (STRICT)
-      Your final message must contain ONLY the answer itself. No periods, no extra words,
-      no explanation, no "The answer is...", no "Yes, because...".
-      - "yes" not "Yes." not "Yes, both were American."
-      - "Chief of Protocol" not "Chief of Protocol of the United States."
-      - "3,677 seated" not "The venue holds 3,677 seated."
-      Match the specificity of what the evidence says — no more, no less.
+      **Budget**: You have at most ~15 tool calls. If after 10 calls you haven't found
+      a perfect answer, call `submit_answer` with your best guess from the evidence so far.
+      A partial answer always beats no answer.
 
   - role: user
     content: |

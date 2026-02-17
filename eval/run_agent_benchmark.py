@@ -43,7 +43,13 @@ def extract_tool_calls(raw_response: object) -> list[dict]:
     Handles:
     - Codex SDK Turn: items contain McpToolCallItem objects
     - MCPAgentResult: tool_calls contain MCPToolCallRecord objects
+    - Claude Agent SDK dict: tool calls are in result.tool_calls, not here
     """
+    # Claude Agent SDK: raw_response is a dict with conversation_trace — tool calls
+    # are already captured in result.tool_calls, so return empty here.
+    if isinstance(raw_response, dict):
+        return []
+
     from llm_client import MCPAgentResult
 
     if isinstance(raw_response, MCPAgentResult):
@@ -103,20 +109,23 @@ def build_messages(question: str, dataset_name: str, mode: str = "fixed") -> lis
 
 # --- MCP server config ---
 
-def _build_mcp_servers(benchmark_mode: int = 1) -> dict:
+def _build_mcp_servers(benchmark_mode: int = 1, dataset_name: str = "") -> dict:
     """Build MCP server config with API keys forwarded from current env.
 
     Args:
-        benchmark_mode: 0=all tools, 1=prune viz/corpus, 2=also prune pipeline shortcuts
+        benchmark_mode: 0=all tools, 1=prune build/pipeline shortcuts (benchmark mode)
+        dataset_name: Pre-load this dataset's graph+VDB on MCP server startup
     """
     import llm_client  # triggers auto-load of ~/.secrets/api_keys.env
     env = {}
-    for key in ("OPENAI_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY",
+    for key in ("OPENAI_API_KEY", "GEMINI_API_KEY",
                 "DEEPSEEK_API_KEY", "HOME", "PATH"):
         val = os.environ.get(key)
         if val:
             env[key] = val
     env["DIGIMON_BENCHMARK_MODE"] = str(benchmark_mode)
+    if dataset_name:
+        env["DIGIMON_PRELOAD_DATASET"] = dataset_name
     return {
         "digimon-kgrag": {
             "command": "/home/brian/miniconda3/envs/digimon/bin/python",
@@ -232,19 +241,55 @@ async def run_agent(
 
         elapsed = time.monotonic() - t0
 
+        # Try raw_response first (Codex/MCP), fall back to result.tool_calls (Claude SDK)
         tool_calls = extract_tool_calls(result.raw_response)
+        if not tool_calls and result.tool_calls:
+            tool_calls = [
+                {
+                    "tool": tc.get("function", {}).get("name", ""),
+                    "arguments": tc.get("function", {}).get("arguments", {}),
+                    "result_preview": tc.get("result_preview", ""),
+                    "has_result": bool(tc.get("result_preview")),
+                    "has_error": tc.get("is_error", False),
+                }
+                for tc in result.tool_calls
+            ]
 
-        # Agent SDKs return ALL text blocks concatenated. The final answer
-        # is the last non-empty line (prompt instructs: answer only, no explanation).
-        answer = result.content.strip()
-        if _is_agent_sdk_model(model) and "\n" in answer:
-            lines = [l.strip() for l in answer.split("\n") if l.strip()]
-            answer = lines[-1] if lines else answer
+        # Extract conversation trace if available (Claude Agent SDK)
+        conversation_trace = None
+        if isinstance(result.raw_response, dict):
+            conversation_trace = result.raw_response.get("conversation_trace")
+
+        # Extract answer from submit_answer tool call if present
+        answer = None
+        reasoning = None
+        for tc in reversed(tool_calls):
+            tool_name = tc.get("tool", "")
+            if tool_name.endswith("submit_answer"):
+                args = tc.get("arguments", {})
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        pass
+                if isinstance(args, dict):
+                    answer = args.get("answer", "").strip()
+                    reasoning = args.get("reasoning", "")
+                break
+
+        # Fallback: extract from text if no submit_answer call
+        if not answer:
+            answer = result.content.strip()
+            if _is_agent_sdk_model(model) and "\n" in answer:
+                lines = [l.strip() for l in answer.split("\n") if l.strip()]
+                answer = lines[-1] if lines else answer
 
         return {
             "answer": answer,
+            "reasoning": reasoning,
             "full_response": result.content.strip() if _is_agent_sdk_model(model) else None,
             "tool_calls": tool_calls,
+            "conversation_trace": conversation_trace,
             "usage": result.usage,
             "cost": result.cost,
             "latency_s": round(elapsed, 2),
@@ -276,7 +321,8 @@ async def run_agent(
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Agent-driven benchmark (any model via llm_client)")
     parser.add_argument("--dataset", required=True, help="Dataset name (e.g. HotpotQAsmallest)")
-    parser.add_argument("--num", type=int, default=None, help="Limit to first N questions")
+    parser.add_argument("--start", type=int, default=0, help="Start from question index (0-based)")
+    parser.add_argument("--num", type=int, default=None, help="Number of questions to run")
     parser.add_argument("--timeout", type=int, default=120, help="Timeout per question in seconds")
     parser.add_argument("--resume", action="store_true", help="Resume from previous run")
     parser.add_argument("--model", default="codex", help="Agent model (default: codex). Any litellm model string works.")
@@ -285,20 +331,30 @@ async def main() -> None:
     parser.add_argument("--data-root", default="./Data", help="Data root directory")
     parser.add_argument("--mode", default="fixed", choices=["fixed", "adaptive"],
                         help="Prompt mode: 'fixed' (prescribed workflow) or 'adaptive' (agent composes freely)")
+    parser.add_argument("--questions", type=str, default=None,
+                        help="Comma-separated question IDs to run (e.g. 'q1,q4,q7')")
     args = parser.parse_args()
 
-    # Rebuild MCP servers with correct benchmark mode
+    # Rebuild MCP servers with correct benchmark mode + dataset pre-loading
     global DIGIMON_MCP_SERVERS
-    benchmark_mode = 2 if args.mode == "adaptive" else 1
-    DIGIMON_MCP_SERVERS = _build_mcp_servers(benchmark_mode)
+    benchmark_mode = 1  # both fixed and adaptive hide build/pipeline tools
+    DIGIMON_MCP_SERVERS = _build_mcp_servers(benchmark_mode, dataset_name=args.dataset)
 
     dataset_path = Path(args.data_root) / args.dataset
     if not dataset_path.exists():
         print(f"ERROR: Dataset not found at {dataset_path}")
         sys.exit(1)
 
-    questions = load_questions(str(dataset_path), args.num)
-    print(f"Loaded {len(questions)} questions from {args.dataset}")
+    all_questions = load_questions(str(dataset_path))
+    if args.questions:
+        qids = set(args.questions.split(","))
+        questions = [q for q in all_questions if q["id"] in qids]
+        print(f"Loaded {len(questions)} questions from {args.dataset} (ids={args.questions})")
+    else:
+        questions = all_questions[args.start:]
+        if args.num is not None:
+            questions = questions[:args.num]
+        print(f"Loaded {len(questions)} questions from {args.dataset} (start={args.start}, num={args.num})")
 
     # Output files — include model slug + timestamp so runs never overwrite
     run_ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -394,6 +450,7 @@ async def main() -> None:
                 )
 
                 predicted = agent_result["answer"]
+                reasoning = agent_result.get("reasoning")
                 error = agent_result["error"]
                 tool_calls = agent_result["tool_calls"]
                 usage = agent_result["usage"]
@@ -412,22 +469,40 @@ async def main() -> None:
                 input_tokens = usage.get("input_tokens", 0)
                 output_tokens = usage.get("output_tokens", 0)
                 cached_tokens = usage.get("cached_input_tokens", 0)
+                cache_read = usage.get("cache_read_input_tokens", 0)
+                cache_create = usage.get("cache_creation_input_tokens", 0)
                 fresh_tokens = input_tokens - cached_tokens
+
+                # Timing breakdown (Claude Agent SDK provides these)
+                duration_ms = usage.get("duration_ms", 0)
+                duration_api_ms = usage.get("duration_api_ms", 0)
+                num_turns = usage.get("num_turns", 0)
+                overhead_ms = duration_ms - duration_api_ms if duration_ms and duration_api_ms else 0
 
                 # Print results
                 if error:
                     print(f"  ERROR: {error}")
                 print(f"  Predicted: {predicted[:200]}")
+                if reasoning:
+                    print(f"  Reasoning: {reasoning[:300]}")
                 print(f"  EM={em}  F1={f1:.2f}  ({elapsed:.1f}s, ${cost:.4f})")
                 print(f"  Tools: {n_tools} calls {tool_names}")
-                print(f"  Tokens: {fresh_tokens:,} fresh + {cached_tokens:,} cached = {input_tokens:,} in, {output_tokens:,} out")
+                print(f"  Tokens: {fresh_tokens:,} fresh + {cache_read:,} cached = {input_tokens + cache_read:,} total in, {output_tokens:,} out")
+                if duration_ms:
+                    print(f"  Timing: {duration_api_ms/1000:.1f}s API + {overhead_ms/1000:.1f}s overhead = {duration_ms/1000:.1f}s ({num_turns} turns)")
 
                 log_file.write(
                     f"  Predicted: {predicted}\n"
+                )
+                if reasoning:
+                    log_file.write(f"  Reasoning: {reasoning}\n")
+                log_file.write(
                     f"  EM={em}  F1={f1:.2f}  ({elapsed:.1f}s, ${cost:.4f})\n"
                     f"  Tools: {n_tools} calls {tool_names}\n"
-                    f"  Tokens: {input_tokens} in + {output_tokens} out\n"
+                    f"  Tokens: {fresh_tokens} fresh + {cache_read} cached = {input_tokens + cache_read} total in, {output_tokens} out\n"
                 )
+                if duration_ms:
+                    log_file.write(f"  Timing: {duration_api_ms/1000:.1f}s API + {overhead_ms/1000:.1f}s overhead = {duration_ms/1000:.1f}s ({num_turns} turns)\n")
                 if error:
                     log_file.write(f"  ERROR: {error}\n")
 
@@ -449,6 +524,7 @@ async def main() -> None:
                     "question": question,
                     "gold": gold,
                     "predicted": predicted,
+                    "reasoning": reasoning,
                     "full_response": full_response,
                     "type": q_type,
                     "em": em,
@@ -461,7 +537,14 @@ async def main() -> None:
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
                     "cached_input_tokens": cached_tokens,
+                    "cache_read_input_tokens": cache_read,
+                    "cache_creation_input_tokens": cache_create,
+                    "duration_ms": duration_ms,
+                    "duration_api_ms": duration_api_ms,
+                    "overhead_ms": overhead_ms,
+                    "num_turns": num_turns,
                     "error": error,
+                    "conversation_trace": agent_result.get("conversation_trace"),
                 }
                 results.append(result_record)
 

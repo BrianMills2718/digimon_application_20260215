@@ -56,3 +56,5 @@ class GraphConfig(YamlModel):
     similarity_threshold: float = 0.8
     similarity_top_k: int = 10
     similarity_max: float = 1.0
+    string_similarity_threshold: float = 0.65
+    string_similarity_min_name_length: int = 4
