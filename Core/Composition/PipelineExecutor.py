@@ -89,6 +89,8 @@ class PipelineExecutor:
             # Tag LLM calls with the operator ID for io_log tracking
             if self.ctx.llm is not None and hasattr(self.ctx.llm, "set_task"):
                 self.ctx.llm.set_task(tool_call.tool_id)
+            if self.ctx.llm is not None and hasattr(self.ctx.llm, "set_trace_id"):
+                self.ctx.llm.set_trace_id(getattr(self.ctx, "trace_id", None))
 
             # Execute operator
             try:

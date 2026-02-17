@@ -16,6 +16,7 @@ import logging
 import os
 import pickle
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -88,6 +89,45 @@ _BENCHMARK_HIDDEN_TOOLS: set[str] = {
     "convert_modality", "validate_conversion", "select_analysis_mode",
     "list_modality_conversions",
 }
+
+# Short descriptions for benchmark mode — the system prompt already explains
+# tool usage in detail, so verbose docstrings in the schema are redundant tokens.
+_BENCHMARK_SHORT_DESCS: dict[str, str] = {
+    "entity_vdb_search": "Semantic vector search over entities.",
+    "entity_onehop": "Get all neighbor entities of a given entity.",
+    "entity_ppr": "Personalized PageRank from seed entities.",
+    "entity_link": "Match entity names to graph nodes.",
+    "entity_tfidf": "Find entities by TF-IDF keyword matching.",
+    "relationship_onehop": "Get typed relationships for an entity.",
+    "relationship_score_aggregator": "Aggregate entity scores into relationship scores.",
+    "relationship_vdb_search": "Semantic vector search over relationships.",
+    "chunk_from_relationships": "Get text chunks for given relationships.",
+    "chunk_occurrence": "Find chunks where two entities co-occur.",
+    "chunk_get_text": "Get source text for given entities.",
+    "chunk_text_search": "Keyword search over source text chunks.",
+    "chunk_aggregator": "Score chunks by relationship/PPR scores via sparse matrices.",
+    "submit_answer": "Submit your final answer with reasoning.",
+}
+
+
+def _compact_tool_schemas() -> None:
+    """Strip verbose descriptions and Pydantic title noise from tool schemas.
+
+    Called in benchmark mode to cut tool definition tokens ~46%.
+    """
+    for tool in mcp._tool_manager._tools.values():
+        # Replace verbose docstring with one-liner
+        short = _BENCHMARK_SHORT_DESCS.get(tool.name)
+        if short is not None:
+            tool.description = short
+        # Strip title fields from parameter schema
+        params = tool.parameters
+        if isinstance(params, dict):
+            params.pop("title", None)
+            for prop in params.get("properties", {}).values():
+                if isinstance(prop, dict):
+                    prop.pop("title", None)
+
 
 # --- Initialize MCP Server ---
 mcp = FastMCP("digimon-kgrag", instructions="""
@@ -225,13 +265,67 @@ async def _ensure_initialized():
 
 
 def _format_result(result: Any) -> str:
-    """Convert tool output to readable string."""
+    """Convert tool output to readable string, deduplicating chunk text."""
     if hasattr(result, "model_dump"):
         d = result.model_dump(exclude_none=True, exclude={"graph_instance"})
-        return json.dumps(d, indent=2, default=str)
     elif isinstance(result, dict):
-        return json.dumps(result, indent=2, default=str)
-    return str(result)
+        d = result
+    else:
+        return str(result)
+
+    # Walk the dict and dedup any chunk-like entries
+    _dedup_chunks_in_dict(d)
+    return json.dumps(d, indent=2, default=str)
+
+
+def _dedup_chunks_in_dict(d: dict) -> None:
+    """In-place dedup of chunk text in a result dict.
+
+    Looks for lists of dicts containing chunk_id + text/content fields
+    and replaces repeated text with a reference.
+    """
+    TEXT_KEYS = ("text", "text_content", "content")
+    for key, value in d.items():
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            chunk_id = item.get("chunk_id")
+            if not chunk_id:
+                continue
+            for tk in TEXT_KEYS:
+                if tk in item and item[tk]:
+                    is_new, text = _dedup_chunk(chunk_id, item[tk])
+                    item[tk] = text
+                    break
+
+
+# ---------------------------------------------------------------------------
+# Session-scoped chunk dedup — avoids repeating full text for chunks the agent
+# has already seen in this conversation.
+# ---------------------------------------------------------------------------
+
+_seen_chunks: dict[str, str] = {}  # chunk_id -> first 80 chars (for reference)
+
+
+def _dedup_chunk(chunk_id: str, text: str) -> tuple[bool, str]:
+    """Track a chunk. Returns (is_new, text_or_reference).
+
+    If the chunk was already returned in this session, returns a short reference
+    instead of the full text so the agent knows it exists but doesn't waste
+    context window on repeated content.
+    """
+    if chunk_id in _seen_chunks:
+        preview = _seen_chunks[chunk_id]
+        return False, f"[already in context: {preview!r}...]"
+    _seen_chunks[chunk_id] = text[:80]
+    return True, text
+
+
+def _reset_chunk_dedup() -> None:
+    """Reset seen chunks — call between questions."""
+    _seen_chunks.clear()
 
 
 async def _ensure_corpus(dataset_name: str, input_directory: str | None) -> None:
@@ -892,6 +986,25 @@ async def chunk_get_text(graph_reference_id: str, entity_ids: list[str],
         max_chunks_per_entity=max_chunks_per_entity,
     )
     result = await chunk_get_text_for_entities_tool(inputs, _state["context"])
+
+    # Dedup chunks — replace repeated text with reference
+    if hasattr(result, "retrieved_chunks"):
+        deduped = []
+        for chunk in result.retrieved_chunks:
+            chunk_id = getattr(chunk, "chunk_id", None)
+            text = getattr(chunk, "text_content", "") or ""
+            if chunk_id and text:
+                is_new, text = _dedup_chunk(chunk_id, text)
+                d = chunk.model_dump(exclude_none=True) if hasattr(chunk, "model_dump") else {}
+                d["text_content"] = text
+                deduped.append(d)
+            else:
+                deduped.append(chunk.model_dump(exclude_none=True) if hasattr(chunk, "model_dump") else {})
+        return json.dumps({
+            "retrieved_chunks": deduped,
+            "status_message": f"Retrieved {len(deduped)} chunks for {len(entity_ids)} entities",
+        }, indent=2, default=str)
+
     return _format_result(result)
 
 
@@ -951,10 +1064,13 @@ async def chunk_text_search(query_text: str, dataset_name: str,
 
     chunks = result.get("chunks")
     if chunks and hasattr(chunks, "data"):
+        deduped = []
+        for c in chunks.data:
+            is_new, text = _dedup_chunk(c.chunk_id, c.text)
+            deduped.append({"chunk_id": c.chunk_id, "text": text, "score": c.score})
         return json.dumps({
             "chunks": [
-                {"chunk_id": c.chunk_id, "text": c.text[:500], "score": c.score}
-                for c in chunks.data
+                entry for entry in deduped
             ]
         }, indent=2, default=str)
     return json.dumps({"chunks": []})
@@ -1348,11 +1464,18 @@ async def auto_compose(query: str, dataset_name: str,
     await _ensure_initialized()
     _ensure_composer()
 
+    trace_id = f"auto_{dataset_name}_{uuid.uuid4().hex[:8]}"
+
     from Core.Composition.auto_compose import select_method
 
     # Determine model for method selection
     config = _state["config"]
     model = getattr(config, "agentic_model", None) or config.llm.model
+
+    # Tag the agentic LLM with this trace_id for the method selection call
+    llm = _state.get("agentic_llm") or _state["llm"]
+    if hasattr(llm, "set_trace_id"):
+        llm.set_trace_id(trace_id)
 
     # Get current resources
     resources_json = await list_available_resources()
@@ -1388,6 +1511,7 @@ async def auto_compose(query: str, dataset_name: str,
         "method_selected": decision.method_name,
         "reasoning": decision.reasoning,
         "confidence": decision.confidence,
+        "trace_id": trace_id,
     }
 
     return json.dumps(result, indent=2, default=str)
@@ -1973,6 +2097,8 @@ async def execute_method(method_name: str, query: str, dataset_name: str,
     await _ensure_initialized()
     _ensure_composer()
 
+    trace_id = f"{method_name}_{dataset_name}_{uuid.uuid4().hex[:8]}"
+
     composer = _state["composer"]
 
     # Build the execution plan
@@ -1984,7 +2110,7 @@ async def execute_method(method_name: str, query: str, dataset_name: str,
     )
 
     # Build OperatorContext for pipeline execution
-    op_ctx = await _build_operator_context_for_dataset(dataset_name)
+    op_ctx = await _build_operator_context_for_dataset(dataset_name, trace_id=trace_id)
 
     # Validate prerequisites before running
     profile = composer.get_profile(method_name)
@@ -2018,8 +2144,11 @@ async def execute_method(method_name: str, query: str, dataset_name: str,
             "error": f"Pipeline execution failed: {e}",
             "method": method_name,
             "dataset": dataset_name,
+            "trace_id": trace_id,
         }, indent=2)
 
+    if isinstance(result, dict):
+        result["_trace_id"] = trace_id
     return json.dumps(result, indent=2, default=str)
 
 if not BENCHMARK_MODE:
@@ -2189,7 +2318,7 @@ def _try_load_sparse_matrices(dataset_name: str) -> dict:
     return {}
 
 
-async def _build_operator_context_for_dataset(dataset_name: str) -> Any:
+async def _build_operator_context_for_dataset(dataset_name: str, *, trace_id: str | None = None) -> Any:
     """Build a full OperatorContext for a specific dataset."""
     from Core.Operators._context import OperatorContext
 
@@ -2249,15 +2378,27 @@ async def _build_operator_context_for_dataset(dataset_name: str) -> Any:
     full_config = _state["config"]
     retriever_config = getattr(full_config, "retriever", full_config)
 
+    llm = _state.get("agentic_llm") or _state["llm"]
+    if trace_id and hasattr(llm, "set_trace_id"):
+        llm.set_trace_id(trace_id)
+
+    # Set trace_id on VDB embedding models if they're LLMClientEmbedding instances
+    for vdb in (entities_vdb, relations_vdb):
+        if vdb is not None:
+            embed_model = getattr(vdb, "_embed_model", None)
+            if embed_model is not None and hasattr(embed_model, "llm_trace_id"):
+                embed_model.llm_trace_id = trace_id
+
     return OperatorContext(
         graph=graph,
         entities_vdb=entities_vdb,
         relations_vdb=relations_vdb,
         doc_chunks=doc_chunks,
         community=community,
-        llm=_state.get("agentic_llm") or _state["llm"],
+        llm=llm,
         config=retriever_config,
         sparse_matrices=sparse_matrices,
+        trace_id=trace_id,
     )
 
 
@@ -2612,17 +2753,21 @@ if BENCHMARK_MODE:
                 "status": "pending_verification",
                 "proposed_answer": answer,
                 "verification": (
-                    "STOP. Before confirming, answer this question honestly:\n"
-                    "If your answer is WRONG, what is the most likely reason?\n"
-                    "Think about: Did you pick the wrong fact from a sentence with "
-                    "multiple facts? Did you answer yes/no when a name was asked? "
-                    "Did you confuse a related but different detail?\n"
-                    "After considering how you might be wrong, call submit_answer "
-                    "with confirmed=true — keeping or revising your answer."
+                    "STOP. Before confirming, answer these questions honestly:\n"
+                    "1. If your answer is WRONG, what is the most likely reason? "
+                    "Did you pick the wrong fact from a sentence with multiple facts? "
+                    "Did you answer yes/no when a name was asked? Did you confuse "
+                    "a related but different detail? Did you give the wrong "
+                    "level of specificity (e.g. country vs city)?\n"
+                    "2. What is the best ALTERNATIVE answer, and what evidence "
+                    "supports it over your current answer?\n"
+                    "3. After considering both, call submit_answer with "
+                    "confirmed=true — keeping or revising your answer."
                 )
             })
         else:
             _submit_state["count"] = 0  # reset for next question
+            _reset_chunk_dedup()  # reset seen chunks for next question
             return json.dumps({"status": "submitted", "answer": answer})
 
 
@@ -2637,5 +2782,7 @@ if __name__ == "__main__":
                 mcp.remove_tool(tool_name)
             except Exception:
                 pass  # tool wasn't registered (already hidden by other guards)
-        print(f"Benchmark mode: removed {len(_BENCHMARK_HIDDEN_TOOLS)} non-retrieval tools", file=sys.stderr)
+        _compact_tool_schemas()
+        n_remaining = len(mcp._tool_manager._tools)
+        print(f"Benchmark mode: {n_remaining} tools (compact schemas)", file=sys.stderr)
     mcp.run(transport="stdio")
