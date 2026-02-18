@@ -85,6 +85,11 @@ class LLMClientAdapter(BaseLLM):
         """Call llm_client.acall_llm and return OpenAI-compatible response dict."""
         from llm_client import acall_llm
 
+        if self._task is None:
+            raise ValueError("LLMClientAdapter: task not set. Call set_task() before making LLM calls.")
+        if self._trace_id is None:
+            raise ValueError("LLMClientAdapter: trace_id not set. Call set_trace_id() before making LLM calls.")
+
         call_kwargs = {**self._kwargs}
         if self._fallback_models:
             call_kwargs["fallback_models"] = self._fallback_models
@@ -124,6 +129,11 @@ class LLMClientAdapter(BaseLLM):
             raise NotImplementedError("Use non-streaming for operator calls")
 
         from llm_client import acall_llm
+
+        if self._task is None:
+            raise ValueError("LLMClientAdapter: task not set. Call set_task() before making LLM calls.")
+        if self._trace_id is None:
+            raise ValueError("LLMClientAdapter: trace_id not set. Call set_trace_id() before making LLM calls.")
 
         call_kwargs = {**self._kwargs}
         if self._fallback_models:

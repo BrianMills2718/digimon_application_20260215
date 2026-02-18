@@ -20,6 +20,7 @@ import json
 import os
 import sys
 import time
+from hashlib import md5
 from pathlib import Path
 from typing import Any
 
@@ -81,12 +82,16 @@ async def judge_answer(question: str, gold: str, predicted: str) -> int:
     prompt = JUDGE_PROMPT.format(
         question=question, gold=gold, predicted=predicted
     )
+    q_hash = md5(question.encode()).hexdigest()[:8]
+    trace_id = f"digimon.e2e_judge.{q_hash}"
     try:
         result = await acall_llm(
             JUDGE_MODEL,
             [{"role": "user", "content": prompt}],
             temperature=0,
             num_retries=1,
+            task="digimon.e2e_judge",
+            trace_id=trace_id,
         )
         score_text = result.content.strip()
         score = int(score_text[0]) if score_text and score_text[0].isdigit() else 0
@@ -193,12 +198,16 @@ async def approach_vdb_ppr(mcp_srv: Any, question: str) -> str:
 
 async def approach_baseline(question: str) -> str:
     """Raw LLM, no retrieval context."""
+    q_hash = md5(question.encode()).hexdigest()[:8]
+    trace_id = f"digimon.e2e_baseline.{q_hash}"
     try:
         result = await acall_llm(
             JUDGE_MODEL,
             [{"role": "user", "content": f"Answer concisely: {question}"}],
             temperature=0,
             num_retries=1,
+            task="digimon.e2e_baseline",
+            trace_id=trace_id,
         )
         return result.content.strip()
     except Exception as e:

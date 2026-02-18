@@ -457,6 +457,16 @@ if not BENCHMARK_MODE:
 # GRAPH CONSTRUCTION TOOLS
 # =============================================================================
 
+def _tag_llm_for_build(graph_type: str, dataset_name: str) -> None:
+    """Set task and trace_id on the build LLM before graph construction."""
+    llm = _state.get("llm")
+    if llm is not None and hasattr(llm, "set_task"):
+        llm.set_task(f"digimon.graph_build_{graph_type}")
+    if llm is not None and hasattr(llm, "set_trace_id"):
+        trace_id = f"digimon.graph_build_{graph_type}.{dataset_name}.{uuid.uuid4().hex[:8]}"
+        llm.set_trace_id(trace_id)
+
+
 async def graph_build_er(dataset_name: str, force_rebuild: bool = False,
                           input_directory: str = None,
                           config_overrides: dict = None) -> str:
@@ -482,6 +492,7 @@ async def graph_build_er(dataset_name: str, force_rebuild: bool = False,
     """
     await _ensure_initialized()
     await _ensure_corpus(dataset_name, input_directory)
+    _tag_llm_for_build("er", dataset_name)
     from Core.AgentTools.graph_construction_tools import build_er_graph
     from Core.AgentSchema.graph_construction_tool_contracts import BuildERGraphInputs, ERGraphConfigOverrides
 
@@ -517,6 +528,7 @@ async def graph_build_rk(dataset_name: str, force_rebuild: bool = False,
     """
     await _ensure_initialized()
     await _ensure_corpus(dataset_name, input_directory)
+    _tag_llm_for_build("rk", dataset_name)
     from Core.AgentTools.graph_construction_tools import build_rk_graph
     from Core.AgentSchema.graph_construction_tool_contracts import BuildRKGraphInputs, RKGraphConfigOverrides
 
@@ -553,6 +565,7 @@ async def graph_build_tree(dataset_name: str, force_rebuild: bool = False,
     """
     await _ensure_initialized()
     await _ensure_corpus(dataset_name, input_directory)
+    _tag_llm_for_build("tree", dataset_name)
     from Core.AgentTools.graph_construction_tools import build_tree_graph
     from Core.AgentSchema.graph_construction_tool_contracts import BuildTreeGraphInputs, TreeGraphConfigOverrides
 
@@ -588,6 +601,7 @@ async def graph_build_tree_balanced(dataset_name: str, force_rebuild: bool = Fal
     """
     await _ensure_initialized()
     await _ensure_corpus(dataset_name, input_directory)
+    _tag_llm_for_build("tree_balanced", dataset_name)
     from Core.AgentTools.graph_construction_tools import build_tree_graph_balanced
     from Core.AgentSchema.graph_construction_tool_contracts import BuildTreeGraphBalancedInputs, TreeGraphBalancedConfigOverrides
 
@@ -622,6 +636,7 @@ async def graph_build_passage(dataset_name: str, force_rebuild: bool = False,
     """
     await _ensure_initialized()
     await _ensure_corpus(dataset_name, input_directory)
+    _tag_llm_for_build("passage", dataset_name)
     from Core.AgentTools.graph_construction_tools import build_passage_graph
     from Core.AgentSchema.graph_construction_tool_contracts import BuildPassageGraphInputs, PassageGraphConfigOverrides
 
@@ -1325,6 +1340,12 @@ async def build_communities(dataset_name: str, force_rebuild: bool = False) -> s
     config = _state["config"]
     llm = _state.get("agentic_llm") or _state["llm"]
 
+    # Tag the LLM for community building
+    if hasattr(llm, "set_task"):
+        llm.set_task("digimon.build_communities")
+    if hasattr(llm, "set_trace_id"):
+        llm.set_trace_id(f"digimon.build_communities.{dataset_name}.{uuid.uuid4().hex[:8]}")
+
     # Find the graph for this dataset
     gi = None
     if hasattr(ctx, "list_graphs"):
@@ -1648,7 +1669,7 @@ async def auto_compose(query: str, dataset_name: str,
     await _ensure_initialized()
     _ensure_composer()
 
-    trace_id = f"auto_{dataset_name}_{uuid.uuid4().hex[:8]}"
+    trace_id = f"digimon.auto_compose.{dataset_name}.{uuid.uuid4().hex[:8]}"
 
     from Core.Composition.auto_compose import select_method
 
@@ -1673,6 +1694,7 @@ async def auto_compose(query: str, dataset_name: str,
         model=model,
         resources=resources_json,
         auto_build=auto_build,
+        trace_id=trace_id,
     )
 
     logger.info(
@@ -1910,7 +1932,7 @@ async def meta_extract_entities(query_text: str) -> str:
     from Core.Schema.SlotTypes import SlotKind, SlotValue
 
     inputs = {"query": SlotValue(kind=SlotKind.QUERY_TEXT, data=query_text, producer="mcp")}
-    result = await _extract(inputs=inputs, ctx=_build_operator_context(), params={})
+    result = await _extract(inputs=inputs, ctx=_build_operator_context("digimon.meta_extract_entities"), params={})
 
     # Convert SlotValue result to serializable format
     entities = result.get("entities")
@@ -1953,7 +1975,7 @@ async def meta_generate_answer(query_text: str, context_chunks: list[str],
     if system_prompt:
         params["system_prompt"] = system_prompt
 
-    result = await _generate(inputs=inputs, ctx=_build_operator_context(), params=params)
+    result = await _generate(inputs=inputs, ctx=_build_operator_context("digimon.meta_generate_answer"), params=params)
 
     answer = result.get("answer")
     if answer and hasattr(answer, "data"):
@@ -2000,7 +2022,7 @@ async def meta_pcst_optimize(entity_ids: list[str], entity_scores: dict,
         "entities": SlotValue(kind=SlotKind.ENTITY_SET, data=entities, producer="mcp"),
         "relationships": SlotValue(kind=SlotKind.RELATIONSHIP_SET, data=rels, producer="mcp"),
     }
-    result = await _pcst(inputs=inputs, ctx=_build_operator_context(), params={})
+    result = await _pcst(inputs=inputs, ctx=_build_operator_context("digimon.meta_pcst_optimize"), params={})
 
     sg = result.get("subgraph")
     if sg and hasattr(sg, "data"):
@@ -2031,7 +2053,7 @@ async def meta_decompose_question(query_text: str, max_questions: int = 5) -> st
     from Core.Schema.SlotTypes import SlotKind, SlotValue
 
     inputs = {"query": SlotValue(kind=SlotKind.QUERY_TEXT, data=query_text, producer="mcp")}
-    result = await _decompose(inputs=inputs, ctx=_build_operator_context(), params={"max_questions": max_questions})
+    result = await _decompose(inputs=inputs, ctx=_build_operator_context("digimon.meta_decompose_question"), params={"max_questions": max_questions})
 
     sub_qs = result.get("sub_questions")
     if sub_qs and hasattr(sub_qs, "data"):
@@ -2069,7 +2091,7 @@ async def meta_synthesize_answers(query_text: str, sub_answers: list[str],
         "query": SlotValue(kind=SlotKind.QUERY_TEXT, data=query_text, producer="mcp"),
         "chunks": SlotValue(kind=SlotKind.CHUNK_SET, data=chunk_records, producer="mcp"),
     }
-    result = await _synthesize(inputs=inputs, ctx=_build_operator_context(), params={"synthesis_style": synthesis_style})
+    result = await _synthesize(inputs=inputs, ctx=_build_operator_context("digimon.meta_synthesize_answers"), params={"synthesis_style": synthesis_style})
 
     answer = result.get("answer")
     if answer and hasattr(answer, "data"):
@@ -2077,9 +2099,17 @@ async def meta_synthesize_answers(query_text: str, sub_answers: list[str],
     return "Failed to synthesize answer."
 
 
-def _build_operator_context() -> Any:
-    """Build an OperatorContext from the global MCP state for meta operator calls."""
+def _build_operator_context(task: str, trace_id: str | None = None) -> Any:
+    """Build an OperatorContext from the global MCP state for meta operator calls.
+
+    Args:
+        task: Task label for LLM call tagging (e.g. "digimon.meta_extract_entities")
+        trace_id: Optional trace ID; if None, auto-generated from task
+    """
     from Core.Operators._context import OperatorContext
+
+    if trace_id is None:
+        trace_id = f"{task}.{uuid.uuid4().hex[:8]}"
 
     ctx = _state["context"]
 
@@ -2097,13 +2127,20 @@ def _build_operator_context() -> Any:
             if gi:
                 graph = gi._graph if hasattr(gi, "_graph") else gi
 
+    llm = _state.get("agentic_llm") or _state["llm"]
+    if hasattr(llm, "set_task"):
+        llm.set_task(task)
+    if hasattr(llm, "set_trace_id"):
+        llm.set_trace_id(trace_id)
+
     return OperatorContext(
         graph=graph,
         entities_vdb=entities_vdb,
         relations_vdb=relations_vdb,
         doc_chunks=doc_chunks,
-        llm=_state.get("agentic_llm") or _state["llm"],
+        llm=llm,
         config=_state["config"],
+        trace_id=trace_id,
     )
 
 
@@ -2281,7 +2318,7 @@ async def execute_method(method_name: str, query: str, dataset_name: str,
     await _ensure_initialized()
     _ensure_composer()
 
-    trace_id = f"{method_name}_{dataset_name}_{uuid.uuid4().hex[:8]}"
+    trace_id = f"digimon.execute_method.{method_name}.{dataset_name}.{uuid.uuid4().hex[:8]}"
 
     composer = _state["composer"]
 
@@ -2303,7 +2340,7 @@ async def execute_method(method_name: str, query: str, dataset_name: str,
         if missing and auto_build:
             built = await _auto_build_prerequisites(profile, op_ctx, dataset_name)
             # Re-build context after auto-build
-            op_ctx = await _build_operator_context_for_dataset(dataset_name)
+            op_ctx = await _build_operator_context_for_dataset(dataset_name, trace_id=trace_id)
             missing = _check_prerequisites(profile, op_ctx, dataset_name)
             if missing:
                 return json.dumps({
@@ -2881,9 +2918,11 @@ async def select_analysis_mode(
     model = llm.model if llm else _state["config"].llm.model
 
     try:
+        _sam_trace = f"digimon.select_analysis_mode.{dataset_name or 'none'}.{uuid.uuid4().hex[:8]}"
         decision, meta = await acall_llm_structured(
             model, messages, response_model=AnalysisModeDecision,
-            task="select_analysis_mode",
+            task="digimon.select_analysis_mode",
+            trace_id=_sam_trace,
         )
         logger.info(
             f"select_analysis_mode: recommended '{decision.recommended_mode}' "

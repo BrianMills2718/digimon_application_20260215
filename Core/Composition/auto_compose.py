@@ -46,6 +46,7 @@ async def select_method(
     model: str,
     resources: str,
     auto_build: bool = True,
+    trace_id: str = "",
 ) -> CompositionDecision:
     """Use an LLM to select the best retrieval method for a query.
 
@@ -56,6 +57,7 @@ async def select_method(
         model: LLM model identifier (e.g. "gemini/gemini-2.0-flash")
         resources: JSON string from list_available_resources()
         auto_build: Whether auto_build will be available for prerequisites
+        trace_id: Trace ID for correlating LLM calls
 
     Returns:
         CompositionDecision with method_name, reasoning, and confidence.
@@ -84,7 +86,8 @@ async def select_method(
             model,
             messages,
             response_model=CompositionDecision,
-            task="auto_compose",
+            task="digimon.auto_compose",
+            trace_id=trace_id,
         )
         logger.info(
             f"auto_compose: LLM selected '{decision.method_name}' "

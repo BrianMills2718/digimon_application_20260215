@@ -10,8 +10,10 @@ import json
 import re
 import string
 import time
+import uuid
 from collections import Counter
 from dataclasses import dataclass, field
+from hashlib import md5
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -92,8 +94,10 @@ async def llm_judge(
         predicted=predicted,
     )
 
+    q_hash = md5(question.encode()).hexdigest()[:8]
+    trace_id = f"digimon.llm_judge.{q_hash}"
     try:
-        result = await acall_llm(model, messages, timeout=15, task="llm_judge")
+        result = await acall_llm(model, messages, timeout=15, task="digimon.llm_judge", trace_id=trace_id)
         text = result.content.strip().lower()
         # Parse JSON response
         if "{" in text:
@@ -271,6 +275,10 @@ class BenchmarkRunner:
         q_id = question.get("id", f"q{idx}")
         q_text = question["question"]
         gold = question["answer"]
+
+        # Set per-question trace_id on the shared OperatorContext
+        q_hash = md5(q_text.encode()).hexdigest()[:8]
+        op_ctx.trace_id = f"digimon.pipeline.{self.dataset_name}.{method_name}.{q_id}.{q_hash}"
 
         # Snapshot LLM stats before this question
         calls_before = 0

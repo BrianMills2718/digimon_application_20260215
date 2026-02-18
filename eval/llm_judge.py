@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import json
 import sys
+from hashlib import md5
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -32,7 +33,9 @@ async def judge_one(question: str, gold: str, predicted: str, model: str) -> dic
         gold=gold,
         predicted=predicted,
     )
-    result = await acall_llm(model, messages, timeout=30, num_retries=3, task="llm_judge")
+    q_hash = md5(question.encode()).hexdigest()[:8]
+    trace_id = f"digimon.llm_judge.{q_hash}"
+    result = await acall_llm(model, messages, timeout=30, num_retries=3, task="digimon.llm_judge", trace_id=trace_id)
     try:
         parsed = json.loads(strip_fences(result.content))
         return {

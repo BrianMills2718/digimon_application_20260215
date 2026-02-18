@@ -30,6 +30,7 @@ import re
 import sys
 import time
 from datetime import datetime, timezone
+from hashlib import md5
 from pathlib import Path
 
 # Add project root to path
@@ -104,6 +105,7 @@ def extract_tool_calls(raw_response: object) -> list[dict]:
 PROMPT_TEMPLATES = {
     "fixed": Path(__file__).parent.parent / "prompts" / "agent_benchmark.yaml",
     "adaptive": Path(__file__).parent.parent / "prompts" / "agent_benchmark_adaptive.yaml",
+    "aot": Path(__file__).parent.parent / "prompts" / "agent_benchmark_aot.yaml",
 }
 
 
@@ -163,6 +165,7 @@ async def _init_direct_tools(dataset_name: str) -> list:
     """
     # Set benchmark mode env vars BEFORE importing the MCP server module
     os.environ["DIGIMON_BENCHMARK_MODE"] = "1"
+    os.environ["LLM_CLIENT_STRICT_MODELS"] = "1"  # ban deprecated models
     if dataset_name:
         os.environ["DIGIMON_PRELOAD_DATASET"] = dataset_name
 
@@ -271,6 +274,7 @@ async def run_agent(
     python_tools: list | None = None,
     fallback_models: list[str] | None = None,
     num_retries: int = 2,
+    trace_id: str = "",
 ) -> dict:
     """Run an agent on a single question via llm_client.
 
@@ -284,11 +288,13 @@ async def run_agent(
         mode: Prompt mode ('fixed' or 'adaptive')
         backend: 'mcp' (default) or 'direct' (in-process Python tools)
         python_tools: List of Python callables for direct backend
+        trace_id: Trace ID for correlating LLM calls
 
     Returns dict with: answer, tool_calls, usage, cost, latency_s, error
     """
     from llm_client import acall_llm
 
+    task = "digimon.benchmark"
     project_root = str(Path(__file__).parent.parent)
     messages = build_messages(question, dataset_name, mode=mode)
 
@@ -307,6 +313,8 @@ async def run_agent(
                 python_tools=python_tools,
                 max_turns=max_turns,
                 num_retries=num_retries,
+                task=task,
+                trace_id=trace_id,
                 **({"fallback_models": fallback_models} if fallback_models else {}),
             )
         elif _is_codex_model(model):
@@ -320,6 +328,8 @@ async def run_agent(
                 sandbox_mode="workspace-write",
                 model_reasoning_effort=reasoning_effort,
                 mcp_servers=DIGIMON_MCP_SERVERS,
+                task=task,
+                trace_id=trace_id,
             )
         elif _is_claude_code_model(model):
             # Claude Agent SDK path
@@ -331,6 +341,8 @@ async def run_agent(
                 permission_mode="bypassPermissions",
                 max_turns=max_turns,
                 mcp_servers=DIGIMON_MCP_SERVERS,
+                task=task,
+                trace_id=trace_id,
             )
         elif mcp_session_pool is not None:
             # MCP agent loop with persistent session pool
@@ -341,6 +353,8 @@ async def run_agent(
                 mcp_sessions=mcp_session_pool,
                 max_turns=max_turns,
                 num_retries=num_retries,
+                task=task,
+                trace_id=trace_id,
                 **({"fallback_models": fallback_models} if fallback_models else {}),
             )
         else:
@@ -352,6 +366,8 @@ async def run_agent(
                 mcp_servers=DIGIMON_MCP_SERVERS,
                 max_turns=max_turns,
                 num_retries=num_retries,
+                task=task,
+                trace_id=trace_id,
                 **({"fallback_models": fallback_models} if fallback_models else {}),
             )
 
@@ -445,9 +461,9 @@ async def main() -> None:
     parser.add_argument("--resume", action="store_true", help="Resume from previous run")
     parser.add_argument("--model", default="codex", help="Agent model (default: codex). Any litellm model string works.")
     parser.add_argument("--effort", default="high", help="Reasoning effort (Codex only): minimal/low/medium/high")
-    parser.add_argument("--max-turns", type=int, default=20, help="Max tool-calling loop iterations (non-Codex only)")
+    parser.add_argument("--max-turns", type=int, default=50, help="Max tool-calling loop iterations (non-Codex only)")
     parser.add_argument("--data-root", default="./Data", help="Data root directory")
-    parser.add_argument("--mode", default="fixed", choices=["fixed", "adaptive"],
+    parser.add_argument("--mode", default="fixed", choices=["fixed", "adaptive", "aot"],
                         help="Prompt mode: 'fixed' (prescribed workflow) or 'adaptive' (agent composes freely)")
     parser.add_argument("--questions", type=str, default=None,
                         help="Comma-separated question IDs to run (e.g. 'q1,q4,q7')")
@@ -455,10 +471,10 @@ async def main() -> None:
                         help="Number of concurrent questions (each gets its own MCP server). Default: 1 (sequential)")
     parser.add_argument("--backend", default="mcp", choices=["mcp", "direct"],
                         help="Tool backend: 'mcp' (subprocess, default) or 'direct' (in-process Python tools)")
-    parser.add_argument("--judge-model", default="deepseek/deepseek-chat",
-                        help="LLM judge model for format-agnostic scoring (default: deepseek/deepseek-chat). Set to 'none' to disable.")
-    parser.add_argument("--fallback-models", default="gemini/gemini-2.5-flash-lite",
-                        help="Comma-separated fallback models if primary fails (default: gemini/gemini-2.5-flash-lite). Set to 'none' to disable.")
+    parser.add_argument("--judge-model", default="openrouter/deepseek/deepseek-chat",
+                        help="LLM judge model for format-agnostic scoring (default: openrouter/deepseek/deepseek-chat). Set to 'none' to disable.")
+    parser.add_argument("--fallback-models", default="gemini/gemini-2.5-flash",
+                        help="Comma-separated fallback models if primary fails (default: gemini/gemini-2.5-flash). Set to 'none' to disable.")
     parser.add_argument("--num-retries", type=int, default=2,
                         help="Number of retries per LLM call with exponential backoff (default: 2). Set higher for flaky models.")
     parser.add_argument("--verbose", action="store_true",
@@ -504,8 +520,9 @@ async def main() -> None:
     slug = _model_slug(args.model)
     output_dir = Path("results")
     output_dir.mkdir(exist_ok=True)
-    output_path = output_dir / f"{args.dataset}_{slug}_{run_ts}.json"
-    log_path = output_dir / f"{args.dataset}_{slug}_{run_ts}.log"
+    mode_tag = f"_{args.mode}" if args.mode != "fixed" else ""
+    output_path = output_dir / f"{args.dataset}_{slug}{mode_tag}_{run_ts}.json"
+    log_path = output_dir / f"{args.dataset}_{slug}{mode_tag}_{run_ts}.log"
 
     # Resume support — find most recent file for this dataset+model
     completed_ids: set[str] = set()
@@ -590,9 +607,9 @@ async def main() -> None:
         tool_names = [tc["tool"] for tc in tool_calls]
         input_tokens = usage.get("input_tokens", 0)
         output_tokens = usage.get("output_tokens", 0)
-        cached_tokens = usage.get("cached_input_tokens", 0)
-        cache_read = usage.get("cache_read_input_tokens", 0)
-        cache_create = usage.get("cache_creation_input_tokens", 0)
+        cached_tokens = usage.get("cached_tokens", 0)
+        cache_read = usage.get("cached_tokens", 0)  # same field, kept for output compat
+        cache_create = usage.get("cache_creation_tokens", 0)
         duration_ms = usage.get("duration_ms", 0)
         duration_api_ms = usage.get("duration_api_ms", 0)
         num_turns = usage.get("num_turns", 0)
@@ -677,6 +694,10 @@ async def main() -> None:
         """Run agent on one question, then score + log under lock."""
         nonlocal n_done, total_em, total_f1, total_cost, total_llm_em
 
+        q_id = q.get("id", "unknown")
+        q_hash = md5(q["question"].encode()).hexdigest()[:8]
+        trace_id = f"digimon.benchmark.{args.dataset}.{q_id}.{q_hash}"
+
         agent_result = await run_agent(
             q["question"], args.dataset,
             timeout=args.timeout,
@@ -689,6 +710,7 @@ async def main() -> None:
             python_tools=DIRECT_TOOLS if args.backend == "direct" else None,
             fallback_models=fallback_models,
             num_retries=args.num_retries,
+            trace_id=trace_id,
         )
 
         # LLM judge (runs before lock — it's an independent LLM call)

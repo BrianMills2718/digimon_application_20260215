@@ -44,7 +44,10 @@ FAKE_RESULT = FakeLLMCallResult(
 @pytest.fixture
 def adapter():
     """Create LLMClientAdapter without hitting real APIs."""
-    return LLMClientAdapter(model="anthropic/claude-sonnet-4-5-20250929")
+    a = LLMClientAdapter(model="anthropic/claude-sonnet-4-5-20250929")
+    a.set_task("digimon.test")
+    a.set_trace_id("digimon.test.fixture")
+    return a
 
 
 class TestLLMClientAdapter:

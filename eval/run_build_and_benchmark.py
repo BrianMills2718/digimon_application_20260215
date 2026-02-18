@@ -12,6 +12,7 @@ import asyncio
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 
 # Add project root to path
@@ -31,11 +32,14 @@ async def build_graph(dataset: str) -> bool:
     config = Config.from_yaml_file("Option/Config2.yaml")
 
     fallback = getattr(config.llm, 'fallback_models', None) or []
+    trace_id = f"digimon.graph_build.{dataset}.{uuid.uuid4().hex[:8]}"
     llm = LLMClientAdapter(
         config.llm.model,
         fallback_models=fallback,
         num_retries=3,
     )
+    llm.set_task("digimon.graph_build")
+    llm.set_trace_id(trace_id)
     encoder = get_rag_embedding(config=config)
     chunk_factory = ChunkFactory(config)
 
