@@ -340,7 +340,8 @@ All enrichment config lives in `Config/GraphConfig.py`. Post-hoc methods live on
 - gemini-3-flash fixed mode: **61.5% EM, 73.9% F1** (200q, $7.35, 5.6 tools/q)
 - claude-code adaptive mode: **70% EM, 82.4% F1** (10q, $2.30, 61.5s/q)
 - deepseek-chat direct mode: **68.0% EM, 90.0% LLM_EM, 82.5% F1** (50q HotpotQA, $0.30, 10.7 tools/q, turn countdown + gemini fallback)
-- **MuSiQue (harder, 2-4 hop)**: o4-mini direct mode: **52.0% EM, 80.0% LLM_EM, 67.7% F1** (50q, $3.41, SOTA ~30-40% EM)
+- **MuSiQue (harder, 2-4 hop)**: o4-mini direct mode: **52.0% EM, 80.0% LLM_EM, 67.7% F1** (50q, $3.41, unenriched graph, SOTA top-20 acc: 53.6% Youtu-GraphRAG)
+- MuSiQue graph: 82,526 nodes, 820,215 edges (enriched: +693K co-occurrence), build cost $32.41 / 145.8M tokens
 - Config: gleaning=2, entity/edge descriptions ON, IDF-weighted PPR enabled
 - LLM judge accepts alternative valid answers (not just gold-match); LLM_EM is the fairer metric
 - See `docs/COMPETITIVE_ANALYSIS.md` for SOTA comparison and benchmark strategy
