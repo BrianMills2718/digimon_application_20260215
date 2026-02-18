@@ -376,4 +376,44 @@ graphs, enabling recursive meta-analysis. Priority order:
 3. **Trace writer + trace-to-graph converter** — instrument operator calls, produce ER graphs
 4. **Recursive application** — apply DIGIMON operators to trace graphs
 
+### Schema-Constrained Extraction (DEFERRED — designed, not wired)
+
+**Problem**: DIGIMON extraction currently uses open mode only — the LLM extracts whatever entity/relation types it wants. Youtu-GraphRAG's key advantage is schema enforcement during extraction ("seed graph schema"). We designed this capability but haven't wired it into the extraction pipeline.
+
+**Three schema modes** (ADR-002: `docs/adr/002-universal-graph-schema-and-extraction.md`):
+
+| Mode | Extraction | Validation | New types |
+|------|-----------|------------|-----------|
+| **Open** (current) | No constraints | No validation | All accepted |
+| **Closed** | Prompt constrains to fixed type list | Post-extraction rejects out-of-schema | Rejected |
+| **Mixed** | Prompt prefers seed types, allows `[NEW]` | Flags new types for review | Accepted provisionally |
+
+**Existing code** (in `~/projects/Digimons/src/core/`):
+- `extraction_schemas.py` — `OpenSchema`, `ClosedSchema`, `HybridSchema` classes with `SchemaMode` enum, `EntityTypeSchema`, `RelationTypeSchema` with confidence thresholds, hierarchy, validation rules
+- `schema_manager.py` — `SchemaManager` with file loading (JSON/YAML), built-in templates (`general_open`, `academic_paper`, `business_document`), schema merging, reverse-engineering from extraction results
+- `tools/phase2/t23c_ontology_aware_extractor_unified.py` — `OntologyAwareExtractor` that branches on `SchemaMode.OPEN` vs closed/hybrid
+
+**What's missing for DIGIMON integration**:
+1. Move extraction prompts from `Core/Prompt/GraphPrompt.py` to Jinja2 templates with ontology mode conditionals (ADR-002 §2)
+2. Add `ontology_mode` + `ontology.entity_types` / `ontology.relation_types` to `Config2.yaml`
+3. Wire `ERGraph`/`RKGraph` to read schema config and pass to prompt templates
+4. Post-extraction validation step for closed/mixed modes
+
+**Orthogonal: canonicalization aggressiveness** (ADR-002 §3b):
+- Extraction constraint (open/closed/mixed) controls what the LLM extracts
+- Canonicalization aggressiveness controls post-extraction merging into canonical vocabularies (SUMO types, PropBank predicates, FrameNet frames)
+- Three levels: none → conservative (abbreviation/case matching) → aggressive (LLM semantic similarity)
+- Operates independently on entities, relations, and entity types
+
+**Ontology generation tool**: `~/projects/ontology_engineering/` — builds OWL ontologies via LLM conversation, BORO classification (Individual/Type/Tuple), iterative graph editing. Could generate seed schemas for closed/mixed modes.
+
+**Implementation order** (from ADR-002):
+1. Entity canonicalization post-build step
+2. Prompts as data (YAML/Jinja2 templates)
+3. Relation canonicalization
+4. Ontology modes (open/closed/mixed)
+5. Cypher query tool (GrandCypher on NetworkX)
+6. Entity type canonicalization (SUMO hierarchy)
+7. Reified graph type (n-ary relationships)
+
 See `docs/IDEAS.md` for future enhancement ideas and dead code inventory.
