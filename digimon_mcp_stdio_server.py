@@ -258,29 +258,36 @@ async def _ensure_initialized():
             await graph_build_er(preload_dataset)
             graph_id = f"{preload_dataset}_ERGraph"
             vdb_name = f"{preload_dataset}_entities"
-            await entity_vdb_build(graph_id, vdb_name)
-            logger.info(f"Pre-loaded: graph={graph_id}, vdb={vdb_name}")
-            # Also load chunk VDB if it exists on disk
-            chunk_vdb_id = f"{preload_dataset}_chunks"
-            chunk_vdb_path = Path(f"storage/vdb/{chunk_vdb_id}")
-            if chunk_vdb_path.exists() and any(chunk_vdb_path.iterdir()):
-                try:
-                    from Core.Index.FaissIndex import FaissIndex
-                    from Core.AgentTools.index_config_helper import create_faiss_index_config
-                    cfg = create_faiss_index_config(
-                        persist_path=str(chunk_vdb_path),
-                        embed_model=context.embedding_provider,
-                        name=chunk_vdb_id,
-                    )
-                    chunk_vdb = FaissIndex(cfg)
-                    loaded = await chunk_vdb.load()
-                    if loaded:
-                        context.add_vdb_instance(chunk_vdb_id, chunk_vdb)
-                        logger.info(f"Pre-loaded chunk VDB: {chunk_vdb_id}")
-                    else:
-                        logger.warning(f"Chunk VDB exists on disk but failed to load: {chunk_vdb_id}")
-                except Exception as ce:
-                    logger.warning(f"Chunk VDB pre-load failed: {ce}")
+
+            # Load VDBs from disk if they exist, rebuild only if needed
+            from Core.Index.FaissIndex import FaissIndex
+            from Core.AgentTools.index_config_helper import create_faiss_index_config
+
+            for vdb_id in [vdb_name, f"{preload_dataset}_chunks"]:
+                vdb_path = Path(f"storage/vdb/{vdb_id}")
+                if vdb_path.exists() and any(vdb_path.iterdir()):
+                    try:
+                        cfg = create_faiss_index_config(
+                            persist_path=str(vdb_path),
+                            embed_model=context.embedding_provider,
+                            name=vdb_id,
+                        )
+                        vdb = FaissIndex(cfg)
+                        loaded = await vdb.load()
+                        if loaded:
+                            context.add_vdb_instance(vdb_id, vdb)
+                            logger.info(f"Pre-loaded VDB from disk: {vdb_id}")
+                            continue
+                    except Exception as ve:
+                        logger.warning(f"VDB disk load failed for {vdb_id}: {ve}")
+
+                # Rebuild if disk load failed or didn't exist
+                if "entities" in vdb_id:
+                    await entity_vdb_build(graph_id, vdb_id)
+                elif "chunks" in vdb_id:
+                    await chunk_vdb_build(preload_dataset)
+
+            logger.info(f"Pre-loaded: graph={graph_id}, VDBs loaded from disk")
         except Exception as e:
             logger.warning(f"Pre-load failed for '{preload_dataset}': {e}")
 
