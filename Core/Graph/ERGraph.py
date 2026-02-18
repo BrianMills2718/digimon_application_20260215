@@ -279,9 +279,41 @@ class ERGraph(DelimiterExtractionMixin, BaseGraph):
                 await self._persist_graph(force=True)
                 logger.info(f"Checkpoint saved: {len(already_processed)}/{len(chunk_list)} chunks processed")
 
-            # Build complete — clear checkpoint
-            self.clear_checkpoint()
-            logger.info("Successfully built graph")
+            # Retry failed chunks (those not in already_processed)
+            all_indices = set(range(len(chunk_list)))
+            failed_indices = all_indices - already_processed
+            if failed_indices:
+                logger.warning(f"Retrying {len(failed_indices)} failed chunks")
+                retry_chunks = [(i, chunk_list[i]) for i in sorted(failed_indices)]
+                for batch_start in range(0, len(retry_chunks), batch_size):
+                    batch = retry_chunks[batch_start:batch_start + batch_size]
+                    results = await asyncio.gather(
+                        *[self._extract_entity_relationship(chunk) for _, chunk in batch],
+                        return_exceptions=True,
+                    )
+                    for (idx, _chunk), result in zip(batch, results):
+                        if isinstance(result, Exception):
+                            logger.error(f"Chunk {idx} failed on retry: {result}")
+                        else:
+                            await self.__graph__([result])
+                            already_processed.add(idx)
+                    self._save_checkpoint(already_processed)
+                    await self._persist_graph(force=True)
+
+            # Persist any permanently failed chunk indices
+            final_failed = all_indices - already_processed
+            if final_failed:
+                save_dir = self._graph.namespace.get_save_path() if self._graph and getattr(self._graph, 'namespace', None) else "."
+                failed_path = os.path.join(save_dir, "failed_chunks.json")
+                with open(failed_path, 'w') as f:
+                    f.write(json.dumps(sorted(final_failed)))
+                logger.error(
+                    f"Build complete with {len(final_failed)} permanently failed chunks. "
+                    f"Indices saved to {failed_path}"
+                )
+            else:
+                self.clear_checkpoint()
+                logger.info("Successfully built graph — all chunks processed")
             return True
         except Exception as e:
             # Persist whatever we've built so far
