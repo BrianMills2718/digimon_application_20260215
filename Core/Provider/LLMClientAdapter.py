@@ -101,6 +101,7 @@ class LLMClientAdapter(BaseLLM):
             timeout=timeout,
             task=self._task,
             trace_id=self._trace_id,
+            max_budget=0,
             **call_kwargs,
         )
 
@@ -149,6 +150,7 @@ class LLMClientAdapter(BaseLLM):
             timeout=timeout,
             task=self._task,
             trace_id=self._trace_id,
+            max_budget=0,
             **call_kwargs,
         )
         return result.content

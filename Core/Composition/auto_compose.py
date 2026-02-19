@@ -88,6 +88,7 @@ async def select_method(
             response_model=CompositionDecision,
             task="digimon.auto_compose",
             trace_id=trace_id,
+            max_budget=0,
         )
         logger.info(
             f"auto_compose: LLM selected '{decision.method_name}' "

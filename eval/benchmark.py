@@ -97,7 +97,7 @@ async def llm_judge(
     q_hash = md5(question.encode()).hexdigest()[:8]
     trace_id = f"digimon.llm_judge.{q_hash}"
     try:
-        result = await acall_llm(model, messages, timeout=15, task="digimon.llm_judge", trace_id=trace_id)
+        result = await acall_llm(model, messages, timeout=15, task="digimon.llm_judge", trace_id=trace_id, max_budget=0)
         text = result.content.strip().lower()
         # Parse JSON response
         if "{" in text:

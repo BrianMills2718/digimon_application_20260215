@@ -35,7 +35,7 @@ async def judge_one(question: str, gold: str, predicted: str, model: str) -> dic
     )
     q_hash = md5(question.encode()).hexdigest()[:8]
     trace_id = f"digimon.llm_judge.{q_hash}"
-    result = await acall_llm(model, messages, timeout=30, num_retries=3, task="digimon.llm_judge", trace_id=trace_id)
+    result = await acall_llm(model, messages, timeout=30, num_retries=3, task="digimon.llm_judge", trace_id=trace_id, max_budget=0)
     try:
         parsed = json.loads(strip_fences(result.content))
         return {

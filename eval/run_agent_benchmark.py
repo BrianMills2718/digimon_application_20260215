@@ -315,6 +315,7 @@ async def run_agent(
                 num_retries=num_retries,
                 task=task,
                 trace_id=trace_id,
+                max_budget=0,
                 **({"fallback_models": fallback_models} if fallback_models else {}),
             )
         elif _is_codex_model(model):
@@ -330,6 +331,7 @@ async def run_agent(
                 mcp_servers=DIGIMON_MCP_SERVERS,
                 task=task,
                 trace_id=trace_id,
+                max_budget=0,
             )
         elif _is_claude_code_model(model):
             # Claude Agent SDK path
@@ -343,6 +345,7 @@ async def run_agent(
                 mcp_servers=DIGIMON_MCP_SERVERS,
                 task=task,
                 trace_id=trace_id,
+                max_budget=0,
             )
         elif mcp_session_pool is not None:
             # MCP agent loop with persistent session pool
@@ -355,6 +358,7 @@ async def run_agent(
                 num_retries=num_retries,
                 task=task,
                 trace_id=trace_id,
+                max_budget=0,
                 **({"fallback_models": fallback_models} if fallback_models else {}),
             )
         else:
@@ -368,6 +372,7 @@ async def run_agent(
                 num_retries=num_retries,
                 task=task,
                 trace_id=trace_id,
+                max_budget=0,
                 **({"fallback_models": fallback_models} if fallback_models else {}),
             )
 

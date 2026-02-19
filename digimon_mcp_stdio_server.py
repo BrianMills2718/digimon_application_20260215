@@ -2923,6 +2923,7 @@ async def select_analysis_mode(
             model, messages, response_model=AnalysisModeDecision,
             task="digimon.select_analysis_mode",
             trace_id=_sam_trace,
+            max_budget=0,
         )
         logger.info(
             f"select_analysis_mode: recommended '{decision.recommended_mode}' "

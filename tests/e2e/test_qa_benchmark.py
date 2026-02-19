@@ -92,6 +92,7 @@ async def judge_answer(question: str, gold: str, predicted: str) -> int:
             num_retries=1,
             task="digimon.e2e_judge",
             trace_id=trace_id,
+            max_budget=0,
         )
         score_text = result.content.strip()
         score = int(score_text[0]) if score_text and score_text[0].isdigit() else 0
@@ -208,6 +209,7 @@ async def approach_baseline(question: str) -> str:
             num_retries=1,
             task="digimon.e2e_baseline",
             trace_id=trace_id,
+            max_budget=0,
         )
         return result.content.strip()
     except Exception as e:
