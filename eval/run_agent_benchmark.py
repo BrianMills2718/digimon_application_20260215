@@ -40,6 +40,7 @@ os.chdir(str(Path(__file__).parent.parent))
 from eval.benchmark import exact_match, llm_judge, token_f1
 from eval.data_prep import load_questions
 from llm_client import MCPAgentResult
+from llm_client import start_run as llm_start_run, log_item as llm_log_item, finish_run as llm_finish_run
 
 
 # --- Tool call extraction (works with both Codex Turn and MCPAgentResult) ---
@@ -594,6 +595,21 @@ async def main() -> None:
 
     _wall_t0 = time.monotonic()
 
+    # Register experiment run in llm_client observability
+    _experiment_run_id = llm_start_run(
+        dataset=args.dataset,
+        model=args.model,
+        config={
+            "backend": args.backend, "mode": args.mode,
+            "timeout": args.timeout, "max_turns": args.max_turns,
+            "parallel": parallel, "judge_model": judge_model or None,
+            "fallback_models": fallback_models,
+            "num_retries": args.num_retries,
+        },
+        metrics_schema=["em", "f1", "llm_em"],
+        project="Digimon_for_KG_application",
+    )
+
     # --- Per-question processing (shared between sequential and parallel) ---
 
     # Lock protects running totals, results list, log_file, and incremental saves
@@ -744,6 +760,22 @@ async def main() -> None:
 
         record = _score_and_record(q, agent_result, llm_em_val=llm_em_val)
 
+        # Log to centralized experiment tracking (thread-safe, never raises)
+        llm_log_item(
+            run_id=_experiment_run_id, item_id=record["id"],
+            metrics={"em": record["em"], "f1": record["f1"], "llm_em": record.get("llm_em")},
+            predicted=record["predicted"], gold=record["gold"],
+            latency_s=record["latency_s"], cost=record["cost"],
+            n_tool_calls=record["n_tool_calls"], error=record.get("error"),
+            extra={
+                "tool_calls": record["tool_calls"],
+                "warnings": record.get("warnings"),
+                "models_used": record.get("models_used"),
+                "input_tokens": record.get("input_tokens"),
+                "output_tokens": record.get("output_tokens"),
+            },
+        )
+
         # Acquire lock for shared state updates + output
         async with output_lock:
             n_done += 1
@@ -868,36 +900,14 @@ async def main() -> None:
         print(f"{'='*70}")
         print(f"Results saved to {output_path}")
 
-        # Append to experiment log (tracked in git)
-        experiment_log = Path(__file__).parent / "experiment_log.jsonl"
-        avg_llm_em = round(100 * total_llm_em / n_done, 1) if total_llm_em is not None else None
-        entry = {
-            "timestamp": run_ts,
-            "dataset": args.dataset,
-            "model": args.model,
-            "backend": backend,
-            "n_questions": len(questions),
-            "n_completed": n_done,
-            "n_errors": n_errors,
-            "avg_em": round(100 * total_em / n_done, 1),
-            "avg_llm_em": avg_llm_em,
-            "avg_f1": round(100 * total_f1 / n_done, 1),
-            "total_cost": round(total_cost, 4),
-            "avg_tool_calls": round(avg_tools, 1),
-            "avg_latency_s": round(avg_latency, 1),
-            "total_input_tokens": total_input,
-            "total_output_tokens": total_output,
-            "mode": args.mode,
-            "backend_type": args.backend,
-            "parallel": parallel,
-            "wall_time_s": round(wall_time, 1),
-            "timeout": args.timeout,
-            "max_turns": args.max_turns,
-            "results_file": str(output_path),
-        }
-        with open(experiment_log, "a") as f:
-            f.write(json.dumps(entry, default=str) + "\n")
-        print(f"Experiment logged to {experiment_log}")
+        # Finalize centralized experiment log
+        run_status = "completed" if n_done == len(questions) else "interrupted"
+        llm_finish_run(
+            run_id=_experiment_run_id,
+            wall_time_s=wall_time,
+            status=run_status,
+        )
+        print(f"Experiment logged to llm_client observability (run_id={_experiment_run_id})")
 
     # Close litellm's cached async HTTP clients and let pending logging coroutines
     # drain so asyncio.run() can tear down cleanly (no SSL transport errors).
