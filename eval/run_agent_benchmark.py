@@ -423,6 +423,12 @@ async def run_agent(
                 lines = [l.strip() for l in answer.split("\n") if l.strip()]
                 answer = lines[-1] if lines else answer
 
+        # Extract diagnostic warnings and models_used from result
+        warnings = getattr(result, "warnings", []) or []
+        models_used: list[str] = []
+        if isinstance(result.raw_response, MCPAgentResult):
+            models_used = sorted(result.raw_response.models_used)
+
         return {
             "answer": answer,
             "reasoning": reasoning,
@@ -433,6 +439,8 @@ async def run_agent(
             "cost": result.cost,
             "latency_s": round(elapsed, 2),
             "error": None if result.finish_reason != "error" else result.content,
+            "warnings": warnings,
+            "models_used": models_used,
         }
 
     except asyncio.TimeoutError:
@@ -645,6 +653,8 @@ async def main() -> None:
             "overhead_ms": duration_ms - duration_api_ms if duration_ms and duration_api_ms else 0,
             "num_turns": num_turns,
             "error": error,
+            "warnings": agent_result.get("warnings", []),
+            "models_used": agent_result.get("models_used", []),
             "conversation_trace": agent_result.get("conversation_trace"),
         }
 
@@ -674,6 +684,11 @@ async def main() -> None:
             api_s = record["duration_api_ms"] / 1000
             oh_s = record["overhead_ms"] / 1000
             lines.append(f"  Timing: {api_s:.1f}s API + {oh_s:.1f}s overhead = {record['duration_ms']/1000:.1f}s ({record['num_turns']} turns)")
+        if record.get("warnings"):
+            for w in record["warnings"]:
+                lines.append(f"  ⚠ {w}")
+        if record.get("models_used") and len(record["models_used"]) > 1:
+            lines.append(f"  Models: {', '.join(record['models_used'])}")
         llm_em_running = f"  LLM_EM={100*total_llm_em_now/n_done_now:.1f}%" if total_llm_em_now is not None else ""
         lines.append(f"  Running: EM={100*total_em_now/n_done_now:.1f}%{llm_em_running}  F1={100*total_f1_now/n_done_now:.1f}%  ${total_cost_now:.2f}  ({n_done_now} done)")
         return "\n".join(lines)
@@ -688,11 +703,12 @@ async def main() -> None:
         if record.get("llm_em") is not None:
             llm_em_icon = "L" if record["llm_em"] else "l"
         err = " ERR" if record.get("error") else ""
+        warn = " W" if record.get("warnings") else ""
         running_em = 100 * total_em_now / n_done_now
         running_llm = f" LLM={100*total_llm_em_now/n_done_now:.0f}%" if total_llm_em_now is not None else ""
         return (f"[{n_done_now:3d}/{n_total}] {q_id:5s} {em_icon}{llm_em_icon} "
                 f"F1={record['f1']:.2f} {record['n_tool_calls']:2d}t {record['latency_s']:5.1f}s "
-                f"${record['cost']:.4f}{err}  "
+                f"${record['cost']:.4f}{err}{warn}  "
                 f"| EM={running_em:.1f}%{running_llm} ${total_cost_now:.2f}")
 
     async def _process_question(q: dict, session_pool: object) -> dict:
@@ -882,6 +898,12 @@ async def main() -> None:
         with open(experiment_log, "a") as f:
             f.write(json.dumps(entry, default=str) + "\n")
         print(f"Experiment logged to {experiment_log}")
+
+    # Close litellm's cached async HTTP clients and let pending logging coroutines
+    # drain so asyncio.run() can tear down cleanly (no SSL transport errors).
+    import litellm
+    await litellm.close_litellm_async_clients()
+    await asyncio.sleep(0.1)
 
 
 def _save_results(
