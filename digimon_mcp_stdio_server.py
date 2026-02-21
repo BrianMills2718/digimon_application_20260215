@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import pickle
+import re
 import sys
 import uuid
 from pathlib import Path
@@ -99,13 +100,19 @@ _BENCHMARK_SHORT_DESCS: dict[str, str] = {
     "relationship_vdb_search": "Semantic vector search over relationships.",
     "chunk_from_relationships": "Get text chunks for given relationships.",
     "chunk_occurrence": "Find chunks where two entities co-occur.",
-    "chunk_get_text": "Get source text for given entities.",
+    "chunk_get_text": "Get source text by entity IDs or chunk IDs.",
     "chunk_text_search": "Keyword search over source text chunks.",
     "chunk_aggregator": "Score chunks by relationship/PPR scores via sparse matrices.",
     "subgraph_khop_paths": "Find all paths between entities within k hops.",
     "subgraph_steiner_tree": "Minimal subgraph connecting a set of entities.",
     "meta_pcst_optimize": "Prize-collecting Steiner tree optimization (algorithmic).",
     "list_available_resources": "List loaded graphs, VDBs, and sparse matrices.",
+    "todo_create": "Create an atomic TODO with answer type/dependencies.",
+    "todo_update": "Update TODO status; done requires answer_span + evidence_refs.",
+    "todo_list": "List TODO tasks and completion state.",
+    "todo_reset": "Reset TODO state and register current question.",
+    "semantic_plan": "Build typed semantic decomposition (atoms/dependencies/composition).",
+    "bridge_disambiguate": "Choose best bridge entity from ambiguous candidates using downstream evidence.",
     "submit_answer": "Submit your final answer. Call once with your best answer.",
 }
 
@@ -195,6 +202,30 @@ def _get_project_root() -> str:
     return str(Path(__file__).parent)
 
 
+def _ensure_embedding_provider_initialized(reason: str = "") -> Any:
+    """Initialize embedding provider on demand and attach it to shared context."""
+    existing = _state.get("encoder")
+    if existing is not None:
+        return existing
+
+    config = _state.get("config")
+    context = _state.get("context")
+    if config is None or context is None:
+        raise RuntimeError("DIGIMON state must be initialized before embedding provider init.")
+
+    from Core.Index.EmbeddingFactory import get_rag_embedding
+
+    encoder = get_rag_embedding(config=config)
+    _state["encoder"] = encoder
+    context.embedding_provider = encoder
+
+    if reason:
+        logger.info("Initialized embedding provider on demand (%s)", reason)
+    else:
+        logger.info("Initialized embedding provider on demand")
+    return encoder
+
+
 async def _ensure_initialized():
     """Lazy initialization of DIGIMON components."""
     if "initialized" in _state:
@@ -205,12 +236,38 @@ async def _ensure_initialized():
 
     from Option.Config2 import Config
     from Core.Provider.LLMClientAdapter import LLMClientAdapter
-    from Core.Index.EmbeddingFactory import get_rag_embedding
     from Core.Chunk.ChunkFactory import ChunkFactory
     from Core.AgentSchema.context import GraphRAGContext
 
     config_path = os.path.join(project_root, "Option", "Config2.yaml")
     config = Config.from_yaml_file(config_path)
+
+    # Optional runtime embedding overrides for benchmark stability/cost control.
+    embed_model_override = os.environ.get("DIGIMON_EMBED_MODEL", "").strip()
+    if embed_model_override:
+        logger.warning(
+            "Overriding embedding model via DIGIMON_EMBED_MODEL: %s -> %s",
+            getattr(config.embedding, "model", None),
+            embed_model_override,
+        )
+        config.embedding.model = embed_model_override
+
+    embed_dims_override = os.environ.get("DIGIMON_EMBED_DIMENSIONS", "").strip()
+    if embed_dims_override:
+        try:
+            parsed_dims = int(embed_dims_override)
+            if parsed_dims > 0:
+                logger.warning(
+                    "Overriding embedding dimensions via DIGIMON_EMBED_DIMENSIONS: %s -> %d",
+                    getattr(config.embedding, "dimensions", None),
+                    parsed_dims,
+                )
+                config.embedding.dimensions = parsed_dims
+        except ValueError:
+            logger.warning(
+                "Invalid DIGIMON_EMBED_DIMENSIONS=%r (expected positive integer). Ignoring override.",
+                embed_dims_override,
+            )
 
     fallback = getattr(config.llm, 'fallback_models', None) or []
     llm = LLMClientAdapter(
@@ -218,20 +275,19 @@ async def _ensure_initialized():
         fallback_models=fallback,
         num_retries=3,
     )
-    encoder = get_rag_embedding(config=config)
     chunk_factory = ChunkFactory(config)
 
     context = GraphRAGContext(
         target_dataset_name="mcp_session",
         main_config=config,
         llm_provider=llm,
-        embedding_provider=encoder,
+        embedding_provider=None,
         chunk_storage_manager=chunk_factory,
     )
 
     _state["config"] = config
     _state["llm"] = llm
-    _state["encoder"] = encoder
+    _state["encoder"] = None
     _state["chunk_factory"] = chunk_factory
     _state["context"] = context
 
@@ -258,12 +314,29 @@ async def _ensure_initialized():
             await graph_build_er(preload_dataset)
             graph_id = f"{preload_dataset}_ERGraph"
             vdb_name = f"{preload_dataset}_entities"
+            skip_vdb_preload = os.environ.get("DIGIMON_SKIP_VDB_PRELOAD", "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            if skip_vdb_preload:
+                logger.warning(
+                    "Skipping VDB preload/build due to DIGIMON_SKIP_VDB_PRELOAD=1 "
+                    "(graph remains loaded)."
+                )
+                return
 
             # Load VDBs from disk if they exist, rebuild only if needed
             from Core.Index.FaissIndex import FaissIndex
             from Core.AgentTools.index_config_helper import create_faiss_index_config
+            _ensure_embedding_provider_initialized(
+                reason=f"benchmark preload for dataset '{preload_dataset}'"
+            )
+            target_dim = getattr(context.embedding_provider, "dimensions", None)
 
             for vdb_id in [vdb_name, f"{preload_dataset}_chunks"]:
+                should_rebuild = False
                 vdb_path = Path(f"storage/vdb/{vdb_id}")
                 if vdb_path.exists() and any(vdb_path.iterdir()):
                     try:
@@ -275,17 +348,38 @@ async def _ensure_initialized():
                         vdb = FaissIndex(cfg)
                         loaded = await vdb.load()
                         if loaded:
-                            context.add_vdb_instance(vdb_id, vdb)
-                            logger.info(f"Pre-loaded VDB from disk: {vdb_id}")
-                            continue
+                            loaded_dim = _vdb_index_dimension(vdb)
+                            if (
+                                isinstance(target_dim, int)
+                                and target_dim > 0
+                                and isinstance(loaded_dim, int)
+                                and loaded_dim > 0
+                                and loaded_dim != target_dim
+                            ):
+                                should_rebuild = True
+                                logger.warning(
+                                    "VDB dim mismatch for %s: index_dim=%s, embed_dim=%s. Rebuilding.",
+                                    vdb_id,
+                                    loaded_dim,
+                                    target_dim,
+                                )
+                            else:
+                                context.add_vdb_instance(vdb_id, vdb)
+                                logger.info(f"Pre-loaded VDB from disk: {vdb_id}")
+                                continue
                     except Exception as ve:
                         logger.warning(f"VDB disk load failed for {vdb_id}: {ve}")
+                        should_rebuild = True
 
                 # Rebuild if disk load failed or didn't exist
                 if "entities" in vdb_id:
-                    await entity_vdb_build(graph_id, vdb_id)
+                    await entity_vdb_build(graph_id, vdb_id, force_rebuild=should_rebuild)
                 elif "chunks" in vdb_id:
-                    await chunk_vdb_build(preload_dataset)
+                    await chunk_vdb_build(
+                        preload_dataset,
+                        vdb_collection_name=vdb_id,
+                        force_rebuild=should_rebuild,
+                    )
 
             logger.info(f"Pre-loaded: graph={graph_id}, VDBs loaded from disk")
         except Exception as e:
@@ -335,6 +429,21 @@ def _dedup_chunks_in_dict(d: dict) -> None:
 # ---------------------------------------------------------------------------
 
 _seen_chunks: dict[str, str] = {}  # chunk_id -> first 80 chars (for reference)
+_seen_chunk_text: dict[str, str] = {}  # chunk_id -> full text (for evidence validation)
+_todos: list[dict[str, Any]] = []  # question-local TODOs in benchmark mode
+_todo_counter: int = 0
+_current_question: str = ""
+_current_expected_answer_kind: str = ""
+_current_semantic_plan: dict[str, Any] = {}
+_current_semantic_plan_question: str = ""
+_atom_todo_map: dict[str, str] = {}  # semantic atom_id -> todo_id
+_relation_scope_branch_required: bool = False
+_relation_scope_branch_resolved: bool = False
+_bridge_candidate_failure_counts: dict[str, dict[str, int]] = {}
+_todo_recovery_guard: dict[str, dict[str, Any]] = {}
+_submit_recovery_guard: dict[str, Any] = {}
+
+_BRIDGE_CANDIDATE_RETRY_FAILURE_THRESHOLD = 2
 
 
 def _dedup_chunk(chunk_id: str, text: str) -> tuple[bool, str]:
@@ -346,14 +455,1050 @@ def _dedup_chunk(chunk_id: str, text: str) -> tuple[bool, str]:
     """
     if chunk_id in _seen_chunks:
         preview = _seen_chunks[chunk_id]
-        return False, f"[already in context: {preview!r}...]"
+        return False, (
+            f"[DUPLICATE — you already have this chunk. "
+            f"Content: {preview!r}... "
+            f"DO NOT search again. Try entity_onehop or entity_vdb_search instead, "
+            f"or submit your answer.]"
+        )
     _seen_chunks[chunk_id] = text[:80]
+    _seen_chunk_text[chunk_id] = text or ""
     return True, text
 
 
 def _reset_chunk_dedup() -> None:
     """Reset seen chunks — call between questions."""
     _seen_chunks.clear()
+    _seen_chunk_text.clear()
+    _reset_todos()
+    _clear_semantic_plan()
+
+
+def _reset_todos() -> None:
+    """Reset TODO state — call between questions."""
+    global _todo_counter, _current_question, _current_expected_answer_kind
+    _todos.clear()
+    _todo_counter = 0
+    _current_question = ""
+    _current_expected_answer_kind = ""
+    _atom_todo_map.clear()
+    _bridge_candidate_failure_counts.clear()
+    _todo_recovery_guard.clear()
+    _submit_recovery_guard.clear()
+
+
+def _clear_semantic_plan() -> None:
+    """Clear semantic-plan contract state for current question."""
+    global _current_semantic_plan_question, _relation_scope_branch_required, _relation_scope_branch_resolved
+    _current_semantic_plan.clear()
+    _current_semantic_plan_question = ""
+    _relation_scope_branch_required = False
+    _relation_scope_branch_resolved = False
+    _atom_todo_map.clear()
+
+
+def _normalize_todo_status(status: str) -> str:
+    """Normalize user-provided TODO status to canonical values."""
+    s = (status or "").strip().lower()
+    aliases = {
+        "pending": "pending",
+        "todo": "pending",
+        "in_progress": "in_progress",
+        "in-progress": "in_progress",
+        "doing": "in_progress",
+        "active": "in_progress",
+        "done": "done",
+        "completed": "done",
+        "complete": "done",
+        "finished": "done",
+        "blocked": "blocked",
+    }
+    return aliases.get(s, "")
+
+
+def _normalize_todo_operation(operation: str, task: str = "") -> str:
+    """Normalize todo operation label, with light task-text inference fallback."""
+    op = (operation or "").strip().lower()
+    aliases = {
+        "lookup": "lookup",
+        "relation": "relation",
+        "compose": "compose",
+        "composition": "compose",
+        "intersection": "intersection",
+        "compare": "compare",
+        "temporal": "temporal",
+        "rank": "compare",
+        "ranking": "compare",
+    }
+    if op in aliases:
+        return aliases[op]
+
+    task_l = (task or "").strip().lower()
+    if "intersection" in task_l or "common to" in task_l or "common region" in task_l:
+        return "intersection"
+    if "compose" in task_l or "combination of" in task_l or "combined" in task_l:
+        return "compose"
+    if "larger than" in task_l or "only group" in task_l or "rank" in task_l:
+        return "compare"
+    if "when " in task_l or "what year" in task_l or "what date" in task_l:
+        return "temporal"
+    if any(x in task_l for x in ("north of", "south of", "east of", "west of", "headquarters of", "located in")):
+        return "relation"
+    return "lookup"
+
+
+def _semantic_plan_atoms() -> list[dict[str, Any]]:
+    """Return semantic-plan atoms if available."""
+    atoms = _current_semantic_plan.get("atoms")
+    if not isinstance(atoms, list):
+        return []
+    return [a for a in atoms if isinstance(a, dict)]
+
+
+def _semantic_plan_atom_by_id(atom_id: str) -> dict[str, Any] | None:
+    """Lookup semantic-plan atom by atom_id."""
+    aid = (atom_id or "").strip()
+    if not aid:
+        return None
+    for atom in _semantic_plan_atoms():
+        if (atom.get("atom_id") or "").strip() == aid:
+            return atom
+    return None
+
+
+def _todo_ids_to_atom_ids(todo_ids: list[str]) -> list[str]:
+    """Map TODO IDs to semantic atom IDs where known."""
+    reverse_map = {todo_id: atom_id for atom_id, todo_id in _atom_todo_map.items()}
+    out: list[str] = []
+    for tid in todo_ids:
+        atom_id = reverse_map.get((tid or "").strip())
+        if atom_id:
+            out.append(atom_id)
+    return out
+
+
+def _token_set(text: str) -> set[str]:
+    """Lightweight tokenization for task/atom similarity checks."""
+    return set(re.findall(r"[a-z0-9]+", (text or "").lower()))
+
+
+def _jaccard_similarity(a: set[str], b: set[str]) -> float:
+    """Jaccard similarity on token sets."""
+    if not a or not b:
+        return 0.0
+    return len(a & b) / max(1.0, len(a | b))
+
+
+def _auto_match_semantic_atom(
+    task_text: str,
+    operation_norm: str,
+    answer_kind_norm: str,
+    blocked_todo_ids: list[str],
+) -> tuple[dict[str, Any] | None, float]:
+    """Best-effort mapping from todo_create payload to one plan atom."""
+    atoms = _semantic_plan_atoms()
+    if not atoms:
+        return None, 0.0
+
+    blocked_atom_ids = set(_todo_ids_to_atom_ids(blocked_todo_ids))
+    task_tokens = _token_set(task_text)
+    best_atom: dict[str, Any] | None = None
+    best_score = -1.0
+
+    for atom in atoms:
+        aid = (atom.get("atom_id") or "").strip()
+        if not aid or aid in _atom_todo_map:
+            continue
+
+        sub_q = atom.get("sub_question") or ""
+        criteria = atom.get("done_criteria") or ""
+        atom_tokens = _token_set(sub_q) | _token_set(criteria)
+        text_sim = _jaccard_similarity(task_tokens, atom_tokens)
+
+        atom_op = _normalize_todo_operation(atom.get("operation", ""), sub_q)
+        op_bonus = 1.0 if atom_op == operation_norm else 0.0
+
+        atom_kind = _normalize_answer_kind(atom.get("answer_kind", ""))
+        kind_bonus = 1.0 if atom_kind and atom_kind == answer_kind_norm else 0.0
+
+        dep_atoms = set((atom.get("depends_on") or []))
+        dep_sim = _jaccard_similarity(blocked_atom_ids, dep_atoms) if dep_atoms or blocked_atom_ids else 1.0
+
+        score = (0.65 * text_sim) + (0.15 * op_bonus) + (0.10 * kind_bonus) + (0.10 * dep_sim)
+        if score > best_score:
+            best_score = score
+            best_atom = atom
+
+    return best_atom, max(0.0, best_score)
+
+
+def _is_compose_like_todo(todo: dict[str, Any]) -> bool:
+    """True when TODO semantics combine multiple upstream variables."""
+    op = _normalize_todo_operation(todo.get("operation", ""), todo.get("task", ""))
+    if op in {"intersection", "compose"}:
+        return True
+    deps = todo.get("blocked_by") or []
+    if len(deps) < 2:
+        return False
+    task_l = (todo.get("task", "") or "").lower()
+    return any(k in task_l for k in ("intersection", "common", "combine", "both"))
+
+
+def _todo_requires_relation_scope_branching(todo: dict[str, Any]) -> bool:
+    """Whether this TODO must resolve both relation-attachment parses first."""
+    if not _relation_scope_branch_required or _relation_scope_branch_resolved:
+        return False
+
+    op = _normalize_todo_operation(todo.get("operation", ""), todo.get("task", ""))
+    deps = todo.get("blocked_by") or []
+    if op in {"relation", "compose", "intersection"} and len(deps) >= 2:
+        return True
+
+    atom_id = (todo.get("atom_id") or "").strip()
+    atom = _semantic_plan_atom_by_id(atom_id) if atom_id else None
+    if not atom:
+        return False
+
+    atom_op = _normalize_todo_operation(atom.get("operation", ""), atom.get("sub_question", ""))
+    atom_deps = atom.get("depends_on") or []
+    return atom_op in {"relation", "compose", "intersection"} and len(atom_deps) >= 2
+
+
+def _todo_requires_bridge_alternatives(todo: dict[str, Any]) -> bool:
+    """Whether this bridge TODO truly needs explicit alternative hypotheses."""
+    op = _normalize_todo_operation(todo.get("operation", ""), todo.get("task", ""))
+    if op in {"relation", "compose", "intersection", "compare"}:
+        return True
+
+    task_l = (todo.get("task", "") or "").lower()
+    if any(k in task_l for k in ("compared", "whose", "which person", "which entity", "common", "intersection")):
+        return True
+
+    atom_id = (todo.get("atom_id") or "").strip()
+    atom = _semantic_plan_atom_by_id(atom_id) if atom_id else None
+    if atom is not None:
+        atom_op = _normalize_todo_operation(atom.get("operation", ""), atom.get("sub_question", ""))
+        if atom_op in {"relation", "compose", "intersection", "compare"}:
+            return True
+
+        uncertainty_points = _current_semantic_plan.get("uncertainty_points") or []
+        if uncertainty_points:
+            atom_text = " ".join(
+                [
+                    atom_id,
+                    str(atom.get("output_var") or ""),
+                    str(atom.get("sub_question") or ""),
+                ]
+            ).lower()
+            atom_terms = [t for t in re.findall(r"[a-z0-9]+", atom_text) if len(t) >= 5][:12]
+            if atom_terms:
+                for up in uncertainty_points:
+                    up_l = (up or "").lower()
+                    if any(term in up_l for term in atom_terms):
+                        return True
+    return False
+
+
+def _todo_summary() -> dict[str, int]:
+    """Return TODO counts by status."""
+    counts = {"pending": 0, "in_progress": 0, "blocked": 0, "done": 0}
+    for item in _todos:
+        st = item.get("status")
+        if st in counts:
+            counts[st] += 1
+    return counts
+
+
+def _todo_evidence_signature() -> str:
+    """Stable fingerprint of TODO evidence state for recovery gating."""
+    payload: list[dict[str, Any]] = []
+    for t in sorted(_todos, key=lambda x: (x.get("id") or "")):
+        payload.append(
+            {
+                "id": t.get("id"),
+                "status": t.get("status"),
+                "answer_span": (t.get("answer_span") or "").strip(),
+                "evidence_refs": _normalize_evidence_refs(t.get("evidence_refs")),
+                "alternatives_tested": [
+                    (a or "").strip()
+                    for a in (t.get("alternatives_tested") or [])
+                    if (a or "").strip()
+                ],
+            }
+        )
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False)
+
+
+def _attempt_fingerprint(answer_span: str, refs: list[str], alts: list[str]) -> str:
+    """Fingerprint a proposed TODO completion attempt."""
+    payload = {
+        "answer_span": (answer_span or "").strip().lower(),
+        "evidence_refs": [r.lower() for r in _normalize_evidence_refs(refs)],
+        "alternatives_tested": sorted([(a or "").strip().lower() for a in (alts or []) if (a or "").strip()]),
+    }
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False)
+
+
+def _classify_todo_update_error(message: str) -> dict[str, Any]:
+    """Map TODO validation failures to a structured correction policy."""
+    msg_l = (message or "").lower()
+    reason_code = "validation_failed"
+    required_fields: list[str] = ["answer_span", "evidence_refs"]
+    suggested_next_actions: list[str] = [
+        "Inspect cited evidence and update answer_span to a supported factual span.",
+        "Add or correct evidence_refs before marking done again.",
+    ]
+    requires_new_evidence = True
+
+    if "dependencies are unfinished" in msg_l:
+        reason_code = "dependencies_unfinished"
+        required_fields = ["blocked_by dependencies"]
+        suggested_next_actions = [
+            "Complete upstream dependency TODOs first.",
+            "Then retry todo_update(..., status='done').",
+        ]
+        requires_new_evidence = False
+    elif "without answer_span" in msg_l:
+        reason_code = "missing_answer_span"
+        required_fields = ["answer_span"]
+        suggested_next_actions = [
+            "Provide the shortest factual answer span for this atom.",
+            "Keep span format aligned with expected answer kind.",
+        ]
+    elif "evidence_refs cannot be empty" in msg_l or "unknown chunk evidence ref" in msg_l or "invalid evidence ref" in msg_l:
+        reason_code = "invalid_evidence_refs"
+        required_fields = ["evidence_refs"]
+        suggested_next_actions = [
+            "Retrieve supporting evidence and cite valid chunk_* or namespaced refs.",
+            "Retry with evidence_refs tied to the chosen answer span.",
+        ]
+    elif "answer_span does not match expected answer kind" in msg_l:
+        reason_code = "answer_kind_mismatch"
+        required_fields = ["answer_span", "answer_kind alignment"]
+        suggested_next_actions = [
+            "Reformat answer_span to match expected kind (date/number/entity/yes_no).",
+            "Keep evidence_refs unchanged only if they still support the corrected span.",
+        ]
+        requires_new_evidence = False
+    elif "answer_span is not present in cited chunk evidence" in msg_l:
+        reason_code = "unsupported_by_chunk_evidence"
+        required_fields = ["answer_span", "evidence_refs"]
+        suggested_next_actions = [
+            "Choose a span explicitly present in cited chunks, or cite the correct chunk refs.",
+            "Run retrieval to gather stronger evidence if needed.",
+        ]
+    elif "concrete entity span" in msg_l:
+        reason_code = "abstaining_entity_span"
+        required_fields = ["answer_span"]
+        suggested_next_actions = [
+            "Replace abstaining span with a concrete entity candidate.",
+            "Gather additional evidence if no concrete candidate is supported.",
+        ]
+    elif "bridge todo completion requires at least one alternative hypothesis" in msg_l:
+        reason_code = "missing_bridge_alternatives"
+        required_fields = ["alternatives_tested"]
+        suggested_next_actions = [
+            "Record at least one distinct alternative hypothesis.",
+            "Keep only alternatives that were actually tested.",
+        ]
+        requires_new_evidence = False
+    elif "relation-scope ambiguity" in msg_l:
+        reason_code = "relation_scope_unresolved"
+        required_fields = ["alternatives_tested", "evidence_refs"]
+        suggested_next_actions = [
+            "Test both parse hypotheses and record both alternatives.",
+            "Cite evidence for each tested parse before marking done.",
+        ]
+    elif "low-confidence todo completion requires alternatives_tested" in msg_l:
+        reason_code = "low_confidence_without_alternatives"
+        required_fields = ["alternatives_tested"]
+        suggested_next_actions = [
+            "Test at least one alternative branch.",
+            "Retry done only after recording tested alternatives.",
+        ]
+        requires_new_evidence = False
+    elif "compose/intersection consistency check failed" in msg_l:
+        reason_code = "compose_consistency_failed"
+        required_fields = ["answer_span", "evidence_refs", "alternatives_tested"]
+        suggested_next_actions = [
+            "Link parent spans, gather bridging evidence, and disambiguate candidates.",
+            "Retry done with a candidate consistent with parent atoms.",
+        ]
+    elif "no-evidence note" in msg_l:
+        reason_code = "weak_evidence_note"
+        required_fields = ["status", "note"]
+        suggested_next_actions = [
+            "Use status='blocked' with a concrete note for no-evidence outcomes.",
+            "Reopen upstream bridge TODOs to collect new evidence.",
+        ]
+    elif "previously failed downstream evidence checks" in msg_l:
+        reason_code = "bridge_candidate_repeated_failure"
+        required_fields = ["answer_span", "evidence_refs"]
+        suggested_next_actions = [
+            "Choose a different bridge candidate or gather genuinely new evidence.",
+            "Avoid retrying the same failed candidate without new support.",
+        ]
+
+    return {
+        "reason_code": reason_code,
+        "message": message,
+        "required_fields": required_fields,
+        "suggested_next_actions": suggested_next_actions,
+        "requires_new_evidence": requires_new_evidence,
+    }
+
+
+def _todo_needs_revision_response(
+    todo_id: str,
+    attempted_status: str,
+    note_text: str,
+    details: dict[str, Any],
+) -> str:
+    """Structured correction path for TODO validation failures."""
+    return json.dumps(
+        {
+            "status": "needs_revision",
+            "todo_id": todo_id,
+            "attempted_status": attempted_status,
+            "note": note_text or None,
+            "recovery_policy": {
+                "new_evidence_required_before_retry": bool(details.get("requires_new_evidence", False)),
+            },
+            "validation_error": {
+                "reason_code": details.get("reason_code", "validation_failed"),
+                "message": details.get("message", ""),
+                "required_fields": details.get("required_fields", []),
+                "suggested_next_actions": details.get("suggested_next_actions", []),
+            },
+            "summary": _todo_summary(),
+        },
+        indent=2,
+    )
+
+
+def _classify_submit_error(message: str) -> dict[str, Any]:
+    """Map submit validation failures to structured correction guidance."""
+    msg_l = (message or "").lower()
+    reason_code = "submit_validation_failed"
+    required_fixes: list[str] = ["answer"]
+    suggested_next_actions: list[str] = [
+        "Revise TODOs/evidence and submit a grounded final span.",
+    ]
+    requires_new_evidence = True
+
+    if "must use todos first" in msg_l:
+        reason_code = "todos_required"
+        required_fixes = ["todo_create", "todo_update"]
+        suggested_next_actions = [
+            "Create atomic TODOs first.",
+            "Complete TODOs with evidence before calling submit_answer.",
+        ]
+        requires_new_evidence = False
+    elif "unfinished todos" in msg_l:
+        reason_code = "unfinished_todos"
+        required_fixes = ["todo statuses"]
+        suggested_next_actions = [
+            "Complete pending TODOs or mark irrecoverable leaves as blocked with note.",
+            "Retry submit only after all TODOs are done/blocked.",
+        ]
+        requires_new_evidence = False
+    elif "blocked todos must include a reason note" in msg_l:
+        reason_code = "blocked_missing_note"
+        required_fixes = ["todo note"]
+        suggested_next_actions = [
+            "Add a concrete note to each blocked TODO.",
+            "Retry submit after notes are present.",
+        ]
+        requires_new_evidence = False
+    elif "missing evidence/span" in msg_l:
+        reason_code = "todo_missing_evidence_or_span"
+        required_fixes = ["todo answer_span", "todo evidence_refs"]
+        suggested_next_actions = [
+            "Update completed TODOs with answer_span and evidence_refs.",
+            "Gather additional evidence if current refs are insufficient.",
+        ]
+    elif "answer cannot be empty" in msg_l:
+        reason_code = "empty_answer"
+        required_fixes = ["answer"]
+        suggested_next_actions = [
+            "Submit a short factual guess (name/date/number/yes/no).",
+        ]
+        requires_new_evidence = False
+    elif "answer is too long" in msg_l:
+        reason_code = "answer_too_long"
+        required_fixes = ["answer"]
+        suggested_next_actions = [
+            "Return only the final factual span without explanation.",
+        ]
+        requires_new_evidence = False
+    elif "refusal-style answers are not allowed" in msg_l or "abstaining answers are not allowed" in msg_l:
+        reason_code = "abstaining_answer"
+        required_fixes = ["answer"]
+        suggested_next_actions = [
+            "Replace abstaining text with the best factual guess supported by evidence.",
+        ]
+        requires_new_evidence = False
+    elif "expected type" in msg_l:
+        reason_code = "answer_type_mismatch"
+        required_fixes = ["answer format"]
+        suggested_next_actions = [
+            "Match the expected answer type (date/number/entity/yes_no).",
+        ]
+        requires_new_evidence = False
+    elif "not grounded in todo answer_span" in msg_l:
+        reason_code = "answer_not_grounded"
+        required_fixes = ["answer", "todo answer_span alignment"]
+        suggested_next_actions = [
+            "Use the shortest factual span grounded in completed TODO answer_span fields.",
+            "If grounding is weak, gather additional evidence and revise TODO spans.",
+        ]
+    elif "no date-like atom evidence found" in msg_l:
+        reason_code = "missing_date_atom_evidence"
+        required_fixes = ["date TODO completion"]
+        suggested_next_actions = [
+            "Reopen upstream TODOs and resolve a date span with evidence.",
+            "Then submit that date span as final answer.",
+        ]
+    elif "reasoning cannot be empty" in msg_l:
+        reason_code = "missing_reasoning"
+        required_fixes = ["reasoning"]
+        suggested_next_actions = [
+            "Provide concise evidence-grounded reasoning for the final answer.",
+        ]
+        requires_new_evidence = False
+
+    return {
+        "reason_code": reason_code,
+        "message": message,
+        "required_fixes": required_fixes,
+        "suggested_next_actions": suggested_next_actions,
+        "requires_new_evidence": requires_new_evidence,
+    }
+
+
+def _submit_needs_revision_response(details: dict[str, Any]) -> str:
+    """Structured submit correction payload."""
+    return json.dumps(
+        {
+            "status": "needs_revision",
+            "phase": "submit_answer",
+            "recovery_policy": {
+                "new_evidence_required_before_retry": bool(details.get("requires_new_evidence", False)),
+            },
+            "validation_error": {
+                "reason_code": details.get("reason_code", "submit_validation_failed"),
+                "message": details.get("message", ""),
+                "required_fixes": details.get("required_fixes", []),
+                "suggested_next_actions": details.get("suggested_next_actions", []),
+            },
+            "summary": _todo_summary(),
+        },
+        indent=2,
+    )
+
+
+def _answer_span_supported_by_chunk_refs(answer_span: str, refs: list[str]) -> bool:
+    """Whether answer span appears in at least one cited chunk ref text."""
+    span = (answer_span or "").strip().lower()
+    if not span:
+        return False
+
+    span_norm = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", " ", span)).strip()
+    for ref in refs:
+        ref_id = (ref or "").strip()
+        if not ref_id.startswith("chunk_"):
+            continue
+        chunk_text = (_seen_chunk_text.get(ref_id) or "").lower()
+        if not chunk_text:
+            continue
+        if span in chunk_text:
+            return True
+        chunk_norm = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", " ", chunk_text)).strip()
+        if span_norm and span_norm in chunk_norm:
+            return True
+    return False
+
+
+def _is_bridge_todo(todo_id: str) -> bool:
+    """Whether this TODO feeds at least one downstream TODO."""
+    for item in _todos:
+        deps = item.get("blocked_by") or []
+        if todo_id in deps:
+            return True
+    return False
+
+
+def _record_failed_bridge_candidates_from_downstream(todo: dict[str, Any]) -> None:
+    """Record upstream bridge candidates that failed a downstream no-evidence check."""
+    deps = todo.get("blocked_by") or []
+    for dep_id in deps:
+        dep_todo = next((t for t in _todos if t.get("id") == dep_id), None)
+        if dep_todo is None or not _is_bridge_todo(dep_id):
+            continue
+        candidate = (dep_todo.get("answer_span") or "").strip().lower()
+        if not candidate:
+            continue
+        bucket = _bridge_candidate_failure_counts.setdefault(dep_id, {})
+        bucket[candidate] = bucket.get(candidate, 0) + 1
+
+
+def _bridge_candidate_failure_count(todo_id: str, candidate: str) -> int:
+    """How many downstream no-evidence blocks were observed for this candidate."""
+    candidate_norm = (candidate or "").strip().lower()
+    if not candidate_norm:
+        return 0
+    return _bridge_candidate_failure_counts.get(todo_id, {}).get(candidate_norm, 0)
+
+
+def _normalize_answer_kind(answer_kind: str) -> str:
+    """Normalize answer type labels used by TODOs and submit checks."""
+    kind = (answer_kind or "").strip().lower()
+    aliases = {
+        "": "",
+        "date": "date",
+        "time": "date",
+        "year": "date",
+        "month": "date",
+        "number": "number",
+        "numeric": "number",
+        "count": "number",
+        "quantity": "number",
+        "yes_no": "yes_no",
+        "yes/no": "yes_no",
+        "boolean": "yes_no",
+        "bool": "yes_no",
+        "entity": "entity",
+        "name": "entity",
+        "person": "entity",
+        "location": "entity",
+        "span": "entity",
+        "text": "entity",
+    }
+    return aliases.get(kind, "")
+
+
+_DATE_HINT_RE = re.compile(r"\b(when|what year|which year|what month|what date|born|founded|created|signed)\b")
+_NUMBER_HINT_RE = re.compile(r"\b(how many|how much|what number|what amount|population|count|total)\b")
+_YESNO_HINT_RE = re.compile(r"^\s*(is|are|was|were|do|does|did|can|could|will|has|have|had)\b")
+_TODO_WEAK_EVIDENCE_NOTE_RE = re.compile(
+    r"(no (?:evidence|information|support)|not found|unknown|insufficient|cannot|unable|could not find)",
+    flags=re.IGNORECASE,
+)
+
+
+def _infer_answer_kind(text: str) -> str:
+    """Infer expected answer kind from question/task language."""
+    probe = (text or "").strip().lower()
+    if not probe:
+        return "entity"
+    if _YESNO_HINT_RE.search(probe):
+        return "yes_no"
+    if _DATE_HINT_RE.search(probe):
+        return "date"
+    if _NUMBER_HINT_RE.search(probe):
+        return "number"
+    return "entity"
+
+
+def _answer_matches_kind(answer: str, answer_kind: str) -> bool:
+    """Heuristic answer-kind validator for benchmark submit contract."""
+    value = (answer or "").strip()
+    kind = _normalize_answer_kind(answer_kind) or "entity"
+    if not value:
+        return False
+    if kind == "yes_no":
+        return value.lower() in {"yes", "no"}
+    if kind == "date":
+        if _YEAR_RE.search(value) or _MONTH_RE.search(value):
+            return True
+        return bool(re.search(r"\b\d{1,2}\s+\w+\s+\d{4}\b", value))
+    if kind == "number":
+        if re.search(r"\d", value):
+            return True
+        return bool(re.fullmatch(r"[A-Za-z-]+(?:\s+[A-Za-z-]+){0,3}", value))
+    return True
+
+
+def _normalize_evidence_refs(evidence_refs: list[str] | None) -> list[str]:
+    """Normalize/unique evidence references while preserving order."""
+    refs: list[str] = []
+    seen: set[str] = set()
+    for raw in evidence_refs or []:
+        ref = (raw or "").strip()
+        if not ref:
+            continue
+        if ref in seen:
+            continue
+        refs.append(ref)
+        seen.add(ref)
+    return refs
+
+
+def _normalize_alternatives_tested(alternatives_tested: Any) -> list[str]:
+    """Normalize alternatives_tested into a clean list of meaningful candidate labels."""
+    if alternatives_tested is None:
+        return []
+
+    values: list[str] = []
+    raw = alternatives_tested
+
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return []
+        parsed: Any = None
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+        if isinstance(parsed, list):
+            raw = parsed
+        else:
+            raw = [part.strip() for part in re.split(r"[;\n]|,(?=\s*[A-Za-z0-9])", text) if part.strip()]
+
+    if isinstance(raw, (list, tuple, set)):
+        for item in raw:
+            if item is None:
+                continue
+            text = item if isinstance(item, str) else str(item)
+            values.append(text)
+    else:
+        values = [str(raw)]
+
+    out: list[str] = []
+    seen: set[str] = set()
+    non_alt = {
+        "none", "n/a", "na", "unknown", "not sure", "no alternative",
+        "same", "same as answer", "none found",
+    }
+
+    for value in values:
+        cleaned = re.sub(r"\s+", " ", (value or "").strip(" \t\r\n-•"))
+        if len(cleaned) < 2:
+            continue
+        lowered = cleaned.lower()
+        if lowered in non_alt:
+            continue
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        out.append(cleaned)
+    return out
+
+
+def _validate_evidence_refs(evidence_refs: list[str]) -> tuple[bool, str]:
+    """Validate evidence references and ensure chunk refs were actually retrieved."""
+    if not evidence_refs:
+        return False, "evidence_refs cannot be empty when marking TODO as done."
+    for ref in evidence_refs:
+        if ref.startswith("chunk_"):
+            if ref not in _seen_chunks:
+                return False, f"Unknown chunk evidence ref: {ref!r}. Use chunk IDs returned by retrieval tools."
+            continue
+        if ref.startswith("entity:") or ref.startswith("relationship:"):
+            payload = ref.split(":", 1)[1].strip()
+            if not payload:
+                return False, f"Invalid evidence ref: {ref!r}."
+            continue
+        if re.fullmatch(r"[A-Za-z0-9_.:-]{3,}", ref):
+            continue
+        return False, (
+            f"Invalid evidence ref: {ref!r}. Use chunk IDs (chunk_*) "
+            "or namespaced refs (entity:..., relationship:...)."
+        )
+    return True, ""
+
+
+_MONTH_NAMES = (
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+)
+_MONTH_RE = re.compile(r"\b(" + "|".join(_MONTH_NAMES) + r")\b", flags=re.IGNORECASE)
+_YEAR_RE = re.compile(r"\b(?:1[0-9]{3}|20[0-9]{2})\b")
+_QUERY_TITLE_TOKENS = {
+    "mr", "mrs", "ms", "dr", "sir", "lady", "saint",
+    "count", "countess", "duke", "duchess", "king", "queen",
+}
+_GRAPH_SUFFIXES = (
+    "_ERGraph", "_RKGraph", "_TreeGraph", "_TreeBalancedGraph", "_PassageGraph",
+)
+_DATASET_ALIAS_SUFFIXES = (
+    "_entities", "_entity", "_relations", "_relation", "_chunks",
+    "_ergraph", "_rkgraph", "_treegraph", "_treebalancedgraph", "_passagegraph",
+)
+
+
+def _vdb_index_dimension(vdb_instance: Any) -> int | None:
+    """Best-effort FAISS index dimensionality extraction."""
+    probes = (
+        "_index.vector_store._faiss_index.d",
+        "_index.storage_context.vector_store._faiss_index.d",
+        "_index.vector_store.faiss_index.d",
+    )
+    for probe in probes:
+        try:
+            target: Any = vdb_instance
+            for part in probe.split("."):
+                target = getattr(target, part)
+            dim = int(target)
+            if dim > 0:
+                return dim
+        except Exception:
+            continue
+    return None
+
+
+def _strip_graph_suffix(graph_id: str) -> str:
+    for suffix in _GRAPH_SUFFIXES:
+        if graph_id.lower().endswith(suffix.lower()):
+            return graph_id[: -len(suffix)]
+    return graph_id
+
+
+def _strip_dataset_alias_suffix(name: str) -> str:
+    value = (name or "").strip()
+    lowered = value.lower()
+    changed = True
+    while changed and value:
+        changed = False
+        for suffix in _DATASET_ALIAS_SUFFIXES:
+            if lowered.endswith(suffix):
+                value = value[: -len(suffix)].rstrip("_- ")
+                lowered = value.lower()
+                changed = True
+                break
+    return value or (name or "").strip()
+
+
+def _resolve_dataset_name(dataset_name: str) -> str:
+    """Resolve dataset aliases like 'MuSiQue_entities' -> 'MuSiQue'."""
+    candidate = _strip_dataset_alias_suffix(dataset_name)
+    if not candidate:
+        return candidate
+
+    ctx = _state.get("context")
+    if ctx is None:
+        return candidate
+
+    known: set[str] = set()
+    if hasattr(ctx, "list_graphs"):
+        for gid in ctx.list_graphs():
+            known.add(_strip_dataset_alias_suffix(_strip_graph_suffix(gid)))
+    if hasattr(ctx, "list_vdbs"):
+        for vid in ctx.list_vdbs():
+            known.add(_strip_dataset_alias_suffix(vid))
+    known = {k for k in known if k}
+    if not known:
+        return candidate
+
+    for ds in known:
+        if ds.lower() == candidate.lower():
+            return ds
+    for ds in known:
+        if candidate.lower() in ds.lower() or ds.lower() in candidate.lower():
+            return ds
+    return candidate
+
+
+def _resolve_graph_reference_id(graph_reference_id: str = "", dataset_name: str = "") -> str:
+    """Resolve graph id from exact id, dataset name, or aliases."""
+    ctx = _state.get("context")
+    graphs = ctx.list_graphs() if ctx is not None and hasattr(ctx, "list_graphs") else []
+    if not graphs:
+        return graph_reference_id or dataset_name
+
+    probes = [graph_reference_id, dataset_name]
+    for probe in probes:
+        if not probe:
+            continue
+        p = probe.strip()
+        for gid in graphs:
+            if gid.lower() == p.lower():
+                return gid
+        resolved_dataset = _resolve_dataset_name(p)
+        for gid in graphs:
+            gid_dataset = _strip_dataset_alias_suffix(_strip_graph_suffix(gid))
+            if gid_dataset.lower() == resolved_dataset.lower():
+                return gid
+        for gid in graphs:
+            if p.lower() in gid.lower() or gid.lower() in p.lower():
+                return gid
+
+    return graphs[0] if len(graphs) == 1 else (graph_reference_id or "")
+
+
+def _resolve_vdb_reference_id(
+    vdb_reference_id: str = "",
+    dataset_name: str = "",
+    *,
+    kind: str | None = None,
+) -> str:
+    """Resolve VDB id from exact id or dataset aliases."""
+    ctx = _state.get("context")
+    vdbs = ctx.list_vdbs() if ctx is not None and hasattr(ctx, "list_vdbs") else []
+    if not vdbs:
+        return vdb_reference_id or dataset_name
+
+    def _kind_match(vdb_id: str) -> bool:
+        lower = vdb_id.lower()
+        if kind == "entity":
+            return "entit" in lower
+        if kind == "relation":
+            return "relat" in lower or "relation" in lower
+        if kind == "chunk":
+            return "chunk" in lower
+        return True
+
+    probes = [vdb_reference_id, dataset_name]
+    for probe in probes:
+        if not probe:
+            continue
+        p = probe.strip()
+        for vid in vdbs:
+            if vid.lower() == p.lower():
+                return vid
+
+    base = _resolve_dataset_name(dataset_name or vdb_reference_id)
+    if base:
+        preferred = []
+        if kind == "entity":
+            preferred.append(f"{base}_entities")
+        elif kind == "relation":
+            preferred.append(f"{base}_relations")
+        elif kind == "chunk":
+            preferred.append(f"{base}_chunks")
+        for pref in preferred:
+            for vid in vdbs:
+                if vid.lower() == pref.lower():
+                    return vid
+
+    best_vid = ""
+    best_score = -1
+    for vid in vdbs:
+        score = 0
+        if kind and _kind_match(vid):
+            score += 40
+        if base:
+            base_vid = _strip_dataset_alias_suffix(vid)
+            if base_vid.lower() == base.lower():
+                score += 60
+            elif base.lower() in vid.lower():
+                score += 30
+        if vdb_reference_id and vdb_reference_id.lower() in vid.lower():
+            score += 20
+        if score > best_score:
+            best_score = score
+            best_vid = vid
+
+    if best_score > 0:
+        return best_vid
+    return vdb_reference_id or (vdbs[0] if len(vdbs) == 1 else "")
+
+
+def _looks_like_date_entity(name: str) -> bool:
+    if not name:
+        return False
+    lowered = name.lower()
+    return bool((_MONTH_RE.search(lowered) and _YEAR_RE.search(lowered)) or _YEAR_RE.fullmatch(lowered.strip()))
+
+
+def _looks_like_person_entity(name: str) -> bool:
+    tokens = [t for t in name.strip().split() if t]
+    if len(tokens) < 2 or len(tokens) > 4:
+        return False
+    if any(not t.isalpha() for t in tokens):
+        return False
+    if any(len(t) < 2 for t in tokens):
+        return False
+    lowered = name.lower()
+    return not lowered.startswith(("the ", "la ", "el "))
+
+
+def _normalize_entity_search_payload(result: Any) -> dict:
+    """Convert entity search result object to plain dict."""
+    if hasattr(result, "model_dump"):
+        return result.model_dump(exclude_none=True)
+    if isinstance(result, dict):
+        return dict(result)
+    try:
+        parsed = json.loads(_format_result(result))
+        return parsed if isinstance(parsed, dict) else {"similar_entities": []}
+    except Exception:
+        return {"similar_entities": []}
+
+
+def _build_entity_query_variants(query_text: str) -> list[str]:
+    """Build small deterministic query variants to improve entity recall."""
+    from Core.Common.Utils import clean_str
+
+    variants = [query_text.strip()]
+    cleaned = " ".join(clean_str(query_text).split())
+    if cleaned:
+        variants.append(cleaned)
+
+        tokens = [t for t in cleaned.split() if t]
+        stripped = [t for t in tokens if t not in _QUERY_TITLE_TOKENS]
+        if stripped and stripped != tokens:
+            variants.append(" ".join(stripped))
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for v in variants:
+        if not v:
+            continue
+        key = v.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(v)
+    return deduped
+
+
+def _build_entity_search_guidance(similar_entities: list[dict]) -> list[str]:
+    """Generate short retrieval hints to reduce anchor errors in multi-hop questions."""
+    if not similar_entities:
+        return []
+
+    top = similar_entities[:5]
+    date_candidates = [
+        item.get("entity_name", "")
+        for item in top
+        if _looks_like_date_entity(str(item.get("entity_name", "")))
+    ]
+    non_date_candidates = [
+        item.get("entity_name", "")
+        for item in top
+        if item.get("entity_name") and not _looks_like_date_entity(str(item.get("entity_name", "")))
+    ]
+
+    hints: list[str] = []
+
+    if date_candidates and non_date_candidates:
+        person_like = [n for n in non_date_candidates if _looks_like_person_entity(n)]
+        bridge_entity = person_like[0] if person_like else non_date_candidates[0]
+        hints.append(
+            "Top candidates include both a date-like entity and a person/entity. "
+            "Verify this pair with chunk_get_text before deciding.",
+        )
+        hints.append(
+            f"Try: chunk_get_text(graph_reference_id=..., entity_ids=[{bridge_entity!r}]) "
+            "and check whether it supports the date.",
+        )
+
+    if len(top) >= 2:
+        try:
+            first = float(top[0].get("score") or 0.0)
+            second = float(top[1].get("score") or 0.0)
+        except (TypeError, ValueError):
+            first = 0.0
+            second = 0.0
+        if abs(first - second) < 0.03:
+            hints.append(
+                "Top entity scores are close. Do not trust rank #1 blindly; verify at least two candidates.",
+            )
+
+    return hints
 
 
 async def _ensure_corpus(dataset_name: str, input_directory: str | None) -> None:
@@ -564,6 +1709,7 @@ async def graph_build_tree(dataset_name: str, force_rebuild: bool = False,
         graph_id: str, status: str, num_nodes: int, num_edges: int
     """
     await _ensure_initialized()
+    _ensure_embedding_provider_initialized(reason="graph_build_tree")
     await _ensure_corpus(dataset_name, input_directory)
     _tag_llm_for_build("tree", dataset_name)
     from Core.AgentTools.graph_construction_tools import build_tree_graph
@@ -600,6 +1746,7 @@ async def graph_build_tree_balanced(dataset_name: str, force_rebuild: bool = Fal
         graph_id: str, status: str, num_nodes: int, num_edges: int
     """
     await _ensure_initialized()
+    _ensure_embedding_provider_initialized(reason="graph_build_tree_balanced")
     await _ensure_corpus(dataset_name, input_directory)
     _tag_llm_for_build("tree_balanced", dataset_name)
     from Core.AgentTools.graph_construction_tools import build_tree_graph_balanced
@@ -669,6 +1816,7 @@ async def entity_vdb_build(graph_reference_id: str, vdb_collection_name: str,
         status: str, vdb_id: str, num_entities_indexed: int
     """
     await _ensure_initialized()
+    _ensure_embedding_provider_initialized(reason="entity_vdb_build")
     from Core.AgentTools.entity_vdb_tools import entity_vdb_build_tool
     from Core.AgentSchema.tool_contracts import EntityVDBBuildInputs
 
@@ -693,12 +1841,17 @@ if not BENCHMARK_MODE:
 
 
 @mcp.tool()
-async def entity_vdb_search(vdb_reference_id: str, query_text: str,
-                            top_k: int = 5) -> str:
+async def entity_vdb_search(
+    vdb_reference_id: str = "",
+    query_text: str = "",
+    top_k: int = 5,
+    dataset_name: str = "",
+    query: str = "",
+) -> str:
     """Search for entities similar to a query using vector similarity.
 
     Args:
-        vdb_reference_id: ID of the entity VDB to search
+        vdb_reference_id: ID of the entity VDB to search (or dataset alias)
         query_text: Natural language search query
         top_k: Number of results to return
 
@@ -709,17 +1862,97 @@ async def entity_vdb_search(vdb_reference_id: str, query_text: str,
     from Core.AgentTools.entity_tools import entity_vdb_search_tool
     from Core.AgentSchema.tool_contracts import EntityVDBSearchInputs
 
-    inputs = EntityVDBSearchInputs(
+    effective_query = (query_text or query or "").strip()
+    if not effective_query:
+        return json.dumps({"error": "query_text is required"})
+
+    resolved_vdb = _resolve_vdb_reference_id(
         vdb_reference_id=vdb_reference_id,
-        query_text=query_text,
-        top_k_results=top_k,
+        dataset_name=dataset_name,
+        kind="entity",
     )
-    result = await entity_vdb_search_tool(inputs, _state["context"])
-    return _format_result(result)
+    if not resolved_vdb:
+        ctx = _state.get("context")
+        known_vdbs = ctx.list_vdbs() if ctx is not None and hasattr(ctx, "list_vdbs") else []
+        return json.dumps(
+            {
+                "error": (
+                    f"Could not resolve entity VDB from vdb_reference_id={vdb_reference_id!r} "
+                    f"dataset_name={dataset_name!r}"
+                ),
+                "known_vdbs": known_vdbs,
+            },
+            indent=2,
+        )
+
+    query_variants = _build_entity_query_variants(effective_query)
+    ranked_lists: list[list[dict]] = []
+
+    for variant in query_variants:
+        inputs = EntityVDBSearchInputs(
+            vdb_reference_id=resolved_vdb,
+            query_text=variant,
+            top_k_results=top_k,
+        )
+        result = await entity_vdb_search_tool(inputs, _state["context"])
+        payload = _normalize_entity_search_payload(result)
+        entities = payload.get("similar_entities") or []
+        if isinstance(entities, list):
+            ranked_lists.append(entities)
+
+    merged: dict[str, dict[str, Any]] = {}
+    for entities in ranked_lists:
+        for rank, item in enumerate(entities, start=1):
+            node_id = str(item.get("node_id") or item.get("entity_name") or "").strip()
+            if not node_id:
+                continue
+            entry = merged.setdefault(node_id, {
+                "node_id": node_id,
+                "entity_name": str(item.get("entity_name") or node_id),
+                "score": item.get("score"),
+                "_rrf": 0.0,
+            })
+            entry["_rrf"] += 1.0 / (50.0 + rank)  # reciprocal rank fusion
+
+            # Keep the best numeric score we have for visibility.
+            try:
+                score_val = float(item.get("score"))
+                prev = entry.get("score")
+                prev_val = float(prev) if prev is not None else None
+                if prev_val is None or score_val > prev_val:
+                    entry["score"] = score_val
+            except (TypeError, ValueError):
+                pass
+
+    merged_sorted = sorted(
+        merged.values(),
+        key=lambda x: (x.get("_rrf", 0.0), x.get("score") if isinstance(x.get("score"), (int, float)) else 0.0),
+        reverse=True,
+    )[:top_k]
+    for item in merged_sorted:
+        item.pop("_rrf", None)
+
+    payload = {
+        "similar_entities": merged_sorted,
+        "resolved_vdb_reference_id": resolved_vdb,
+    }
+    if len(query_variants) > 1:
+        payload["query_variants_used"] = query_variants
+
+    hints = _build_entity_search_guidance(merged_sorted)
+    if hints:
+        payload["search_guidance"] = hints
+
+    return json.dumps(payload, indent=2, default=str)
 
 
 @mcp.tool()
-async def entity_onehop(entity_ids: list[str], graph_reference_id: str) -> str:
+async def entity_onehop(
+    entity_ids: list[str] | None = None,
+    graph_reference_id: str = "",
+    entity_name: str = "",
+    dataset_name: str = "",
+) -> str:
     """Find one-hop neighbor entities in the graph.
 
     Args:
@@ -732,12 +1965,41 @@ async def entity_onehop(entity_ids: list[str], graph_reference_id: str) -> str:
     await _ensure_initialized()
     from Core.AgentTools.entity_onehop_tools import entity_onehop_neighbors_tool
 
+    normalized_entity_ids = list(entity_ids or [])
+    if not normalized_entity_ids and entity_name:
+        normalized_entity_ids = [entity_name]
+    if not normalized_entity_ids:
+        return json.dumps({"error": "entity_ids (or entity_name) is required"}, indent=2)
+
+    resolved_graph_id = _resolve_graph_reference_id(
+        graph_reference_id=graph_reference_id,
+        dataset_name=dataset_name,
+    )
+    if not resolved_graph_id:
+        return json.dumps(
+            {
+                "error": (
+                    f"Could not resolve graph_reference_id from graph_reference_id={graph_reference_id!r} "
+                    f"dataset_name={dataset_name!r}"
+                ),
+            },
+            indent=2,
+        )
+
     inputs = {
-        "entity_ids": entity_ids,
-        "graph_reference_id": graph_reference_id,
+        "entity_ids": normalized_entity_ids,
+        "graph_reference_id": resolved_graph_id,
     }
     result = await entity_onehop_neighbors_tool(inputs, _state["context"])
-    return _format_result(result)
+    formatted = _format_result(result)
+    try:
+        payload = json.loads(formatted)
+        if isinstance(payload, dict):
+            payload["resolved_graph_reference_id"] = resolved_graph_id
+            return json.dumps(payload, indent=2, default=str)
+    except Exception:
+        pass
+    return formatted
 
 
 @mcp.tool()
@@ -956,7 +2218,8 @@ async def relationship_agent(query_text: str, text_context: str,
 
 @mcp.tool()
 async def chunk_from_relationships(target_relationships: list[str],
-                                    document_collection_id: str,
+                                    document_collection_id: str = "",
+                                    dataset_name: str = "",
                                     top_k: int = 10) -> str:
     """Retrieve text chunks associated with specified relationships.
 
@@ -971,19 +2234,46 @@ async def chunk_from_relationships(target_relationships: list[str],
     await _ensure_initialized()
     from Core.AgentTools.chunk_tools import chunk_from_relationships_tool
 
+    resolved_collection_id = _resolve_graph_reference_id(
+        graph_reference_id=document_collection_id,
+        dataset_name=dataset_name,
+    )
+    if not resolved_collection_id:
+        return json.dumps(
+            {
+                "error": (
+                    f"Could not resolve document_collection_id from document_collection_id={document_collection_id!r} "
+                    f"dataset_name={dataset_name!r}"
+                ),
+            },
+            indent=2,
+        )
+
     input_data = {
         "target_relationships": target_relationships,
-        "document_collection_id": document_collection_id,
+        "document_collection_id": resolved_collection_id,
         "top_k_total": top_k,
     }
     result = await chunk_from_relationships_tool(input_data, _state["context"])
-    return _format_result(result)
+    formatted = _format_result(result)
+    try:
+        payload = json.loads(formatted)
+        if isinstance(payload, dict):
+            payload["resolved_document_collection_id"] = resolved_collection_id
+            return json.dumps(payload, indent=2, default=str)
+    except Exception:
+        pass
+    return formatted
 
 
 @mcp.tool()
-async def chunk_occurrence(target_entity_pairs: list[dict],
-                           document_collection_id: str,
-                           top_k: int = 5) -> str:
+async def chunk_occurrence(
+    target_entity_pairs: list[dict] | None = None,
+    document_collection_id: str = "",
+    top_k: int = 5,
+    entity_names: list[str] | None = None,
+    dataset_name: str = "",
+) -> str:
     """Rank chunks by entity pair co-occurrence.
 
     Args:
@@ -998,23 +2288,66 @@ async def chunk_occurrence(target_entity_pairs: list[dict],
     from Core.AgentTools.chunk_tools import chunk_occurrence_tool
     from Core.AgentSchema.tool_contracts import ChunkOccurrenceInputs
 
+    normalized_pairs = list(target_entity_pairs or [])
+    if not normalized_pairs and entity_names and len(entity_names) >= 2:
+        normalized_pairs = [
+            {"entity1_id": entity_names[0], "entity2_id": entity_names[1]},
+        ]
+    if not normalized_pairs:
+        return json.dumps(
+            {"error": "target_entity_pairs (or at least 2 entity_names) is required"},
+            indent=2,
+        )
+
+    resolved_collection_id = _resolve_graph_reference_id(
+        graph_reference_id=document_collection_id,
+        dataset_name=dataset_name,
+    )
+    if not resolved_collection_id:
+        return json.dumps(
+            {
+                "error": (
+                    f"Could not resolve document_collection_id from document_collection_id={document_collection_id!r} "
+                    f"dataset_name={dataset_name!r}"
+                ),
+            },
+            indent=2,
+        )
+
     inputs = ChunkOccurrenceInputs(
-        target_entity_pairs_in_relationship=target_entity_pairs,
-        document_collection_id=document_collection_id,
+        target_entity_pairs_in_relationship=normalized_pairs,
+        document_collection_id=resolved_collection_id,
         top_k_chunks=top_k,
     )
     result = await chunk_occurrence_tool(inputs, _state["context"])
-    return _format_result(result)
+    formatted = _format_result(result)
+    try:
+        payload = json.loads(formatted)
+        if isinstance(payload, dict):
+            payload["resolved_document_collection_id"] = resolved_collection_id
+            return json.dumps(payload, indent=2, default=str)
+    except Exception:
+        pass
+    return formatted
 
 
 @mcp.tool()
-async def chunk_get_text(graph_reference_id: str, entity_ids: list[str],
-                         max_chunks_per_entity: int = 5) -> str:
-    """Get source text chunks associated with specific entities.
+async def chunk_get_text(
+    graph_reference_id: str = "",
+    entity_ids: list[str] | None = None,
+    chunk_ids: list[str] | None = None,
+    chunk_id: str = "",
+    max_chunks_per_entity: int = 5,
+    entity_names: list[str] | None = None,
+    dataset_name: str = "",
+) -> str:
+    """Get source text chunks associated with entities or explicit chunk IDs.
 
     Args:
         graph_reference_id: ID of the graph containing the entities
         entity_ids: List of entity names/IDs to get text for
+        chunk_ids: Optional list of explicit chunk IDs to fetch (alias path)
+        chunk_id: Optional single explicit chunk ID (alias for chunk_ids=[...])
         max_chunks_per_entity: Max chunks per entity
 
     Returns:
@@ -1024,9 +2357,108 @@ async def chunk_get_text(graph_reference_id: str, entity_ids: list[str],
     from Core.AgentTools.chunk_tools import chunk_get_text_for_entities_tool
     from Core.AgentSchema.tool_contracts import ChunkGetTextForEntitiesInput
 
-    inputs = ChunkGetTextForEntitiesInput(
+    # Robust alias handling for explicit chunk-ID retrieval attempts.
+    normalized_chunk_ids = [(c or "").strip() for c in (chunk_ids or []) if (c or "").strip()]
+    single_chunk_id = (chunk_id or "").strip()
+    if single_chunk_id:
+        normalized_chunk_ids.append(single_chunk_id)
+    if normalized_chunk_ids:
+        seen_ids: set[str] = set()
+        ordered_chunk_ids: list[str] = []
+        for cid in normalized_chunk_ids:
+            if cid in seen_ids:
+                continue
+            seen_ids.add(cid)
+            ordered_chunk_ids.append(cid)
+
+        resolved_dataset_name = _resolve_dataset_name(dataset_name) if dataset_name else ""
+        retrieved_chunks: list[dict[str, Any]] = []
+        missing_chunk_ids: list[str] = []
+
+        # Fast path: already seen in this session.
+        for cid in ordered_chunk_ids:
+            cached_text = _seen_chunk_text.get(cid)
+            if cached_text:
+                _is_new, text_out = _dedup_chunk(cid, cached_text)
+                retrieved_chunks.append({"chunk_id": cid, "text_content": text_out})
+            else:
+                missing_chunk_ids.append(cid)
+
+        # Slow path: load from chunk storage if dataset_name is available.
+        if missing_chunk_ids and resolved_dataset_name:
+            chunk_factory = _state.get("chunk_factory")
+            if chunk_factory is not None:
+                try:
+                    chunks_list = await chunk_factory.get_chunks_for_dataset(resolved_dataset_name)
+                    chunk_map: dict[str, str] = {}
+                    for item in chunks_list or []:
+                        if not isinstance(item, tuple) or len(item) < 2:
+                            continue
+                        cid, chunk_obj = item[0], item[1]
+                        if not isinstance(cid, str):
+                            continue
+                        if hasattr(chunk_obj, "content"):
+                            content = chunk_obj.content
+                        elif hasattr(chunk_obj, "text"):
+                            content = chunk_obj.text
+                        else:
+                            content = str(chunk_obj)
+                        chunk_map[cid] = content or ""
+
+                    unresolved: list[str] = []
+                    for cid in missing_chunk_ids:
+                        content = chunk_map.get(cid)
+                        if content:
+                            _is_new, text_out = _dedup_chunk(cid, content)
+                            retrieved_chunks.append({"chunk_id": cid, "text_content": text_out})
+                        else:
+                            unresolved.append(cid)
+                    missing_chunk_ids = unresolved
+                except Exception as e:
+                    logger.warning(
+                        "chunk_get_text chunk-id lookup failed for dataset '%s': %s",
+                        resolved_dataset_name,
+                        e,
+                    )
+
+        return json.dumps(
+            {
+                "retrieved_chunks": retrieved_chunks,
+                "missing_chunk_ids": missing_chunk_ids,
+                "resolved_dataset_name": resolved_dataset_name or None,
+                "status_message": (
+                    f"Retrieved {len(retrieved_chunks)} chunks by chunk-id lookup"
+                    + (f"; {len(missing_chunk_ids)} missing" if missing_chunk_ids else "")
+                ),
+            },
+            indent=2,
+            default=str,
+        )
+
+    normalized_entity_ids = list(entity_ids or [])
+    if not normalized_entity_ids and entity_names:
+        normalized_entity_ids = list(entity_names)
+    if not normalized_entity_ids:
+        return json.dumps({"error": "entity_ids (or entity_names) is required"}, indent=2)
+
+    resolved_graph_id = _resolve_graph_reference_id(
         graph_reference_id=graph_reference_id,
-        entity_ids=entity_ids,
+        dataset_name=dataset_name,
+    )
+    if not resolved_graph_id:
+        return json.dumps(
+            {
+                "error": (
+                    f"Could not resolve graph_reference_id from graph_reference_id={graph_reference_id!r} "
+                    f"dataset_name={dataset_name!r}"
+                ),
+            },
+            indent=2,
+        )
+
+    inputs = ChunkGetTextForEntitiesInput(
+        graph_reference_id=resolved_graph_id,
+        entity_ids=normalized_entity_ids,
         max_chunks_per_entity=max_chunks_per_entity,
     )
     result = await chunk_get_text_for_entities_tool(inputs, _state["context"])
@@ -1046,7 +2478,8 @@ async def chunk_get_text(graph_reference_id: str, entity_ids: list[str],
                 deduped.append(chunk.model_dump(exclude_none=True) if hasattr(chunk, "model_dump") else {})
         return json.dumps({
             "retrieved_chunks": deduped,
-            "status_message": f"Retrieved {len(deduped)} chunks for {len(entity_ids)} entities",
+            "resolved_graph_reference_id": resolved_graph_id,
+            "status_message": f"Retrieved {len(deduped)} chunks for {len(normalized_entity_ids)} entities",
         }, indent=2, default=str)
 
     return _format_result(result)
@@ -1074,6 +2507,7 @@ async def chunk_text_search(query_text: str, dataset_name: str,
     from Core.Operators.chunk.text_search import chunk_text_search as _text_search
     from Core.Schema.SlotTypes import EntityRecord, SlotKind, SlotValue
 
+    resolved_dataset_name = _resolve_dataset_name(dataset_name)
     inputs = {"query": SlotValue(kind=SlotKind.QUERY_TEXT, data=query_text, producer="mcp")}
 
     # Optionally add entity filter
@@ -1084,7 +2518,7 @@ async def chunk_text_search(query_text: str, dataset_name: str,
         graph_id = None
         if hasattr(ctx, "list_graphs"):
             for gid in ctx.list_graphs():
-                if dataset_name in gid:
+                if resolved_dataset_name in gid:
                     graph_id = gid
                     break
         if graph_id:
@@ -1103,7 +2537,7 @@ async def chunk_text_search(query_text: str, dataset_name: str,
                 kind=SlotKind.ENTITY_SET, data=entity_records, producer="mcp",
             )
 
-    op_ctx = await _build_operator_context_for_dataset(dataset_name)
+    op_ctx = await _build_operator_context_for_dataset(resolved_dataset_name)
     result = await _text_search(inputs=inputs, ctx=op_ctx, params={"top_k": top_k})
 
     chunks = result.get("chunks")
@@ -1113,11 +2547,12 @@ async def chunk_text_search(query_text: str, dataset_name: str,
             is_new, text = _dedup_chunk(c.chunk_id, c.text)
             deduped.append({"chunk_id": c.chunk_id, "text": text, "score": c.score})
         return json.dumps({
+            "resolved_dataset_name": resolved_dataset_name,
             "chunks": [
                 entry for entry in deduped
             ]
         }, indent=2, default=str)
-    return json.dumps({"chunks": []})
+    return json.dumps({"resolved_dataset_name": resolved_dataset_name, "chunks": []})
 
 
 async def chunk_vdb_build(dataset_name: str, vdb_collection_name: str = "",
@@ -1136,10 +2571,12 @@ async def chunk_vdb_build(dataset_name: str, vdb_collection_name: str = "",
         vdb_id: str, num_chunks_indexed: int, status: str
     """
     await _ensure_initialized()
+    _ensure_embedding_provider_initialized(reason="chunk_vdb_build")
     from Core.AgentTools.chunk_vdb_tools import chunk_vdb_build_tool
 
+    resolved_dataset_name = _resolve_dataset_name(dataset_name)
     result = await chunk_vdb_build_tool(
-        dataset_name=dataset_name,
+        dataset_name=resolved_dataset_name,
         graphrag_context=_state["context"],
         vdb_collection_name=vdb_collection_name or None,
         force_rebuild=force_rebuild,
@@ -1170,8 +2607,9 @@ async def chunk_vdb_search(query_text: str, dataset_name: str,
     from Core.Operators.chunk.vdb import chunk_vdb as _chunk_vdb_op
     from Core.Schema.SlotTypes import SlotKind, SlotValue
 
+    resolved_dataset_name = _resolve_dataset_name(dataset_name)
     inputs = {"query": SlotValue(kind=SlotKind.QUERY_TEXT, data=query_text, producer="mcp")}
-    op_ctx = await _build_operator_context_for_dataset(dataset_name)
+    op_ctx = await _build_operator_context_for_dataset(resolved_dataset_name)
 
     if op_ctx.chunks_vdb is None:
         return json.dumps({"error": "Chunk VDB not built. Run chunk_vdb_build first.", "chunks": []})
@@ -1184,8 +2622,8 @@ async def chunk_vdb_search(query_text: str, dataset_name: str,
         for c in chunks.data:
             is_new, text = _dedup_chunk(c.chunk_id, c.text)
             deduped.append({"chunk_id": c.chunk_id, "text": text, "score": c.score})
-        return json.dumps({"chunks": deduped}, indent=2, default=str)
-    return json.dumps({"chunks": []})
+        return json.dumps({"resolved_dataset_name": resolved_dataset_name, "chunks": deduped}, indent=2, default=str)
+    return json.dumps({"resolved_dataset_name": resolved_dataset_name, "chunks": []})
 
 
 # =============================================================================
@@ -1731,7 +3169,7 @@ if not BENCHMARK_MODE:
 # =============================================================================
 
 async def relationship_vdb_build(graph_reference_id: str, vdb_collection_name: str,
-                                  force_rebuild: bool = False) -> str:
+                                   force_rebuild: bool = False) -> str:
     """Build a vector database index from relationships in a graph. Required before relationship_vdb_search.
 
     Args:
@@ -1743,6 +3181,7 @@ async def relationship_vdb_build(graph_reference_id: str, vdb_collection_name: s
         status: str, vdb_id: str, num_relationships_indexed: int
     """
     await _ensure_initialized()
+    _ensure_embedding_provider_initialized(reason="relationship_vdb_build")
     from Core.AgentTools.relationship_tools import relationship_vdb_build_tool
     from Core.AgentSchema.tool_contracts import RelationshipVDBBuildInputs
 
@@ -2416,6 +3855,7 @@ async def _auto_build_prerequisites(profile, op_ctx, dataset_name: str) -> list[
 
     if profile.requires_entity_vdb and op_ctx.entities_vdb is None:
         logger.info(f"auto_build: Building entity VDB for '{dataset_name}'")
+        _ensure_embedding_provider_initialized(reason="auto_build entity_vdb")
         from Core.AgentTools.entity_vdb_tools import entity_vdb_build_tool
         from Core.AgentSchema.tool_contracts import EntityVDBBuildInputs
         inputs = EntityVDBBuildInputs(
@@ -2428,6 +3868,7 @@ async def _auto_build_prerequisites(profile, op_ctx, dataset_name: str) -> list[
 
     if profile.requires_relationship_vdb and op_ctx.relations_vdb is None:
         logger.info(f"auto_build: Building relationship VDB for '{dataset_name}'")
+        _ensure_embedding_provider_initialized(reason="auto_build relationship_vdb")
         from Core.AgentTools.relationship_tools import relationship_vdb_build_tool
         from Core.AgentSchema.tool_contracts import RelationshipVDBBuildInputs
         inputs = RelationshipVDBBuildInputs(
@@ -2543,6 +3984,7 @@ async def _build_operator_context_for_dataset(dataset_name: str, *, trace_id: st
     """Build a full OperatorContext for a specific dataset."""
     from Core.Operators._context import OperatorContext
 
+    dataset_name = _resolve_dataset_name(dataset_name)
     ctx = _state["context"]
 
     graph = None
@@ -2570,15 +4012,28 @@ async def _build_operator_context_for_dataset(dataset_name: str, *, trace_id: st
     # Check context-level VDBs
     chunks_vdb = None
     if hasattr(ctx, "list_vdbs"):
-        for vdb_id in ctx.list_vdbs():
-            vdb_inst = ctx.get_vdb_instance(vdb_id)
-            if vdb_inst:
+        vdb_ids = ctx.list_vdbs()
+        for dataset_scoped_only in (True, False):
+            for vdb_id in vdb_ids:
+                vdb_inst = ctx.get_vdb_instance(vdb_id)
+                if not vdb_inst:
+                    continue
+                if dataset_scoped_only:
+                    base_vdb = _strip_dataset_alias_suffix(vdb_id)
+                    in_dataset = (
+                        dataset_name.lower() in vdb_id.lower()
+                        or base_vdb.lower() == dataset_name.lower()
+                    )
+                    if not in_dataset:
+                        continue
                 if "entities" in vdb_id and entities_vdb is None:
                     entities_vdb = vdb_inst
                 elif "relation" in vdb_id and relations_vdb is None:
                     relations_vdb = vdb_inst
                 elif "chunks" in vdb_id and chunks_vdb is None:
                     chunks_vdb = vdb_inst
+            if entities_vdb or relations_vdb or chunks_vdb:
+                break
 
     # Build doc_chunks from ChunkFactory storage
     chunk_storage = getattr(ctx, "chunk_storage_manager", None) or _state.get("chunk_factory")
@@ -2955,6 +4410,1006 @@ async def list_modality_conversions() -> str:
 # =============================================================================
 
 if BENCHMARK_MODE:
+    _ANSWER_REFUSAL_RE = re.compile(
+        r"(i can(?:not|'t)|unable to|do not know|don't know|not enough (?:evidence|information)|"
+        r"no such|could not find|cannot find|not found|not applicable|unknown|n/?a|"
+        r"unclear|cannot determine|can't determine|undetermined)",
+        flags=re.IGNORECASE,
+    )
+
+    async def _auto_link_entity_ref(answer_span_text: str) -> str | None:
+        """Best-effort canonical entity link for entity TODO evidence enrichment."""
+        mention = (answer_span_text or "").strip()
+        if not mention:
+            return None
+        try:
+            ctx = _state.get("graphrag_context")
+            if ctx is None:
+                return None
+            vdb_names = list(ctx.list_vdbs() or [])
+            if not vdb_names:
+                return None
+            entity_vdb = next((v for v in vdb_names if v.endswith("_entities")), vdb_names[0])
+            raw = await entity_link([mention], entity_vdb, top_k=3)
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                return None
+            results = parsed.get("linked_entities_results")
+            if not isinstance(results, list):
+                return None
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+                linked_id = (item.get("linked_entity_id") or "").strip()
+                if linked_id:
+                    return linked_id
+        except Exception as e:
+            logger.debug("auto entity-link enrichment failed: %s", e)
+        return None
+
+    async def _verify_composed_answer_consistency(
+        target: dict[str, Any],
+        answer_span_text: str,
+        note_text: str,
+        refs: list[str],
+    ) -> tuple[bool, str]:
+        """Verify that a compose/intersection TODO result is consistent with parents.
+
+        Uses an LLM-backed structured verdict with a conservative heuristic fallback.
+        """
+        deps = target.get("blocked_by") or []
+        parent_items = [
+            t for dep_id in deps
+            for t in _todos
+            if t.get("id") == dep_id and t.get("status") == "done"
+        ]
+        if len(parent_items) < 2:
+            return False, "Compose/intersection TODO requires at least two completed parent TODOs."
+
+        parent_payload: list[dict[str, Any]] = []
+        for p in parent_items:
+            span = (p.get("answer_span") or "").strip()
+            if not span:
+                return False, f"Parent TODO {p.get('id')} is missing answer_span."
+            parent_payload.append(
+                {
+                    "id": p.get("id"),
+                    "task": p.get("task", ""),
+                    "answer_span": span,
+                    "evidence_refs": _normalize_evidence_refs(p.get("evidence_refs")),
+                }
+            )
+
+        evidence_payload: list[dict[str, str]] = []
+        for ref in refs:
+            if ref.startswith("chunk_"):
+                preview = _seen_chunks.get(ref, "")
+                evidence_payload.append({"ref": ref, "preview": preview})
+            else:
+                evidence_payload.append({"ref": ref, "preview": ""})
+
+        from llm_client import acall_llm_structured
+        from pydantic import BaseModel, Field
+
+        class ComposeVerdict(BaseModel):
+            is_consistent: bool = Field(description="Whether candidate is composition-consistent.")
+            rationale: str = Field(description="Brief reason based on parent outputs.")
+            unsupported_parent_ids: list[str] = Field(
+                default_factory=list,
+                description="Parent TODO ids that are not supported by candidate mapping.",
+            )
+            confidence: float = Field(description="0..1 confidence for the verdict.")
+
+        system_prompt = (
+            "You are a strict verifier of composed/intersection reasoning in multi-hop QA. "
+            "Given parent atom outputs and a candidate composed output, decide whether the candidate "
+            "is logically consistent with the parent outputs and evidence. "
+            "Reject abstentions and mismatched geography/entity scope."
+        )
+        user_prompt = (
+            f"Question: {_current_question or ''}\n"
+            f"Compose TODO task: {target.get('task', '')}\n"
+            f"Candidate answer_span: {answer_span_text}\n"
+            f"Candidate note: {note_text}\n\n"
+            f"Parent atoms JSON:\n{json.dumps(parent_payload, ensure_ascii=False, indent=2)}\n\n"
+            f"Candidate evidence refs JSON:\n{json.dumps(evidence_payload, ensure_ascii=False, indent=2)}\n\n"
+            "Rules:\n"
+            "1) Candidate must be a concrete entity/span, not a refusal/abstention.\n"
+            "2) Candidate should be explainable as composition/intersection over parent outputs.\n"
+            "3) If composition is impossible from parents, mark is_consistent=false.\n"
+            "4) Be conservative: if evidence is weak/contradictory, return false.\n"
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        llm = _state.get("agentic_llm")
+        model = llm.model if llm else _state["config"].llm.model
+        trace_id = f"digimon.compose_consistency.{uuid.uuid4().hex[:8]}"
+
+        try:
+            verdict, _meta = await acall_llm_structured(
+                model,
+                messages,
+                response_model=ComposeVerdict,
+                task="digimon.compose_consistency",
+                trace_id=trace_id,
+                max_budget=0,
+            )
+            if not verdict.is_consistent:
+                unsupported = ", ".join(verdict.unsupported_parent_ids or [])
+                detail = f" Unsupported parents: {unsupported}." if unsupported else ""
+                return False, (
+                    "Compose/intersection consistency check failed. "
+                    + (verdict.rationale or "Candidate does not align with parent outputs.")
+                    + detail
+                    + " Recovery: link each parent answer_span with entity_link, "
+                    + "expand with entity_onehop (or subgraph_steiner_tree), then "
+                    + "run bridge_disambiguate on candidates before retrying todo_update(done)."
+                )
+            return True, ""
+        except Exception:
+            # Conservative heuristic fallback.
+            candidate = (answer_span_text or "").strip().lower()
+            if not candidate:
+                return False, "Compose/intersection candidate answer span is empty."
+            if _ANSWER_REFUSAL_RE.search(candidate):
+                return False, "Compose/intersection candidate cannot be abstaining/refusal text."
+
+            parent_spans = [(p.get("answer_span") or "").strip().lower() for p in parent_payload]
+            # If candidate is unrelated to all parents and no supporting refs, fail conservatively.
+            overlap = 0
+            for p in parent_spans:
+                if not p:
+                    continue
+                if candidate in p or p in candidate:
+                    overlap += 1
+            if overlap == 0 and not refs:
+                return False, (
+                    "Compose/intersection result is not connected to parent spans and has no evidence refs."
+                )
+            return True, ""
+
+    @mcp.tool()
+    async def semantic_plan(question: str) -> str:
+        """Create a typed semantic plan (atoms, dependencies, composition).
+
+        Use this once at question start to avoid decomposition drift. The output
+        is a compact JSON contract for TODO construction and evidence checks.
+        """
+        global _current_semantic_plan_question, _relation_scope_branch_required, _relation_scope_branch_resolved
+        await _ensure_initialized()
+
+        from llm_client import acall_llm_structured
+        from pydantic import BaseModel, Field
+        from typing import Literal
+
+        class PlanAtom(BaseModel):
+            atom_id: str = Field(description="Short ID like a1, a2.")
+            sub_question: str = Field(description="Atomic sub-question.")
+            operation: str = Field(
+                description="Operation type: lookup, relation, compose, intersection, compare, temporal."
+            )
+            answer_kind: Literal["entity", "date", "number", "yes_no"] = Field(
+                description="Expected answer type for this atom."
+            )
+            output_var: str = Field(description="Variable produced by this atom.")
+            depends_on: list[str] = Field(default_factory=list, description="Upstream atom IDs.")
+            done_criteria: str = Field(description="Evidence requirement to mark this atom done.")
+
+        class SemanticPlan(BaseModel):
+            final_answer_kind: Literal["entity", "date", "number", "yes_no"] = Field(
+                description="Expected answer type for final answer."
+            )
+            atoms: list[PlanAtom] = Field(description="2-6 ordered atoms.")
+            composition_rule: str = Field(
+                description="How atoms combine (e.g., intersection of a1 and a2 then lookup date of a3)."
+            )
+            uncertainty_points: list[str] = Field(
+                default_factory=list,
+                description="Potentially ambiguous bridge points that may need branching.",
+            )
+
+        def _plan_has_relation_scope_risk(q: str, p: SemanticPlan) -> bool:
+            ql = (q or "").lower()
+            relation_markers = (" north of ", " south of ", " east of ", " west of ", " before ", " after ")
+            if " and " not in ql:
+                return False
+            if not any(m in ql for m in relation_markers):
+                return False
+            relation_ids = {
+                a.atom_id for a in p.atoms
+                if (a.operation or "").strip().lower() == "relation"
+            }
+            if not relation_ids:
+                return False
+            for atom in p.atoms:
+                op = (atom.operation or "").strip().lower()
+                if op not in {"intersection", "compose", "composition"}:
+                    continue
+                deps = atom.depends_on or []
+                if len(deps) < 2:
+                    continue
+                if any(dep in relation_ids for dep in deps):
+                    return True
+            return False
+
+        system_prompt = (
+            "You are a strict semantic planner for multi-hop QA. "
+            "Decompose the question into minimal typed atoms. "
+            "Preserve composition operators explicitly (intersection/composition/comparison) "
+            "instead of replacing them with nearest named entities. "
+            "Never collapse nested clauses. For patterns like 'X where Y is located', "
+            "first create an atom for Y's location, then apply X to that result. "
+            "For conjunctions ('A and B'), create separate atoms for A and B, then an explicit "
+            "intersection/compose atom. For comparatives/uniqueness ('only', 'largest', "
+            "'larger than', ordinals), create an explicit compare/rank atom before downstream lookups. "
+            "Do not shortcut relation targets (e.g., avoid replacing 'north of region where Israel is located' "
+            "with 'north of Israel')."
+        )
+        user_prompt = (
+            f"Question: {question}\n\n"
+            "Requirements:\n"
+            "1) Return 2-6 atoms.\n"
+            "2) Each atom must have operation + answer_kind + output_var + dependencies.\n"
+            "3) composition_rule must preserve how intermediate variables combine.\n"
+            "4) uncertainty_points should call out ambiguous bridge entities if any.\n"
+            "5) Preserve hidden intermediate variables implied by nested wording.\n"
+            "6) For bridge atoms, done_criteria should mention evidence needed to disambiguate alternatives.\n\n"
+            "Mini examples:\n"
+            "- 'region north of the region where X is located and location of Y' => "
+            "locate region(X), locate region(Y), compose/intersect, then apply north-of relation.\n"
+            "- 'headquarters of the only group larger than L' => find L, compare/rank to unique group, "
+            "then lookup headquarters.\n"
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        llm = _state.get("agentic_llm")
+        model = llm.model if llm else _state["config"].llm.model
+        trace_id = f"digimon.semantic_plan.{uuid.uuid4().hex[:8]}"
+
+        try:
+            plan, _meta = await acall_llm_structured(
+                model,
+                messages,
+                response_model=SemanticPlan,
+                task="digimon.semantic_plan",
+                trace_id=trace_id,
+                max_budget=0,
+            )
+
+            # Second-pass plan critic/reviser:
+            # catches scope/attachment errors in nested clauses before tools run.
+            critique_system = (
+                "You are a semantic-plan verifier/reviser for multi-hop QA. "
+                "Given a question and a draft plan, return a corrected plan in the same schema. "
+                "Preserve the same intent while fixing logic/scope mistakes. "
+                "You must resolve relation-scope ambiguities explicitly."
+            )
+            critique_user = (
+                f"Question: {question}\n\n"
+                f"Draft plan JSON:\n{json.dumps(plan.model_dump(), ensure_ascii=False, indent=2)}\n\n"
+                "Validation checklist:\n"
+                "1) Clause attachment: ensure relation targets are scoped correctly for nested phrases.\n"
+                "2) Conjunction/composition: for 'A and B', keep explicit atoms for A and B plus compose/intersection.\n"
+                "3) Comparatives/uniqueness: include explicit compare/rank atom before downstream lookups.\n"
+                "4) Dependency validity: each atom should depend on required upstream outputs.\n"
+                "5) Answer type: final atom must produce final_answer_kind with explicit evidence-ready done_criteria.\n"
+                "6) No shortcut substitutions of relation targets (e.g., replacing a composed target with a nearby entity).\n\n"
+                "Scope disambiguation rule:\n"
+                "- If a relation phrase ('north of', 'south of', 'east/west of', 'before/after', etc.) is followed by a conjunction scope, "
+                "consider BOTH parses and keep the one that preserves full literal scope.\n"
+                "- Example pattern: 'R of A and B' should typically become R( intersection(A, B) ) unless punctuation clearly separates clauses.\n"
+                "- Do not attach the relation only to A when the text implies it applies to (A and B).\n\n"
+                "Before finalizing, run this self-check in your head:\n"
+                "A) relation applied to first conjunct only\n"
+                "B) relation applied to composed conjunct target\n"
+                "Return the plan that best matches literal wording, then ensure atom dependencies encode that choice.\n\n"
+                "Return only the corrected plan. If draft is already correct, return it unchanged."
+            )
+            critique_messages = [
+                {"role": "system", "content": critique_system},
+                {"role": "user", "content": critique_user},
+            ]
+
+            revised_trace_id = f"digimon.semantic_plan.revise.{uuid.uuid4().hex[:8]}"
+            try:
+                revised_plan, _rev_meta = await acall_llm_structured(
+                    model,
+                    critique_messages,
+                    response_model=SemanticPlan,
+                    task="digimon.semantic_plan.revise",
+                    trace_id=revised_trace_id,
+                    max_budget=0,
+                )
+                plan = revised_plan
+            except Exception as revise_err:
+                logger.warning("semantic_plan revise pass failed; using draft plan. err=%s", revise_err)
+
+            if _plan_has_relation_scope_risk(question, plan):
+                repair_system = (
+                    "You repair relation-scope attachment in multi-hop semantic plans. "
+                    "When a relation is attached before a conjunction/intersection target, "
+                    "rewrite the plan so composition target is formed first, then relation applies "
+                    "to that composed target if that best matches literal question scope."
+                )
+                repair_user = (
+                    f"Question: {question}\n\n"
+                    f"Current plan JSON:\n{json.dumps(plan.model_dump(), ensure_ascii=False, indent=2)}\n\n"
+                    "Potential issue: relation appears attached to a partial target before conjunction/intersection. "
+                    "Evaluate whether relation should apply to the composed target instead.\n"
+                    "Return corrected plan in the same schema."
+                )
+                repair_messages = [
+                    {"role": "system", "content": repair_system},
+                    {"role": "user", "content": repair_user},
+                ]
+                repair_trace_id = f"digimon.semantic_plan.scope_repair.{uuid.uuid4().hex[:8]}"
+                try:
+                    repaired_plan, _repair_meta = await acall_llm_structured(
+                        model,
+                        repair_messages,
+                        response_model=SemanticPlan,
+                        task="digimon.semantic_plan.scope_repair",
+                        trace_id=repair_trace_id,
+                        max_budget=0,
+                    )
+                    plan = repaired_plan
+                except Exception as repair_err:
+                    logger.warning("semantic_plan scope-repair pass failed; using prior plan. err=%s", repair_err)
+
+            # Preserve ambiguity signal explicitly so the agent can branch only
+            # when needed instead of committing too early to one attachment parse.
+            relation_scope_risk = _plan_has_relation_scope_risk(question, plan)
+            if relation_scope_risk:
+                ambiguity_hint = (
+                    "Relation-attachment ambiguity: test both parses before committing: "
+                    "(A) R(intersection(X, Y)) and (B) intersection(R(X), Y). "
+                    "Use downstream evidence to pick one."
+                )
+                if ambiguity_hint not in plan.uncertainty_points:
+                    plan.uncertainty_points.append(ambiguity_hint)
+
+            _current_semantic_plan.clear()
+            _current_semantic_plan.update(plan.model_dump())
+            _current_semantic_plan_question = (question or "").strip()
+            _relation_scope_branch_required = relation_scope_risk
+            _relation_scope_branch_resolved = False
+            _atom_todo_map.clear()
+            return json.dumps(plan.model_dump(), indent=2)
+        except Exception as e:
+            # Deterministic fallback keeps behavior safe if planner LLM is unavailable.
+            fallback_kind = _infer_answer_kind(question)
+            fallback = {
+                "final_answer_kind": fallback_kind,
+                "atoms": [
+                    {
+                        "atom_id": "a1",
+                        "sub_question": question,
+                        "operation": "lookup",
+                        "answer_kind": fallback_kind,
+                        "output_var": "answer",
+                        "depends_on": [],
+                        "done_criteria": (
+                            f"Find one evidence-backed {fallback_kind} span."
+                            if fallback_kind else
+                            "Find one evidence-backed answer span."
+                        ),
+                    }
+                ],
+                "composition_rule": "single-hop lookup fallback",
+                "uncertainty_points": [],
+                "fallback_reason": str(e)[:240],
+            }
+            _current_semantic_plan.clear()
+            _current_semantic_plan.update(fallback)
+            _current_semantic_plan_question = (question or "").strip()
+            _relation_scope_branch_required = False
+            _relation_scope_branch_resolved = False
+            _atom_todo_map.clear()
+            return json.dumps(fallback, indent=2)
+
+    @mcp.tool()
+    async def todo_create(
+        task: str,
+        rationale: str = "",
+        priority: str = "medium",
+        answer_kind: str = "",
+        operation: str = "",
+        atom_id: str = "",
+        blocked_by: list[str] | None = None,
+        done_criteria: str = "",
+    ) -> str:
+        """Create a TODO item for this question.
+
+        Args:
+            task: Short action item (atomic step)
+            rationale: Why this TODO matters
+            priority: low/medium/high
+            answer_kind: Optional expected answer type (date/number/yes_no/entity)
+            operation: Optional semantic operation (lookup/relation/intersection/compose/compare/temporal)
+            atom_id: Optional semantic atom id from semantic_plan (e.g., a1)
+            blocked_by: Optional TODO IDs that must be done before this one can be done
+            done_criteria: Optional explicit completion criteria
+
+        Returns:
+            Created TODO item with id/status.
+        """
+        global _todo_counter
+        task_text = (task or "").strip()
+        if not task_text:
+            raise ValueError("task cannot be empty")
+        priority_norm = (priority or "medium").strip().lower()
+        if priority_norm not in {"low", "medium", "high"}:
+            priority_norm = "medium"
+        answer_kind_norm = _normalize_answer_kind(answer_kind) or _infer_answer_kind(task_text)
+        operation_norm = _normalize_todo_operation(operation, task_text)
+        blocked_norm: list[str] = []
+        known_ids = {t.get("id") for t in _todos}
+        for dep in blocked_by or []:
+            dep_id = (dep or "").strip()
+            if not dep_id:
+                continue
+            if dep_id not in known_ids:
+                # Accept semantic atom IDs in blocked_by and map them to TODO IDs.
+                mapped_dep = _atom_todo_map.get(dep_id)
+                if mapped_dep:
+                    dep_id = mapped_dep
+                else:
+                    raise ValueError(f"Unknown dependency todo_id: {dep_id!r}")
+            if dep_id not in blocked_norm:
+                blocked_norm.append(dep_id)
+
+        atom_id_norm = (atom_id or "").strip()
+        semantic_atoms = _semantic_plan_atoms()
+        selected_atom: dict[str, Any] | None = None
+        if semantic_atoms:
+            if atom_id_norm:
+                selected_atom = _semantic_plan_atom_by_id(atom_id_norm)
+                if selected_atom is None:
+                    known_atoms = [a.get("atom_id") for a in semantic_atoms if a.get("atom_id")]
+                    raise ValueError(
+                        f"Unknown atom_id: {atom_id_norm!r}. Known atom_ids: {known_atoms}."
+                    )
+                if atom_id_norm in _atom_todo_map:
+                    raise ValueError(
+                        f"atom_id {atom_id_norm!r} already mapped to {_atom_todo_map[atom_id_norm]!r}. "
+                        "Reuse that TODO instead of creating a duplicate."
+                    )
+            else:
+                auto_atom, auto_score = _auto_match_semantic_atom(
+                    task_text=task_text,
+                    operation_norm=operation_norm,
+                    answer_kind_norm=answer_kind_norm,
+                    blocked_todo_ids=blocked_norm,
+                )
+                if auto_atom is None or auto_score < 0.55:
+                    unmapped = [
+                        {"atom_id": a.get("atom_id"), "sub_question": a.get("sub_question")}
+                        for a in semantic_atoms
+                        if (a.get("atom_id") or "").strip() not in _atom_todo_map
+                    ]
+                    raise ValueError(
+                        "todo_create could not reliably map this task to semantic_plan atoms. "
+                        "Provide atom_id explicitly from semantic_plan. "
+                        f"Unmapped atoms: {unmapped[:6]}"
+                    )
+                selected_atom = auto_atom
+                atom_id_norm = (selected_atom.get("atom_id") or "").strip()
+
+        if selected_atom is not None:
+            expected_op = _normalize_todo_operation(
+                selected_atom.get("operation", ""),
+                selected_atom.get("sub_question", ""),
+            )
+            expected_kind = _normalize_answer_kind(selected_atom.get("answer_kind", ""))
+            expected_dep_atoms = [str(a).strip() for a in (selected_atom.get("depends_on") or []) if str(a).strip()]
+            missing_dep_atoms = [aid for aid in expected_dep_atoms if aid not in _atom_todo_map]
+            if missing_dep_atoms:
+                raise ValueError(
+                    "Create prerequisite atoms before this one. Missing dependency atom_ids: "
+                    + ", ".join(missing_dep_atoms)
+                )
+            expected_dep_todos = [_atom_todo_map[aid] for aid in expected_dep_atoms if aid in _atom_todo_map]
+            if blocked_norm and set(blocked_norm) != set(expected_dep_todos):
+                raise ValueError(
+                    f"blocked_by does not match semantic_plan dependencies for atom {atom_id_norm}. "
+                    f"Expected {expected_dep_todos}, got {blocked_norm}."
+                )
+            if not blocked_norm and expected_dep_todos:
+                blocked_norm = list(expected_dep_todos)
+            if operation and operation_norm != expected_op:
+                raise ValueError(
+                    f"operation mismatch for atom {atom_id_norm}: expected '{expected_op}', got '{operation_norm}'."
+                )
+            if answer_kind and expected_kind and answer_kind_norm != expected_kind:
+                raise ValueError(
+                    f"answer_kind mismatch for atom {atom_id_norm}: expected '{expected_kind}', got '{answer_kind_norm}'."
+                )
+            operation_norm = expected_op
+            answer_kind_norm = expected_kind or answer_kind_norm
+
+        _todo_counter += 1
+        todo_id = f"todo_{_todo_counter}"
+        done_criteria_text = (done_criteria or "").strip()
+        if not done_criteria_text:
+            done_criteria_text = (
+                f"Produce a supported {answer_kind_norm} span and cite evidence refs."
+                if answer_kind_norm else
+                "Produce a supported answer span and cite evidence refs."
+            )
+        item = {
+            "id": todo_id,
+            "task": task_text,
+            "status": "pending",
+            "priority": priority_norm,
+            "rationale": (rationale or "").strip(),
+            "answer_kind": answer_kind_norm or "entity",
+            "operation": operation_norm,
+            "atom_id": atom_id_norm or None,
+            "blocked_by": blocked_norm,
+            "done_criteria": done_criteria_text,
+            "answer_span": "",
+            "evidence_refs": [],
+            "confidence": None,
+            "alternatives_tested": [],
+        }
+        _todos.append(item)
+        if atom_id_norm:
+            _atom_todo_map[atom_id_norm] = todo_id
+        return json.dumps(
+            {
+                "status": "created",
+                "todo": item,
+                "summary": _todo_summary(),
+            },
+            indent=2,
+        )
+
+    @mcp.tool()
+    async def todo_update(
+        todo_id: str,
+        status: str,
+        note: str = "",
+        answer_span: str = "",
+        evidence_refs: list[str] | None = None,
+        confidence: float | None = None,
+        alternatives_tested: list[str] | None = None,
+    ) -> str:
+        """Update status of an existing TODO.
+
+        Args:
+            todo_id: TODO id returned by todo_create
+            status: pending/in_progress/done/blocked
+            note: Optional note for transition
+            answer_span: Candidate answer span for this atom (required for done)
+            evidence_refs: Evidence refs backing this atom (required for done)
+            confidence: Optional confidence score [0,1]
+            alternatives_tested: Alternative bridge/hypothesis labels tested
+
+        Returns:
+            Updated TODO item and summary.
+        """
+        global _relation_scope_branch_resolved
+        normalized = _normalize_todo_status(status)
+        if not normalized:
+            raise ValueError("status must be one of pending/in_progress/done/blocked")
+        target = next((t for t in _todos if t.get("id") == todo_id), None)
+        if target is None:
+            raise ValueError(f"Unknown todo_id: {todo_id!r}")
+
+        note_text = (note or "").strip()
+        answer_span_text = (answer_span or "").strip()
+        refs = _normalize_evidence_refs(evidence_refs)
+        alts = _normalize_alternatives_tested(alternatives_tested)
+        if confidence is not None and not (0.0 <= confidence <= 1.0):
+            raise ValueError("confidence must be in [0, 1].")
+        if normalized == "done":
+            guard = _todo_recovery_guard.get(todo_id)
+            if guard:
+                candidate_span = answer_span_text or (target.get("answer_span") or "").strip()
+                candidate_refs = refs or _normalize_evidence_refs(target.get("evidence_refs"))
+                candidate_alts = alts or _normalize_alternatives_tested(target.get("alternatives_tested"))
+                attempt_fp = _attempt_fingerprint(candidate_span, candidate_refs, candidate_alts)
+                prior_fp = guard.get("attempt_fingerprint", "")
+                prior_refs = set(_normalize_evidence_refs(guard.get("attempt_refs") or []))
+                has_new_refs = any(r not in prior_refs for r in candidate_refs)
+                todo_sig_changed = _todo_evidence_signature() != guard.get("todo_signature", "")
+                requires_new_evidence = bool(guard.get("requires_new_evidence", False))
+                repeated_attempt = attempt_fp == prior_fp
+                if (requires_new_evidence and not has_new_refs and not todo_sig_changed) or (
+                    (not requires_new_evidence) and repeated_attempt and not todo_sig_changed
+                ):
+                    details = {
+                        "reason_code": "new_evidence_required_after_validation_error"
+                        if requires_new_evidence else
+                        "repeat_invalid_attempt",
+                        "message": (
+                            "Previous TODO completion attempt failed validation. "
+                            + (
+                                "Gather or cite new evidence before retrying done."
+                                if requires_new_evidence else
+                                "Apply a concrete correction before retrying."
+                            )
+                        ),
+                        "required_fields": ["answer_span", "evidence_refs"],
+                        "suggested_next_actions": [
+                            "Run retrieval to get additional evidence or correct refs.",
+                            "Update TODO with corrected span/refs and retry status='done'.",
+                        ],
+                        "requires_new_evidence": requires_new_evidence,
+                    }
+                    return _todo_needs_revision_response(
+                        todo_id=todo_id,
+                        attempted_status=normalized,
+                        note_text=note_text,
+                        details=details,
+                    )
+
+        try:
+            answer_kind_norm = (
+                _normalize_answer_kind(target.get("answer_kind", ""))
+                or _infer_answer_kind(target.get("task", ""))
+            )
+
+            if normalized == "in_progress":
+                for item in _todos:
+                    if item.get("id") != todo_id and item.get("status") == "in_progress":
+                        item["status"] = "pending"
+
+            if normalized == "done":
+                deps = target.get("blocked_by") or []
+                unresolved = [
+                    dep_id for dep_id in deps
+                    if next((t for t in _todos if t.get("id") == dep_id and t.get("status") == "done"), None) is None
+                ]
+                if unresolved:
+                    raise ValueError(
+                        "Cannot mark TODO done while dependencies are unfinished: "
+                        + ", ".join(unresolved)
+                        + "."
+                    )
+
+                if _TODO_WEAK_EVIDENCE_NOTE_RE.search(note_text):
+                    raise ValueError(
+                        "Cannot mark TODO done with a no-evidence note. "
+                        "Set status='blocked' and reopen upstream bridge TODO(s) instead."
+                    )
+
+                if not answer_span_text:
+                    answer_span_text = (target.get("answer_span") or "").strip()
+                if not answer_span_text:
+                    raise ValueError(
+                        "Cannot mark TODO done without answer_span. Provide the short factual span this atom resolved to."
+                    )
+
+                if not refs:
+                    refs = _normalize_evidence_refs(target.get("evidence_refs"))
+
+                if answer_kind_norm == "entity":
+                    has_entity_ref = any((r or "").startswith("entity:") for r in refs)
+                    if not has_entity_ref:
+                        auto_entity_id = await _auto_link_entity_ref(answer_span_text)
+                        if auto_entity_id:
+                            refs.append(f"entity:{auto_entity_id}")
+
+                ok, msg = _validate_evidence_refs(refs)
+                if not ok:
+                    raise ValueError(msg)
+
+                if not _answer_matches_kind(answer_span_text, answer_kind_norm):
+                    raise ValueError(
+                        f"answer_span does not match expected answer kind '{answer_kind_norm}'."
+                    )
+
+                chunk_refs = [r for r in refs if (r or "").startswith("chunk_")]
+                if chunk_refs and answer_kind_norm in {"date", "number"}:
+                    if not _answer_span_supported_by_chunk_refs(answer_span_text, refs):
+                        raise ValueError(
+                            "answer_span is not present in cited chunk evidence. "
+                            "Use a span that appears in the referenced chunk text, "
+                            "or cite the correct evidence refs."
+                        )
+
+                if answer_kind_norm == "entity" and _ANSWER_REFUSAL_RE.search(answer_span_text):
+                    raise ValueError(
+                        "Entity TODO completion requires a concrete entity span. "
+                        "Do not use abstaining/negative spans like 'none', 'unknown', or 'no intersection'. "
+                        "Reopen upstream TODOs and gather more evidence."
+                    )
+                if answer_kind_norm == "entity":
+                    lowered_entity_span = answer_span_text.lower().strip()
+                    if lowered_entity_span.startswith("no ") or lowered_entity_span in {
+                        "none", "none found", "unknown", "n/a", "not applicable", "not found",
+                        "no intersection", "no common region", "no region identified",
+                    }:
+                        raise ValueError(
+                            "Entity TODO completion requires a concrete entity span, not an abstaining/negative phrase. "
+                            "Reopen upstream TODOs and gather new evidence."
+                        )
+
+                if _is_compose_like_todo(target):
+                    ok_comp, msg_comp = await _verify_composed_answer_consistency(
+                        target,
+                        answer_span_text,
+                        note_text,
+                        refs,
+                    )
+                    if not ok_comp:
+                        raise ValueError(msg_comp)
+
+            # Bridge atoms (feeding downstream tasks) must demonstrate disambiguation:
+            # at least one alternative hypothesis tested beyond the chosen span.
+            if normalized == "done" and _is_bridge_todo(todo_id) and answer_kind_norm == "entity":
+                prior_failures = _bridge_candidate_failure_count(todo_id, answer_span_text)
+                if prior_failures >= _BRIDGE_CANDIDATE_RETRY_FAILURE_THRESHOLD:
+                        raise ValueError(
+                            "This bridge candidate previously failed downstream evidence checks "
+                            f"{prior_failures} times. Choose a DIFFERENT candidate (or gather genuinely new evidence) "
+                            "before marking this bridge TODO done again."
+                        )
+                chosen = answer_span_text.lower().strip()
+                distinct_alts = [
+                    a for a in alts
+                    if a.lower().strip() and a.lower().strip() != chosen
+                ]
+                if _todo_requires_bridge_alternatives(target) and not distinct_alts:
+                    raise ValueError(
+                        "Bridge TODO completion requires at least one tested alternative hypothesis in "
+                        "alternatives_tested (distinct from answer_span) when bridge ambiguity is present."
+                    )
+
+                # If semantic planner flagged relation-attachment ambiguity, require
+                # explicit two-parse investigation before committing this atom.
+                if _todo_requires_relation_scope_branching(target):
+                    chosen = answer_span_text.lower().strip()
+                    distinct_alts = [
+                        a for a in alts
+                        if a.lower().strip() and a.lower().strip() != chosen
+                    ]
+                    if len(distinct_alts) < 2:
+                        raise ValueError(
+                            "Relation-scope ambiguity detected. Before marking this TODO done, "
+                            "test two parse hypotheses and record both in alternatives_tested, e.g. "
+                            "'parse_a: R(intersection(...))' and 'parse_b: intersection(R(...), ...)'."
+                        )
+                    if len(set(refs)) < 2:
+                        raise ValueError(
+                            "Relation-scope ambiguity requires evidence for both parse hypotheses. "
+                            "Provide at least two evidence_refs."
+                        )
+                    _relation_scope_branch_resolved = True
+
+                if confidence is not None and confidence < 0.5 and not alts:
+                    raise ValueError(
+                        "Low-confidence TODO completion requires alternatives_tested. "
+                        "Test at least one alternative branch before marking done."
+                    )
+
+                target["answer_span"] = answer_span_text
+                target["evidence_refs"] = refs
+                target["alternatives_tested"] = alts
+
+            if normalized == "blocked" and _TODO_WEAK_EVIDENCE_NOTE_RE.search(note_text):
+                _record_failed_bridge_candidates_from_downstream(target)
+
+            target["status"] = normalized
+            if note_text:
+                target["note"] = note_text
+            if confidence is not None:
+                target["confidence"] = confidence
+
+            # Successful correction clears recovery gate.
+            if normalized in {"done", "blocked"}:
+                _todo_recovery_guard.pop(todo_id, None)
+
+            return json.dumps(
+                {
+                    "status": "updated",
+                    "todo": target,
+                    "summary": _todo_summary(),
+                },
+                indent=2,
+            )
+        except ValueError as e:
+            details = _classify_todo_update_error(str(e))
+            if normalized in {"done", "blocked"}:
+                candidate_span = answer_span_text or (target.get("answer_span") or "").strip()
+                candidate_refs = refs or _normalize_evidence_refs(target.get("evidence_refs"))
+                candidate_alts = alts or _normalize_alternatives_tested(target.get("alternatives_tested"))
+                _todo_recovery_guard[todo_id] = {
+                    "reason_code": details.get("reason_code", "validation_failed"),
+                    "message": details.get("message", ""),
+                    "requires_new_evidence": bool(details.get("requires_new_evidence", True)),
+                    "attempt_fingerprint": _attempt_fingerprint(candidate_span, candidate_refs, candidate_alts),
+                    "attempt_refs": candidate_refs,
+                    "todo_signature": _todo_evidence_signature(),
+                }
+                return _todo_needs_revision_response(
+                    todo_id=todo_id,
+                    attempted_status=normalized,
+                    note_text=note_text,
+                    details=details,
+                )
+            raise
+
+    @mcp.tool()
+    async def todo_list() -> str:
+        """List all TODOs and completion summary for this question."""
+        return json.dumps(
+            {
+                "todos": _todos,
+                "summary": _todo_summary(),
+                "question": _current_question,
+                "expected_answer_kind": _current_expected_answer_kind or None,
+                "semantic_branching": {
+                    "relation_scope_required": _relation_scope_branch_required,
+                    "relation_scope_resolved": _relation_scope_branch_resolved,
+                },
+            },
+            indent=2,
+        )
+
+    @mcp.tool()
+    async def todo_reset(question: str = "") -> str:
+        """Reset TODO state for current question and register answer-type contract."""
+        global _current_question, _current_expected_answer_kind
+        _reset_todos()
+        q = (question or "").strip()
+        if q:
+            _current_question = q
+            _current_expected_answer_kind = _infer_answer_kind(q)
+            if _current_semantic_plan_question and _current_semantic_plan_question != q:
+                _clear_semantic_plan()
+        return json.dumps(
+            {
+                "status": "reset",
+                "summary": _todo_summary(),
+                "question": _current_question or None,
+                "expected_answer_kind": _current_expected_answer_kind or None,
+            },
+            indent=2,
+        )
+
+    @mcp.tool()
+    async def bridge_disambiguate(
+        question: str,
+        downstream_clue: str,
+        candidate_a: str,
+        evidence_a: str,
+        candidate_b: str,
+        evidence_b: str,
+        candidate_c: str = "",
+        evidence_c: str = "",
+    ) -> str:
+        """Resolve ambiguous bridge entities using downstream evidence.
+
+        Call this when multiple candidate bridge entities are plausible.
+        Provide each candidate with its supporting evidence snippets, then
+        this tool selects the best-supported candidate for the downstream clue.
+
+        Args:
+            question: Original user question.
+            downstream_clue: Relation to verify (e.g., "signed by Barcelona").
+            candidate_a: Candidate entity A.
+            evidence_a: Evidence text for candidate A.
+            candidate_b: Candidate entity B.
+            evidence_b: Evidence text for candidate B.
+            candidate_c: Optional third candidate entity.
+            evidence_c: Optional evidence text for candidate C.
+
+        Returns:
+            JSON with winner, confidence, rationale, ranked candidates, and scores.
+        """
+        await _ensure_initialized()
+
+        from llm_client import acall_llm_structured
+        from pydantic import BaseModel, Field
+
+        class BridgeDecision(BaseModel):
+            winner: str = Field(description="Selected best candidate entity")
+            confidence: float = Field(ge=0.0, le=1.0)
+            rationale: str = Field(description="Short evidence-grounded explanation")
+            ranked_candidates: list[str] = Field(description="Candidates best to worst")
+            evidence_scores: dict[str, float] = Field(
+                description="Per-candidate support score between 0 and 1"
+            )
+
+        candidates: list[dict[str, str]] = []
+        for cand, ev in (
+            (candidate_a, evidence_a),
+            (candidate_b, evidence_b),
+            (candidate_c, evidence_c),
+        ):
+            c = (cand or "").strip()
+            e = (ev or "").strip()
+            if c:
+                candidates.append({"candidate": c, "evidence": e})
+
+        if len(candidates) < 2:
+            raise ValueError("Provide at least two non-empty candidates to disambiguate.")
+
+        candidates_json = json.dumps(candidates, ensure_ascii=False)
+        system_prompt = (
+            "You are a strict evidence judge for bridge-entity disambiguation. "
+            "Pick the candidate with the strongest direct support for the downstream clue. "
+            "Prefer explicit evidence over weak association. Penalize contradictions, "
+            "missing links, and guesses."
+        )
+        user_prompt = (
+            f"Question: {question}\n"
+            f"Downstream clue: {downstream_clue}\n"
+            f"Candidates with evidence JSON:\n{candidates_json}\n\n"
+            "Scoring rubric (0-1 per candidate):\n"
+            "1) Direct downstream match strength\n"
+            "2) Specific factual support (dates/names/relations)\n"
+            "3) Contradiction penalty\n"
+            "Return winner + ranked list + scores."
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        llm = _state.get("agentic_llm")
+        model = llm.model if llm else _state["config"].llm.model
+        trace_id = f"digimon.bridge_disambiguate.{uuid.uuid4().hex[:8]}"
+
+        try:
+            decision, _meta = await acall_llm_structured(
+                model,
+                messages,
+                response_model=BridgeDecision,
+                task="digimon.bridge_disambiguate",
+                trace_id=trace_id,
+                max_budget=0,
+            )
+            # Ensure winner is one of provided candidates
+            candidate_names = [c["candidate"] for c in candidates]
+            if decision.winner not in candidate_names:
+                decision.winner = candidate_names[0]
+            return json.dumps(decision.model_dump(), indent=2)
+        except Exception as e:
+            # Fallback heuristic for robustness if inner LLM is unavailable
+            clue_tokens = {t for t in re.findall(r"[a-z0-9]+", downstream_clue.lower()) if len(t) > 2}
+            month_re = re.compile(
+                r"\b(january|february|march|april|may|june|july|august|september|october|november|december)\b",
+                flags=re.IGNORECASE,
+            )
+            year_re = re.compile(r"\b(?:1[0-9]{3}|20[0-9]{2})\b")
+
+            scored: list[tuple[str, float]] = []
+            for item in candidates:
+                cand = item["candidate"]
+                ev = (item["evidence"] or "").lower()
+                ev_tokens = set(re.findall(r"[a-z0-9]+", ev))
+                overlap = 0.0
+                if clue_tokens:
+                    overlap = len(clue_tokens.intersection(ev_tokens)) / len(clue_tokens)
+                specificity = 0.15 if (month_re.search(ev) or year_re.search(ev)) else 0.0
+                mention = 0.1 if cand.lower() in ev else 0.0
+                score = min(1.0, overlap + specificity + mention)
+                scored.append((cand, score))
+
+            scored.sort(key=lambda x: x[1], reverse=True)
+            winner = scored[0][0]
+            result = {
+                "winner": winner,
+                "confidence": max(0.35, min(0.8, scored[0][1])),
+                "rationale": (
+                    "Fallback scorer selected the candidate with strongest downstream clue token overlap "
+                    "and specific evidence markers."
+                ),
+                "ranked_candidates": [name for name, _ in scored],
+                "evidence_scores": {name: round(score, 3) for name, score in scored},
+                "fallback_reason": str(e)[:300],
+            }
+            return json.dumps(result, indent=2)
+
     @mcp.tool()
     async def submit_answer(reasoning: str, answer: str) -> str:
         """Submit your final answer. Call once with your best answer.
@@ -2968,8 +5423,156 @@ if BENCHMARK_MODE:
         Returns:
             Confirmation with submitted answer.
         """
-        _reset_chunk_dedup()  # reset seen chunks for next question
-        return json.dumps({"status": "submitted", "answer": answer})
+        normalized_answer = (answer or "").strip()
+        normalized_reasoning = (reasoning or "").strip()
+        guard = _submit_recovery_guard.copy() if _submit_recovery_guard else {}
+        if guard:
+            same_todo_state = _todo_evidence_signature() == guard.get("todo_signature", "")
+            same_answer = normalized_answer.lower() == (guard.get("last_attempt_answer", "") or "").lower()
+            requires_new_evidence = bool(guard.get("requires_new_evidence", False))
+            if (requires_new_evidence and same_todo_state) or ((not requires_new_evidence) and same_todo_state and same_answer):
+                details = {
+                    "reason_code": (
+                        "new_evidence_required_after_submit_validation"
+                        if requires_new_evidence else
+                        "repeat_invalid_submit_attempt"
+                    ),
+                    "message": (
+                        "Previous submit attempt failed validation. "
+                        + (
+                            "Resolve TODO evidence with new supporting refs before retrying submit."
+                            if requires_new_evidence else
+                            "Apply a concrete correction before retrying submit."
+                        )
+                    ),
+                    "required_fixes": ["todo answer_span/evidence_refs", "answer"],
+                    "suggested_next_actions": [
+                        "Run retrieval and update TODO evidence if support is weak.",
+                        "Retry submit with grounded final span.",
+                    ],
+                    "requires_new_evidence": requires_new_evidence,
+                }
+                return _submit_needs_revision_response(details)
+
+        try:
+            if not _todos:
+                raise ValueError(
+                    "You must use TODOs first. Create atomic steps via todo_create(), "
+                    "complete them via todo_update(..., status='done'), then submit_answer.",
+                )
+            unfinished = [
+                t["id"] for t in _todos
+                if t.get("status") not in {"done", "blocked"}
+            ]
+            if unfinished:
+                raise ValueError(
+                    "Cannot submit yet. Unfinished TODOs: "
+                    + ", ".join(unfinished)
+                    + ". Complete them with todo_update(..., status='done') "
+                    "or mark irrecoverable leaves as status='blocked' with a reason note.",
+                )
+
+            blocked_without_note = [
+                t.get("id", "?")
+                for t in _todos
+                if t.get("status") == "blocked" and not (t.get("note") or "").strip()
+            ]
+            if blocked_without_note:
+                raise ValueError(
+                    "Cannot submit: blocked TODOs must include a reason note: "
+                    + ", ".join(blocked_without_note)
+                    + ". Use todo_update(..., status='blocked', note=...)."
+                )
+
+            # Every completed atom must carry explicit evidence + resolved span.
+            incomplete_evidence = [
+                t.get("id", "?")
+                for t in _todos
+                if t.get("status") == "done"
+                and (
+                    not _normalize_evidence_refs(t.get("evidence_refs"))
+                    or not (t.get("answer_span") or "").strip()
+                )
+            ]
+            if incomplete_evidence:
+                raise ValueError(
+                    "Cannot submit: completed TODOs missing evidence/span: "
+                    + ", ".join(incomplete_evidence)
+                    + ". Use todo_update(..., answer_span=..., evidence_refs=[...])."
+                )
+
+            if not normalized_answer:
+                raise ValueError(
+                    "Answer cannot be empty. Submit your best factual guess as a short span.",
+                )
+            if "\n" in normalized_answer or len(normalized_answer.split()) > 8:
+                raise ValueError(
+                    "Answer is too long. Submit only the fact (name/date/number/yes/no).",
+                )
+            if _ANSWER_REFUSAL_RE.search(normalized_answer):
+                raise ValueError(
+                    "Refusal-style answers are not allowed. Submit your best factual guess.",
+                )
+            lowered_answer = normalized_answer.lower()
+            if lowered_answer.startswith("not "):
+                raise ValueError(
+                    "Negative/abstaining answers are not allowed. Submit a factual guess (name/date/number).",
+                )
+            if lowered_answer.startswith("no ") and lowered_answer != "no":
+                raise ValueError(
+                    "Abstaining answers are not allowed. Submit a factual guess (name/date/number).",
+                )
+
+            expected_kind = _current_expected_answer_kind or _infer_answer_kind(_current_question)
+            if expected_kind and not _answer_matches_kind(normalized_answer, expected_kind):
+                raise ValueError(
+                    f"Answer does not match expected type '{expected_kind}'. "
+                    "Submit a fact with the expected type."
+                )
+
+            spans = [(t.get("answer_span") or "").strip() for t in _todos]
+            if spans and not any(
+                normalized_answer.lower() in span.lower() or span.lower() in normalized_answer.lower()
+                for span in spans if span
+            ):
+                raise ValueError(
+                    "Answer is not grounded in TODO answer_span fields. "
+                    "Use the shortest factual span supported by your TODO evidence."
+                )
+
+            if expected_kind == "date":
+                if not any(_answer_matches_kind(span, "date") for span in spans if span):
+                    raise ValueError(
+                        "No date-like atom evidence found. Reopen upstream TODOs and resolve a date span first."
+                    )
+
+            if not normalized_reasoning:
+                raise ValueError(
+                    "Reasoning cannot be empty. Provide a concise evidence-grounded justification.",
+                )
+
+            _submit_recovery_guard.clear()
+            _reset_chunk_dedup()  # reset seen chunks for next question
+            return json.dumps(
+                {
+                    "status": "submitted",
+                    "answer": normalized_answer,
+                    "expected_answer_kind": expected_kind or None,
+                }
+            )
+        except ValueError as e:
+            details = _classify_submit_error(str(e))
+            _submit_recovery_guard.clear()
+            _submit_recovery_guard.update(
+                {
+                    "reason_code": details.get("reason_code", "submit_validation_failed"),
+                    "message": details.get("message", ""),
+                    "requires_new_evidence": bool(details.get("requires_new_evidence", True)),
+                    "todo_signature": _todo_evidence_signature(),
+                    "last_attempt_answer": normalized_answer,
+                }
+            )
+            return _submit_needs_revision_response(details)
 
 
 # =============================================================================

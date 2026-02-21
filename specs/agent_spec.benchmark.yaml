@@ -1,0 +1,152 @@
+name: digimon_benchmark_agent
+version: 1
+description: AgentSpec for DIGIMON MuSiQue benchmark runs.
+
+prompts:
+  benchmark_hybrid:
+    path: prompts/agent_benchmark_hybrid.yaml
+    purpose: AoT/GoT hybrid benchmark prompting with TODO planning.
+
+tools:
+  - name: semantic_plan
+  - name: todo_reset
+  - name: todo_create
+  - name: todo_update
+  - name: todo_list
+  - name: bridge_disambiguate
+  - name: submit_answer
+  - name: chunk_text_search
+  - name: chunk_get_text
+  - name: chunk_occurrence
+  - name: chunk_from_relationships
+  - name: chunk_aggregator
+  - name: chunk_vdb_search
+  - name: entity_tfidf
+  - name: entity_link
+  - name: entity_vdb_search
+  - name: entity_onehop
+  - name: entity_ppr
+  - name: relationship_onehop
+  - name: relationship_vdb_search
+  - name: relationship_score_aggregator
+  - name: subgraph_khop_paths
+  - name: subgraph_steiner_tree
+  - name: meta_pcst_optimize
+  - name: list_available_resources
+
+artifact_contracts:
+  chunk_text_search:
+    requires_all: [QUERY_TEXT]
+    produces: [CHUNK_SET]
+  chunk_get_text:
+    requires_any: [ENTITY_SET, CHUNK_SET]
+    produces: [CHUNK_SET]
+  chunk_occurrence:
+    requires_all: [ENTITY_SET]
+    produces: [CHUNK_SET]
+  chunk_from_relationships:
+    requires_all: [RELATIONSHIP_SET]
+    produces: [CHUNK_SET]
+  chunk_aggregator:
+    requires_any: [ENTITY_SET, RELATIONSHIP_SET]
+    produces: [CHUNK_SET]
+  chunk_vdb_search:
+    requires_any: [QUERY_TEXT, ENTITY_SET, CHUNK_SET]
+    produces: [CHUNK_SET]
+  entity_tfidf:
+    requires_any: [QUERY_TEXT, CHUNK_SET]
+    produces: [ENTITY_SET]
+  entity_link:
+    requires_any: [QUERY_TEXT, CHUNK_SET]
+    produces: [ENTITY_SET]
+  entity_vdb_search:
+    requires_any: [QUERY_TEXT, ENTITY_SET, CHUNK_SET]
+    produces: [ENTITY_SET]
+  entity_onehop:
+    requires_all: [ENTITY_SET]
+    produces: [ENTITY_SET]
+  entity_ppr:
+    requires_all: [ENTITY_SET]
+    produces: [ENTITY_SET]
+  relationship_onehop:
+    requires_all: [ENTITY_SET]
+    produces: [RELATIONSHIP_SET]
+  relationship_vdb_search:
+    requires_any: [QUERY_TEXT, ENTITY_SET, CHUNK_SET]
+    produces: [RELATIONSHIP_SET]
+  relationship_score_aggregator:
+    requires_any: [ENTITY_SET, RELATIONSHIP_SET]
+    produces: [RELATIONSHIP_SET]
+  subgraph_khop_paths:
+    requires_all: [ENTITY_SET]
+    produces: [SUBGRAPH]
+  subgraph_steiner_tree:
+    requires_all: [ENTITY_SET]
+    produces: [SUBGRAPH]
+  meta_pcst_optimize:
+    requires_any: [ENTITY_SET, RELATIONSHIP_SET]
+    produces: [SUBGRAPH]
+  semantic_plan:
+    is_control: true
+  todo_reset:
+    is_control: true
+  todo_create:
+    is_control: true
+  todo_update:
+    is_control: true
+  todo_list:
+    is_control: true
+  bridge_disambiguate:
+    requires_any: [ENTITY_SET, CHUNK_SET]
+    produces: [ENTITY_SET]
+  submit_answer:
+    is_control: true
+  list_available_resources:
+    is_control: true
+
+answer_schema:
+  type: object
+  required: [answer]
+  properties:
+    answer:
+      type: string
+      minLength: 1
+    reasoning:
+      type: string
+
+error_taxonomy:
+  canonical:
+    - tool_unavailable
+    - tool_interface_mismatch
+    - missing_prerequisite
+    - contract_violation
+    - missing_tool_reasoning
+    - control_loop_suppressed
+    - tool_runtime_error
+    - provider_empty_response
+    - provider_transport_error
+
+observability:
+  required_fields:
+    - trace_id
+    - tool_calls
+    - tool_details
+    - tool_contract_rejections
+    - available_artifacts_final
+    - composability
+    - artifact_timeline
+  required_tools_argument:
+    - tool_reasoning
+
+evaluation:
+  dataset: MuSiQue
+  metrics: [em, f1, llm_em]
+  judge_model: openrouter/deepseek/deepseek-chat
+
+gates:
+  fail_if:
+    tool_unavailable_gt: 0
+    tool_interface_mismatch_gt: 0
+    missing_prerequisite_gt: 0
+  warn_if:
+    tool_runtime_error_gt: 0

@@ -9,7 +9,9 @@ This module implements chunk-related operators for the GraphRAG system.
 from typing import List, Tuple, Optional, Any, Union, Dict
 from pydantic import BaseModel, Field
 import networkx as nx
+import re
 from Core.Common.Logger import logger
+from Core.Common.Utils import clean_str
 
 from Core.AgentSchema.tool_contracts import (
     ChunkFromRelationshipsInputs,
@@ -519,15 +521,87 @@ async def chunk_get_text_for_entities_tool(
         
         retrieved_chunks_data = []
         chunks_per_entity = {}
-        
+        resolved_entity_ids: Dict[str, str] = {}
+        _node_text_cache: Optional[List[Tuple[str, str, set[str], int, int]]] = None
+        chunk_like_re = re.compile(r"^chunk[_-][a-z0-9]+$", re.IGNORECASE)
+
+        def _compact_spaces(value: str) -> str:
+            return " ".join(value.split())
+
+        def _build_node_text_cache() -> List[Tuple[str, str, set[str], int, int]]:
+            cache: List[Tuple[str, str, set[str], int, int]] = []
+            for node_id in nx_graph.nodes:
+                if not isinstance(node_id, str):
+                    continue
+                normalized = _compact_spaces(node_id.lower())
+                tokens = set(normalized.split())
+                cache.append((node_id, normalized, tokens, len(tokens), len(node_id)))
+            return cache
+
+        def _resolve_entity_id(entity_id: str) -> Optional[str]:
+            nonlocal _node_text_cache
+
+            if entity_id in nx_graph:
+                return entity_id
+
+            cleaned_id = clean_str(entity_id)
+            if cleaned_id in nx_graph:
+                return cleaned_id
+
+            compact_cleaned = _compact_spaces(cleaned_id)
+            if compact_cleaned.startswith("chunk "):
+                return None
+            if compact_cleaned in nx_graph:
+                return compact_cleaned
+
+            if not compact_cleaned:
+                return None
+
+            if _node_text_cache is None:
+                _node_text_cache = _build_node_text_cache()
+
+            query_tokens = set(compact_cleaned.split())
+            if not query_tokens:
+                return None
+
+            subset_matches: List[Tuple[str, int, int]] = []
+            partial_matches: List[Tuple[str, int, int, int]] = []
+            for node_id, _norm, node_tokens, token_count, char_count in _node_text_cache:
+                overlap = len(query_tokens.intersection(node_tokens))
+                if overlap == 0:
+                    continue
+                if query_tokens.issubset(node_tokens):
+                    subset_matches.append((node_id, token_count, char_count))
+                else:
+                    partial_matches.append((node_id, overlap, token_count, char_count))
+
+            if subset_matches:
+                subset_matches.sort(key=lambda x: (x[1], x[2]))
+                return subset_matches[0][0]
+
+            if partial_matches:
+                partial_matches.sort(key=lambda x: (-x[1], x[2], x[3]))
+                return partial_matches[0][0]
+
+            return None
+
         # Process each entity
         for entity_id in validated_input.entity_ids:
-            if entity_id not in nx_graph:
+            if isinstance(entity_id, str) and chunk_like_re.match(entity_id.strip()):
+                chunks_per_entity[entity_id] = [entity_id]
+                logger.info(f"Treating '{entity_id}' as a direct chunk id")
+                continue
+
+            resolved_entity_id = _resolve_entity_id(entity_id)
+            if not resolved_entity_id:
                 logger.warning(f"Entity '{entity_id}' not found in graph")
                 continue
+            if resolved_entity_id != entity_id:
+                logger.info(f"Resolved chunk_get_text entity '{entity_id}' -> '{resolved_entity_id}'")
+            resolved_entity_ids[entity_id] = resolved_entity_id
                 
             # Get node data
-            node_data = nx_graph.nodes[entity_id]
+            node_data = nx_graph.nodes[resolved_entity_id]
             logger.debug(f"Processing entity '{entity_id}' with node data keys: {list(node_data.keys())}")
             
             # Look for chunk associations in node data
@@ -563,7 +637,7 @@ async def chunk_get_text_for_entities_tool(
             
             # Also check edges for chunk associations
             # Some graphs store entity-chunk relationships as edges
-            for neighbor in nx_graph.neighbors(entity_id):
+            for neighbor in nx_graph.neighbors(resolved_entity_id):
                 neighbor_data = nx_graph.nodes[neighbor]
                 # Check if neighbor is a chunk node (common pattern: node_type='chunk')
                 if neighbor_data.get('node_type') == 'chunk' or neighbor_data.get('type') == 'chunk':
@@ -634,12 +708,18 @@ async def chunk_get_text_for_entities_tool(
                     if chunk_id.startswith('chunk-') and len(chunk_id) > 10:
                         # This might be a hash-based ID, look for chunks by index
                         # The graph seems to use hashes, but we can try to match by order
+                        normalized_entity_terms = [
+                            _compact_spaces(clean_str(eid))
+                            for eid in validated_input.entity_ids
+                            if isinstance(eid, str) and eid.strip()
+                        ]
                         for stored_id, stored_chunk in all_chunks_dict.items():
                             if stored_id.startswith('chunk_') and stored_chunk.doc_id is not None:
                                 # Try to match based on entity content being in chunk
-                                if entity_id.lower() in stored_chunk.content.lower():
+                                content_norm = _compact_spaces(stored_chunk.content.lower())
+                                if any(term and term in content_norm for term in normalized_entity_terms):
                                     chunk_obj = stored_chunk
-                                    logger.debug(f"Matched entity '{entity_id}' to chunk via content search")
+                                    logger.debug("Matched chunk via normalized entity content search")
                                     break
                 
                 if chunk_obj:

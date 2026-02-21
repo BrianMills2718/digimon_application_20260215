@@ -20,6 +20,7 @@ from Core.AgentSchema.tool_contracts import (
     PathSegment,
 )
 from Core.Common.Logger import logger
+from Core.Common.Utils import clean_str
 
 
 def _get_nx_graph(graph_instance) -> Optional[nx.Graph]:
@@ -64,6 +65,45 @@ def _path_to_path_object(nx_graph: nx.Graph, node_path: List[str]) -> PathObject
     )
 
 
+def _entity_id_candidates(raw_id: str) -> List[str]:
+    """Generate plausible node-id candidates from a free-form/typed entity id."""
+    token = (raw_id or "").strip()
+    if not token:
+        return []
+
+    seeds = [token]
+    lower = token.lower()
+    for prefix in ("entity:", "node:", "id:"):
+        if lower.startswith(prefix):
+            seeds.append(token[len(prefix):].strip())
+
+    out: List[str] = []
+    for seed in seeds:
+        if not seed:
+            continue
+        variants = [
+            seed,
+            seed.replace("_", " "),
+            seed.lower(),
+            seed.lower().replace("_", " "),
+            clean_str(seed),
+            clean_str(seed.replace("_", " ")),
+        ]
+        for v in variants:
+            v = (v or "").strip()
+            if v and v not in out:
+                out.append(v)
+    return out
+
+
+def _resolve_graph_node_id(nx_graph: nx.Graph, raw_id: str) -> Optional[str]:
+    """Resolve a possibly-prefixed/free-form entity id to an existing graph node id."""
+    for cand in _entity_id_candidates(raw_id):
+        if cand in nx_graph:
+            return cand
+    return None
+
+
 # --- Tool Implementation for: K-Hop Paths ---
 # tool_id: "Subgraph.KHopPaths"
 
@@ -94,16 +134,32 @@ async def subgraph_khop_paths_tool(
     max_paths = params.max_paths_to_return or 10
     discovered_paths: List[PathObject] = []
 
+    resolved_starts: List[str] = []
+    for start_id in params.start_entity_ids:
+        resolved = _resolve_graph_node_id(nx_graph, start_id)
+        if not resolved:
+            logger.warning(
+                f"Subgraph.KHopPaths: Start entity '{start_id}' not in graph (after normalization)"
+            )
+            continue
+        resolved_starts.append(resolved)
+
+    resolved_ends: Optional[List[str]] = None
     if params.end_entity_ids:
-        # Find paths between each (start, end) pair
-        for start_id in params.start_entity_ids:
-            if start_id not in nx_graph:
-                logger.warning(f"Subgraph.KHopPaths: Start entity '{start_id}' not in graph")
+        resolved_ends = []
+        for end_id in params.end_entity_ids:
+            resolved = _resolve_graph_node_id(nx_graph, end_id)
+            if not resolved:
+                logger.warning(
+                    f"Subgraph.KHopPaths: End entity '{end_id}' not in graph (after normalization)"
+                )
                 continue
-            for end_id in params.end_entity_ids:
-                if end_id not in nx_graph:
-                    logger.warning(f"Subgraph.KHopPaths: End entity '{end_id}' not in graph")
-                    continue
+            resolved_ends.append(resolved)
+
+    if resolved_ends:
+        # Find paths between each (start, end) pair
+        for start_id in resolved_starts:
+            for end_id in resolved_ends:
                 if start_id == end_id:
                     continue
                 try:
@@ -122,9 +178,7 @@ async def subgraph_khop_paths_tool(
                 break
     else:
         # No end entities: find k-hop ego neighborhoods
-        for start_id in params.start_entity_ids:
-            if start_id not in nx_graph:
-                continue
+        for start_id in resolved_starts:
             # Get all nodes within k hops
             ego = nx.ego_graph(nx_graph, start_id, radius=params.k_hops)
             # Find paths to all reachable nodes in the ego graph
@@ -176,10 +230,20 @@ async def subgraph_steiner_tree_tool(
         logger.error("Subgraph.SteinerTree: Could not access NetworkX graph")
         return SubgraphSteinerTreeOutputs(steiner_tree_edges=[])
 
-    # Filter terminal nodes to those that exist in the graph
-    valid_terminals = [n for n in params.terminal_node_ids if n in nx_graph]
+    # Filter terminal nodes to those that exist in the graph (normalize prefixed IDs).
+    valid_terminals: List[str] = []
+    for raw_terminal in params.terminal_node_ids:
+        resolved = _resolve_graph_node_id(nx_graph, raw_terminal)
+        if not resolved:
+            continue
+        if resolved not in valid_terminals:
+            valid_terminals.append(resolved)
     if len(valid_terminals) < 2:
-        logger.warning(f"Subgraph.SteinerTree: Need >= 2 valid terminal nodes, got {len(valid_terminals)}")
+        logger.warning(
+            "Subgraph.SteinerTree: Need >= 2 valid terminal nodes, got %d. raw_terminals=%s",
+            len(valid_terminals),
+            params.terminal_node_ids,
+        )
         return SubgraphSteinerTreeOutputs(steiner_tree_edges=[])
 
     try:

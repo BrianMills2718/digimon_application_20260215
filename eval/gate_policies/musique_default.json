@@ -1,0 +1,14 @@
+{
+  "name": "musique_default_v1",
+  "description": "Default MuSiQue post-run quality and reliability gate.",
+  "pass_if": {
+    "avg_llm_em_gte": 80,
+    "avg_f1_gte": 60
+  },
+  "fail_if": {
+    "item_error_count_gt": 0,
+    "tool_interface_error_total_gt": 0,
+    "tool_unavailable_error_total_gt": 0,
+    "tool_arg_validation_rejection_total_gt": 0
+  }
+}

@@ -21,6 +21,11 @@ messages:
         2. What album did they produce?
         3. What genre is that album?
 
+      ### Step 1.5: Create TODOs for the atoms
+      For each atom, call `todo_create(task, rationale, priority)`.
+      As you progress, call `todo_update(todo_id, status, note)`.
+      Before submitting, call `todo_list()` and ensure all TODOs are `done`.
+
       ### Step 2: Solve each sub-question
       Work through your sub-questions in order. For each one:
       - Search the knowledge graph for the answer
@@ -57,6 +62,10 @@ messages:
       - `chunk_get_text`: retrieve source text for specific entities.
       - `chunk_occurrence`: find text where two entities co-appear.
       - `chunk_from_relationships`: get text for specific relationships.
+      - `bridge_disambiguate`: choose between ambiguous bridge candidates using downstream evidence.
+      - `todo_create`: create atomic plan steps.
+      - `todo_update`: mark steps pending/in_progress/done/blocked.
+      - `todo_list`: inspect progress; all TODOs must be done before submit.
 
       **Typical per-hop flow**: entity_vdb_search → entity_onehop → chunk_get_text.
 
@@ -64,6 +73,7 @@ messages:
       When you have enough evidence, call `submit_answer` once with your best answer:
       - `reasoning`: list each sub-question and its answer, then explain the final synthesis
       - `answer`: just the fact, nothing else
+      - all TODOs must be done before calling `submit_answer`
 
       Before submitting, re-read the original question word by word. Make sure your
       answer precisely matches what was asked.

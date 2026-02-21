@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Agent-driven benchmark: any LLM composes operators per question via MCP.
 
-Supports four agent backends (selected by --model and --backend):
+Supports four execution backends (selected by --model and --backend):
 - Codex SDK: model="codex" or "codex/gpt-5" — Codex CLI spawns MCP servers
 - Claude Agent SDK: model="claude-code" or "claude-code/opus" — Claude Code spawns MCP servers
 - MCP agent loop: any litellm model (e.g. "gemini/gemini-3-flash-preview") —
@@ -29,8 +29,9 @@ import os
 import re
 import sys
 import time
+import inspect
 from datetime import datetime, timezone
-from hashlib import md5
+from hashlib import md5, sha256
 from pathlib import Path
 
 # Add project root to path
@@ -40,7 +41,20 @@ os.chdir(str(Path(__file__).parent.parent))
 from eval.benchmark import exact_match, llm_judge, token_f1
 from eval.data_prep import load_questions
 from llm_client import MCPAgentResult
-from llm_client import start_run as llm_start_run, log_item as llm_log_item, finish_run as llm_finish_run
+from llm_client import (
+    activate_feature_profile as llm_activate_feature_profile,
+    activate_experiment_run as llm_activate_experiment_run,
+    build_gate_signals,
+    evaluate_gate_policy,
+    finish_run as llm_finish_run,
+    get_run_items as llm_get_run_items,
+    load_gate_policy,
+    log_item as llm_log_item,
+    review_items_with_rubric,
+    run_deterministic_checks_for_items,
+    start_run as llm_start_run,
+    triage_items,
+)
 
 
 # --- Tool call extraction (works with both Codex Turn and MCPAgentResult) ---
@@ -66,6 +80,8 @@ def extract_tool_calls(raw_response: object) -> list[dict]:
                 "server": r.server,
                 "tool": r.tool,
                 "arguments": r.arguments,
+                "tool_reasoning": getattr(r, "tool_reasoning", None),
+                "arg_coercions": getattr(r, "arg_coercions", None) or [],
                 "has_result": r.result is not None,
                 "has_error": r.error is not None,
                 "error": r.error[:500] if r.error else None,
@@ -103,23 +119,448 @@ def extract_tool_calls(raw_response: object) -> list[dict]:
 
 # --- Prompt ---
 
+CANONICAL_MODE = "hybrid"
 PROMPT_TEMPLATES = {
-    "fixed": Path(__file__).parent.parent / "prompts" / "agent_benchmark.yaml",
-    "adaptive": Path(__file__).parent.parent / "prompts" / "agent_benchmark_adaptive.yaml",
-    "aot": Path(__file__).parent.parent / "prompts" / "agent_benchmark_aot.yaml",
+    "hybrid": Path(__file__).parent.parent / "prompts" / "agent_benchmark_hybrid.yaml",
+}
+LEGACY_MODE_ALIASES = {
+    "fixed": CANONICAL_MODE,
+    "adaptive": CANONICAL_MODE,
+    "aot": CANONICAL_MODE,
+}
+
+_DEFAULT_POST_GATE_POLICIES: dict[str, Path] = {
+    "musique": Path(__file__).parent / "gate_policies" / "musique_default.json",
 }
 
 
-def build_messages(question: str, dataset_name: str, mode: str = "fixed") -> list[dict]:
+def _resolve_post_gate_policy(dataset_name: str, requested_policy: str) -> tuple[str, str]:
+    """Resolve post-run gate policy from explicit arg or dataset defaults.
+
+    Returns:
+        (policy_spec, source) where source is one of:
+        - "explicit": user passed --post-gate-policy
+        - "dataset_default": auto-selected for known dataset
+        - "none": no policy resolved
+    """
+    explicit = (requested_policy or "").strip()
+    if explicit:
+        return explicit, "explicit"
+
+    dataset_key = (dataset_name or "").strip().lower()
+    for prefix, path in _DEFAULT_POST_GATE_POLICIES.items():
+        if dataset_key.startswith(prefix) and path.exists():
+            return str(path), "dataset_default"
+    return "", "none"
+
+_BENCHMARK_TOOL_NAME_CANDIDATES = [
+    "entity_vdb_search",
+    "entity_onehop",
+    "entity_ppr",
+    "entity_link",
+    "entity_tfidf",
+    "relationship_onehop",
+    "relationship_score_aggregator",
+    "relationship_vdb_search",
+    "chunk_from_relationships",
+    "chunk_occurrence",
+    "chunk_get_text",
+    "chunk_text_search",
+    "chunk_vdb_search",
+    "chunk_aggregator",
+    "list_available_resources",
+    "subgraph_khop_paths",
+    "subgraph_steiner_tree",
+    "meta_pcst_optimize",
+    "semantic_plan",
+    "todo_create",
+    "todo_update",
+    "todo_list",
+    "todo_reset",
+    "bridge_disambiguate",
+    "submit_answer",
+]
+
+_BENCHMARK_INITIAL_ARTIFACTS: tuple[str, ...] = ("QUERY_TEXT",)
+
+_BENCHMARK_TOOL_CONTRACTS: dict[str, dict[str, object]] = {
+    "entity_vdb_search": {
+        "requires_any": ["QUERY_TEXT", "ENTITY_SET", "CHUNK_SET"],
+        "produces": ["ENTITY_SET"],
+    },
+    "entity_onehop": {
+        "requires_all": ["ENTITY_SET"],
+        "produces": ["ENTITY_SET"],
+    },
+    "entity_ppr": {
+        "requires_all": ["ENTITY_SET"],
+        "produces": ["ENTITY_SET"],
+    },
+    "entity_link": {
+        "requires_any": ["QUERY_TEXT", "CHUNK_SET"],
+        "produces": ["ENTITY_SET"],
+    },
+    "entity_tfidf": {
+        "requires_any": ["QUERY_TEXT", "CHUNK_SET"],
+        "produces": ["ENTITY_SET"],
+    },
+    "relationship_onehop": {
+        "requires_all": ["ENTITY_SET"],
+        "produces": ["RELATIONSHIP_SET"],
+    },
+    "relationship_score_aggregator": {
+        "requires_any": ["ENTITY_SET", "RELATIONSHIP_SET"],
+        "produces": ["RELATIONSHIP_SET"],
+    },
+    "relationship_vdb_search": {
+        "requires_any": ["QUERY_TEXT", "ENTITY_SET", "CHUNK_SET"],
+        "produces": ["RELATIONSHIP_SET"],
+    },
+    "chunk_from_relationships": {
+        "requires_all": ["RELATIONSHIP_SET"],
+        "produces": ["CHUNK_SET"],
+    },
+    "chunk_occurrence": {
+        "requires_all": ["ENTITY_SET"],
+        "produces": ["CHUNK_SET"],
+    },
+    # chunk_get_text has dynamic requirements handled in llm_client:
+    # chunk_id(s) path -> CHUNK_SET, entity path -> ENTITY_SET.
+    "chunk_get_text": {
+        "requires_any": ["ENTITY_SET", "CHUNK_SET"],
+        "produces": ["CHUNK_SET"],
+    },
+    "chunk_text_search": {
+        "requires_all": ["QUERY_TEXT"],
+        "produces": ["CHUNK_SET"],
+    },
+    "chunk_vdb_search": {
+        "requires_any": ["QUERY_TEXT", "ENTITY_SET", "CHUNK_SET"],
+        "produces": ["CHUNK_SET"],
+    },
+    "chunk_aggregator": {
+        "requires_any": ["ENTITY_SET", "RELATIONSHIP_SET"],
+        "produces": ["CHUNK_SET"],
+    },
+    "subgraph_khop_paths": {
+        "requires_all": ["ENTITY_SET"],
+        "produces": ["SUBGRAPH"],
+    },
+    "subgraph_steiner_tree": {
+        "requires_all": ["ENTITY_SET"],
+        "produces": ["SUBGRAPH"],
+    },
+    "meta_pcst_optimize": {
+        "requires_any": ["ENTITY_SET", "RELATIONSHIP_SET"],
+        "produces": ["SUBGRAPH"],
+    },
+    "bridge_disambiguate": {
+        "requires_any": ["ENTITY_SET", "CHUNK_SET"],
+        "produces": ["ENTITY_SET"],
+    },
+    # Control/planning tools intentionally bypass artifact requirements.
+    "list_available_resources": {"is_control": True},
+    "semantic_plan": {"is_control": True},
+    "todo_create": {"is_control": True},
+    "todo_update": {"is_control": True},
+    "todo_list": {"is_control": True},
+    "todo_reset": {"is_control": True},
+    "submit_answer": {"is_control": True},
+}
+_CONTROL_TOOL_NAMES: set[str] = {
+    name
+    for name, spec in _BENCHMARK_TOOL_CONTRACTS.items()
+    if isinstance(spec, dict) and bool(spec.get("is_control"))
+}
+
+
+def _resolve_mode(mode: str) -> tuple[str, bool]:
+    """Resolve legacy prompt modes to the canonical mode.
+
+    Returns (effective_mode, was_aliased).
+    """
+    requested = (mode or CANONICAL_MODE).strip().lower()
+    effective = LEGACY_MODE_ALIASES.get(requested, requested)
+    if effective not in PROMPT_TEMPLATES:
+        return CANONICAL_MODE, True
+    return effective, requested != effective
+
+
+def _sha256_json(obj: object) -> str:
+    payload = json.dumps(
+        obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str
+    ).encode("utf-8")
+    return sha256(payload).hexdigest()
+
+
+def _sha256_file(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    return sha256(path.read_bytes()).hexdigest()
+
+
+def _tool_surface() -> tuple[list[dict[str, str]], str]:
+    """Return a stable tool surface manifest and hash for this run."""
+    surface: list[dict[str, str]] = []
+    if DIRECT_TOOLS:
+        for tool in sorted(DIRECT_TOOLS, key=lambda fn: fn.__name__):
+            try:
+                signature = str(inspect.signature(tool))
+            except (TypeError, ValueError):
+                signature = "()"
+            doc = inspect.getdoc(tool) or ""
+            desc = doc.splitlines()[0].strip() if doc else ""
+            surface.append({
+                "name": tool.__name__,
+                "signature": signature,
+                "description": desc,
+            })
+    else:
+        surface = [{"name": name} for name in sorted(_BENCHMARK_TOOL_NAME_CANDIDATES)]
+    return surface, _sha256_json(surface)
+
+
+def _build_run_provenance(
+    *,
+    dataset_path: Path,
+    questions: list[dict],
+    mode: str,
+) -> dict[str, object]:
+    effective_mode, _ = _resolve_mode(mode)
+    template_path = PROMPT_TEMPLATES[effective_mode]
+    tool_surface, tool_schema_sha = _tool_surface()
+    dataset_projection = [
+        {
+            "id": q.get("id"),
+            "question": q.get("question"),
+            "answer": q.get("answer"),
+        }
+        for q in questions
+    ]
+    return {
+        "dataset_path": str(dataset_path.resolve()),
+        "dataset_hash_sha256": _sha256_json(dataset_projection),
+        "dataset_question_count": len(questions),
+        "prompt_template_path": str(template_path.resolve()),
+        "prompt_template_sha256": _sha256_file(template_path),
+        "tool_schema_sha256": tool_schema_sha,
+        "tool_surface": tool_surface,
+        "tool_contracts_sha256": _sha256_json(_BENCHMARK_TOOL_CONTRACTS),
+        "tool_contracts": _BENCHMARK_TOOL_CONTRACTS,
+        "initial_artifacts": list(_BENCHMARK_INITIAL_ARTIFACTS),
+        "enforce_tool_contracts": True,
+    }
+
+
+def build_messages(question: str, dataset_name: str, mode: str = CANONICAL_MODE) -> list[dict]:
     """Render the agent benchmark prompt from YAML template."""
     from llm_client import render_prompt
-    template = PROMPT_TEMPLATES.get(mode, PROMPT_TEMPLATES["fixed"])
+    effective_mode, _ = _resolve_mode(mode)
+    template = PROMPT_TEMPLATES[effective_mode]
     return render_prompt(template, question=question, dataset_name=dataset_name)
+
+
+def _extract_tool_error_text(tool_call: dict) -> str:
+    """Extract best-effort tool error text from a normalized tool call record."""
+    err = tool_call.get("error")
+    if isinstance(err, str) and err.strip():
+        return err.strip()
+
+    preview = tool_call.get("result_preview")
+    if isinstance(preview, str) and preview.strip():
+        text = preview.strip()
+        if text.startswith("{") and text.endswith("}"):
+            try:
+                payload = json.loads(text)
+                nested_error = payload.get("error") if isinstance(payload, dict) else None
+                if isinstance(nested_error, str) and nested_error.strip():
+                    return nested_error.strip()
+            except Exception:
+                pass
+
+    if tool_call.get("has_error") or tool_call.get("is_error"):
+        return "tool call marked as error"
+    return ""
+
+
+def _classify_tool_error(error_text: str) -> str:
+    """Classify tool errors into coarse composability/runtime buckets."""
+    msg = (error_text or "").lower()
+    if not msg:
+        return "tool_runtime_error"
+    if "tool contract violation" in msg:
+        return "contract_violation"
+    if "unknown tool:" in msg:
+        return "tool_unavailable"
+    if "missing required argument: tool_reasoning" in msg:
+        return "missing_tool_reasoning"
+    if "suppressed:" in msg and ("submit_answer" in msg or "todo_update" in msg):
+        return "control_loop_suppressed"
+    if (
+        "unexpected keyword argument" in msg
+        or "required positional argument" in msg
+        or "takes " in msg and " positional argument" in msg
+        or "validation error" in msg
+        or "validationerror" in msg
+        or "pydantic" in msg
+        or "input should" in msg
+        or "typeerror" in msg
+    ):
+        return "tool_interface_mismatch"
+    if (
+        "requires one of" in msg
+        or "requires all" in msg
+        or "not built" in msg
+        or "not found in context" in msg
+        or "missing prerequisites" in msg
+    ):
+        return "missing_prerequisite"
+    if "timeout" in msg:
+        return "tool_timeout"
+    return "tool_runtime_error"
+
+
+def _build_composability_diagnostics(
+    *,
+    tool_calls: list[dict],
+    tool_contract_rejections: int | None,
+    rejected_missing_reasoning_calls: int | None,
+    control_loop_suppressed_calls: int | None,
+    tool_contract_violation_events: list[dict] | None,
+    available_artifacts_final: list[str] | None,
+) -> dict:
+    """Summarize composability health from tool-call traces + agent metadata."""
+    category_counts: dict[str, int] = {}
+    error_tools: dict[str, int] = {}
+    examples: list[dict[str, str]] = []
+
+    for tc in tool_calls:
+        error_text = _extract_tool_error_text(tc)
+        if not error_text:
+            continue
+        category = _classify_tool_error(error_text)
+        tool_name = str(tc.get("tool", "") or "<unknown>")
+        category_counts[category] = category_counts.get(category, 0) + 1
+        error_tools[tool_name] = error_tools.get(tool_name, 0) + 1
+        if len(examples) < 5:
+            examples.append({
+                "tool": tool_name,
+                "category": category,
+                "error": error_text[:240],
+            })
+
+    n_errors = sum(category_counts.values())
+    arg_coercion_events = sum(
+        len(tc.get("arg_coercions", []) or [])
+        for tc in tool_calls
+        if isinstance(tc, dict)
+    )
+    arg_coercion_calls = sum(
+        1
+        for tc in tool_calls
+        if isinstance(tc, dict) and len(tc.get("arg_coercions", []) or []) > 0
+    )
+    n_non_control_calls = sum(
+        1 for tc in tool_calls if str(tc.get("tool", "")) not in _CONTROL_TOOL_NAMES
+    )
+    unknown_tools = sorted({
+        str(tc.get("tool", ""))
+        for tc in tool_calls
+        if str(tc.get("tool", "")) and str(tc.get("tool", "")) not in _BENCHMARK_TOOL_CONTRACTS
+    })
+
+    n_contract = int(tool_contract_rejections or 0)
+    if n_contract == 0:
+        n_contract = category_counts.get("contract_violation", 0)
+
+    status = "ok"
+    if n_errors > 0:
+        status = "degraded"
+        if (
+            category_counts.get("tool_interface_mismatch", 0) > 0
+            or category_counts.get("missing_prerequisite", 0) > 0
+            or category_counts.get("tool_unavailable", 0) > 0
+        ):
+            status = "broken"
+
+    return {
+        "status": status,
+        "n_errors": n_errors,
+        "error_categories": dict(sorted(category_counts.items())),
+        "error_tools": dict(sorted(error_tools.items(), key=lambda kv: (-kv[1], kv[0]))),
+        "error_examples": examples,
+        "n_contract_rejections": n_contract,
+        "n_missing_reasoning_rejections": int(rejected_missing_reasoning_calls or 0),
+        "n_control_loop_suppressed": int(control_loop_suppressed_calls or 0),
+        "n_arg_coercions": arg_coercion_events,
+        "n_arg_coercion_calls": arg_coercion_calls,
+        "n_non_control_calls": n_non_control_calls,
+        "unknown_tools": unknown_tools,
+        "available_artifacts_final": available_artifacts_final or [],
+        "contract_violation_events": tool_contract_violation_events or [],
+    }
+
+
+def _resolve_failure_threshold(metric: str, threshold: float | None) -> float:
+    """Resolve metric threshold used to classify failing questions."""
+    if threshold is not None:
+        return float(threshold)
+    if metric == "f1":
+        return 0.999999
+    return 0.5
+
+
+def _collect_failing_ids(
+    records: list[dict],
+    *,
+    metric: str,
+    threshold: float | None = None,
+) -> set[str]:
+    """Collect question ids considered failing under the chosen metric."""
+    resolved_threshold = _resolve_failure_threshold(metric, threshold)
+    failing: set[str] = set()
+    for rec in records:
+        qid = rec.get("id")
+        if not qid:
+            continue
+        value = rec.get(metric)
+        if value is None:
+            failing.add(qid)
+            continue
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            failing.add(qid)
+            continue
+        if numeric < resolved_threshold:
+            failing.add(qid)
+    return failing
+
+
+def _load_failing_ids_from_results_file(
+    results_path: Path,
+    *,
+    metric: str,
+    threshold: float | None = None,
+) -> set[str]:
+    """Load failing question IDs from a prior benchmark JSON file."""
+    with open(results_path) as f:
+        payload = json.load(f)
+    records = payload.get("results") or []
+    if not isinstance(records, list):
+        return set()
+    return _collect_failing_ids(records, metric=metric, threshold=threshold)
 
 
 # --- MCP server config ---
 
-def _build_mcp_servers(benchmark_mode: int = 1, dataset_name: str = "") -> dict:
+def _build_mcp_servers(
+    benchmark_mode: int = 1,
+    dataset_name: str = "",
+    embed_model: str = "",
+    embed_dimensions: int | None = None,
+    disable_embedding_tools: bool = False,
+) -> dict:
     """Build MCP server config with API keys forwarded from current env.
 
     Args:
@@ -128,8 +569,14 @@ def _build_mcp_servers(benchmark_mode: int = 1, dataset_name: str = "") -> dict:
     """
     import llm_client  # triggers auto-load of ~/.secrets/api_keys.env
     env = {}
-    for key in ("OPENAI_API_KEY", "GEMINI_API_KEY",
-                "DEEPSEEK_API_KEY", "HOME", "PATH"):
+    for key in (
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "OPENROUTER_API_KEY",
+        "HOME",
+        "PATH",
+    ):
         val = os.environ.get(key)
         if val:
             env[key] = val
@@ -140,6 +587,12 @@ def _build_mcp_servers(benchmark_mode: int = 1, dataset_name: str = "") -> dict:
         env["DIGIMON_LOG_LEVEL"] = digimon_log_level
     if dataset_name:
         env["DIGIMON_PRELOAD_DATASET"] = dataset_name
+    if embed_model:
+        env["DIGIMON_EMBED_MODEL"] = embed_model
+    if isinstance(embed_dimensions, int) and embed_dimensions > 0:
+        env["DIGIMON_EMBED_DIMENSIONS"] = str(embed_dimensions)
+    if disable_embedding_tools:
+        env["DIGIMON_SKIP_VDB_PRELOAD"] = "1"
     return {
         "digimon-kgrag": {
             "command": "/home/brian/miniconda3/envs/digimon/bin/python",
@@ -158,7 +611,7 @@ DIGIMON_MCP_SERVERS = _build_mcp_servers(1)
 DIRECT_TOOLS: list = []
 
 
-async def _init_direct_tools(dataset_name: str) -> list:
+async def _init_direct_tools(dataset_name: str, disable_embedding_tools: bool = False) -> list:
     """Import DIGIMON MCP server module and initialize in-process.
 
     Returns list of tool functions ready for python_tools= parameter.
@@ -169,6 +622,10 @@ async def _init_direct_tools(dataset_name: str) -> list:
     os.environ["LLM_CLIENT_STRICT_MODELS"] = "1"  # ban deprecated models
     if dataset_name:
         os.environ["DIGIMON_PRELOAD_DATASET"] = dataset_name
+    if disable_embedding_tools:
+        os.environ["DIGIMON_SKIP_VDB_PRELOAD"] = "1"
+    else:
+        os.environ.pop("DIGIMON_SKIP_VDB_PRELOAD", None)
 
     import digimon_mcp_stdio_server as dms
 
@@ -198,6 +655,18 @@ async def _init_direct_tools(dataset_name: str) -> list:
         dms.meta_pcst_optimize,
     ]
 
+    # Benchmark planning/disambiguation controls (if available in server mode)
+    for maybe_tool in (
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "bridge_disambiguate",
+    ):
+        if hasattr(dms, maybe_tool):
+            _BENCHMARK_TOOLS.append(getattr(dms, maybe_tool))
+
     # submit_answer is conditionally defined in BENCHMARK_MODE.
     if hasattr(dms, "submit_answer"):
         _BENCHMARK_TOOLS.append(dms.submit_answer)
@@ -216,7 +685,10 @@ async def _init_direct_tools(dataset_name: str) -> list:
         vdb_names = " ".join(vdbs)
 
         if "entities" not in vdb_names:
-            _BENCHMARK_TOOLS = [t for t in _BENCHMARK_TOOLS if t.__name__ != "entity_vdb_search"]
+            _BENCHMARK_TOOLS = [
+                t for t in _BENCHMARK_TOOLS
+                if t.__name__ not in {"entity_vdb_search", "entity_link"}
+            ]
         if "relationship" not in vdb_names:
             _BENCHMARK_TOOLS = [t for t in _BENCHMARK_TOOLS if t.__name__ != "relationship_vdb_search"]
         if "chunk" not in vdb_names:
@@ -227,7 +699,21 @@ async def _init_direct_tools(dataset_name: str) -> list:
         if not (e2r_path.exists() and r2c_path.exists()):
             _BENCHMARK_TOOLS = [t for t in _BENCHMARK_TOOLS if t.__name__ != "chunk_aggregator"]
 
+    if disable_embedding_tools:
+        disabled = {"entity_vdb_search", "chunk_vdb_search", "entity_link"}
+        _BENCHMARK_TOOLS = [t for t in _BENCHMARK_TOOLS if t.__name__ not in disabled]
+        print(
+            f"Direct backend: embedding tools disabled ({', '.join(sorted(disabled))})",
+            file=sys.stderr,
+        )
+
     tool_names = [t.__name__ for t in _BENCHMARK_TOOLS]
+    short_descs = getattr(dms, "_BENCHMARK_SHORT_DESCS", {})
+    for tool_fn in _BENCHMARK_TOOLS:
+        short = short_descs.get(tool_fn.__name__)
+        if isinstance(short, str) and short.strip():
+            setattr(tool_fn, "__tool_description__", short.strip())
+
     print(f"Direct backend: {len(_BENCHMARK_TOOLS)} Python tools loaded: {tool_names}", file=sys.stderr)
     return _BENCHMARK_TOOLS
 
@@ -260,6 +746,68 @@ def _model_slug(model: str) -> str:
     return slug or "unknown"
 
 
+def _resolve_embed_model_for_benchmark(
+    *,
+    explicit_embed_model: str,
+    disable_embedding_tools: bool,
+) -> str:
+    """Choose embedding model for benchmark runs when caller did not specify one.
+
+    Priority:
+    1) explicit --embed-model
+    2) if embedding tools disabled: no override needed
+    3) OPENROUTER_API_KEY present -> route embeddings via OpenRouter credits
+    4) GEMINI_API_KEY present -> use Gemini embedding model
+    5) else: keep default config
+    """
+    explicit = (explicit_embed_model or "").strip()
+    if explicit:
+        return explicit
+    if disable_embedding_tools:
+        return ""
+    if os.environ.get("OPENROUTER_API_KEY"):
+        return "openrouter/openai/text-embedding-3-small"
+    if os.environ.get("GEMINI_API_KEY"):
+        return "gemini/text-embedding-004"
+    return ""
+
+
+def _resolve_fallback_models_for_benchmark(
+    *,
+    model: str,
+    fallback_models_arg: str,
+) -> list[str] | None:
+    """Resolve fallback chain, removing blanks/duplicates/primary model."""
+    raw = (fallback_models_arg or "").strip()
+    if raw.lower() == "none":
+        return None
+
+    if raw:
+        candidates = [m.strip() for m in raw.split(",") if m.strip()]
+    else:
+        lower = model.lower()
+        if lower.startswith("gemini/"):
+            candidates = ["openrouter/deepseek/deepseek-chat", "gpt-5-mini"]
+        elif lower.startswith("openrouter/"):
+            candidates = ["gpt-5-mini", "gemini/gemini-2.5-flash"]
+        else:
+            candidates = ["openrouter/deepseek/deepseek-chat", "gemini/gemini-2.5-flash"]
+
+    primary = model.strip().lower()
+    resolved: list[str] = []
+    seen: set[str] = {primary}
+    for cand in candidates:
+        name = cand.strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        resolved.append(name)
+    return resolved or None
+
+
 # --- Run agent ---
 
 async def run_agent(
@@ -269,10 +817,12 @@ async def run_agent(
     model: str = "codex",
     reasoning_effort: str = "high",
     max_turns: int = 20,
+    max_tool_calls: int | None = 20,
     mcp_session_pool: object = None,
-    mode: str = "fixed",
+    mode: str = CANONICAL_MODE,
     backend: str = "mcp",
     python_tools: list | None = None,
+    temperature: float | None = 0.0,
     fallback_models: list[str] | None = None,
     num_retries: int = 2,
     trace_id: str = "",
@@ -286,7 +836,8 @@ async def run_agent(
     Args:
         mcp_session_pool: Optional MCPSessionPool for reusing MCP connections
             across questions (non-Codex models only).
-        mode: Prompt mode ('fixed' or 'adaptive')
+        max_tool_calls: Tool-call budget per question for non-agent tool loops.
+        mode: Prompt mode (canonical hybrid; legacy aliases are mapped).
         backend: 'mcp' (default) or 'direct' (in-process Python tools)
         python_tools: List of Python callables for direct backend
         trace_id: Trace ID for correlating LLM calls
@@ -313,10 +864,16 @@ async def run_agent(
                 timeout=timeout,
                 python_tools=python_tools,
                 max_turns=max_turns,
+                max_tool_calls=max_tool_calls,
+                require_tool_reasoning=True,
+                enforce_tool_contracts=True,
+                tool_contracts=_BENCHMARK_TOOL_CONTRACTS,
+                initial_artifacts=_BENCHMARK_INITIAL_ARTIFACTS,
                 num_retries=num_retries,
                 task=task,
                 trace_id=trace_id,
                 max_budget=0,
+                **({"temperature": temperature} if temperature is not None else {}),
                 **({"fallback_models": fallback_models} if fallback_models else {}),
             )
         elif _is_codex_model(model):
@@ -356,10 +913,16 @@ async def run_agent(
                 timeout=timeout,
                 mcp_sessions=mcp_session_pool,
                 max_turns=max_turns,
+                max_tool_calls=max_tool_calls,
+                require_tool_reasoning=True,
+                enforce_tool_contracts=True,
+                tool_contracts=_BENCHMARK_TOOL_CONTRACTS,
+                initial_artifacts=_BENCHMARK_INITIAL_ARTIFACTS,
                 num_retries=num_retries,
                 task=task,
                 trace_id=trace_id,
                 max_budget=0,
+                **({"temperature": temperature} if temperature is not None else {}),
                 **({"fallback_models": fallback_models} if fallback_models else {}),
             )
         else:
@@ -370,10 +933,16 @@ async def run_agent(
                 timeout=timeout,
                 mcp_servers=DIGIMON_MCP_SERVERS,
                 max_turns=max_turns,
+                max_tool_calls=max_tool_calls,
+                require_tool_reasoning=True,
+                enforce_tool_contracts=True,
+                tool_contracts=_BENCHMARK_TOOL_CONTRACTS,
+                initial_artifacts=_BENCHMARK_INITIAL_ARTIFACTS,
                 num_retries=num_retries,
                 task=task,
                 trace_id=trace_id,
                 max_budget=0,
+                **({"temperature": temperature} if temperature is not None else {}),
                 **({"fallback_models": fallback_models} if fallback_models else {}),
             )
 
@@ -395,17 +964,48 @@ async def run_agent(
 
         # Extract conversation trace if available
         conversation_trace = None
+        budgeted_tool_calls_used = None
+        rejected_missing_reasoning_calls = None
+        control_loop_suppressed_calls = None
+        tool_contract_rejections = None
+        available_artifacts_final = None
+        tool_contract_violation_events = None
+        artifact_timeline = None
+        tool_arg_coercions = None
+        tool_arg_coercion_calls = None
+        tool_arg_validation_rejections = None
         if isinstance(result.raw_response, dict):
             conversation_trace = result.raw_response.get("conversation_trace")
         elif isinstance(result.raw_response, MCPAgentResult):
             conversation_trace = result.raw_response.conversation_trace or None
+            budgeted_tool_calls_used = result.raw_response.metadata.get("budgeted_tool_calls_used")
+            rejected_missing_reasoning_calls = result.raw_response.metadata.get("rejected_missing_reasoning_calls")
+            control_loop_suppressed_calls = result.raw_response.metadata.get("control_loop_suppressed_calls")
+            tool_contract_rejections = result.raw_response.metadata.get("tool_contract_rejections")
+            available_artifacts_final = result.raw_response.metadata.get("available_artifacts_final")
+            tool_contract_violation_events = result.raw_response.metadata.get("tool_contract_violation_events")
+            artifact_timeline = result.raw_response.metadata.get("artifact_timeline")
+            tool_arg_coercions = result.raw_response.metadata.get("tool_arg_coercions")
+            tool_arg_coercion_calls = result.raw_response.metadata.get("tool_arg_coercion_calls")
+            tool_arg_validation_rejections = result.raw_response.metadata.get("tool_arg_validation_rejections")
 
-        # Extract answer from submit_answer tool call if present
+        # Extract answer from the most recent successful submit_answer call.
+        # Ignore rejected/errored submits so the agent can keep searching.
         answer = None
         reasoning = None
         for tc in reversed(tool_calls):
             tool_name = tc.get("tool", "")
             if tool_name.endswith("submit_answer"):
+                has_error = bool(tc.get("has_error") or tc.get("is_error") or tc.get("error"))
+                if has_error:
+                    continue
+
+                result_preview = tc.get("result_preview")
+                if isinstance(result_preview, str):
+                    # Accept only explicit submit confirmations when result preview is available.
+                    if '"status": "submitted"' not in result_preview:
+                        continue
+
                 args = tc.get("arguments", {})
                 if isinstance(args, str):
                     try:
@@ -435,6 +1035,16 @@ async def run_agent(
             "reasoning": reasoning,
             "full_response": result.content.strip() if _is_agent_sdk_model(model) else None,
             "tool_calls": tool_calls,
+            "budgeted_tool_calls_used": budgeted_tool_calls_used,
+            "rejected_missing_reasoning_calls": rejected_missing_reasoning_calls,
+            "control_loop_suppressed_calls": control_loop_suppressed_calls,
+            "tool_contract_rejections": tool_contract_rejections,
+            "available_artifacts_final": available_artifacts_final,
+            "tool_contract_violation_events": tool_contract_violation_events,
+            "artifact_timeline": artifact_timeline,
+            "tool_arg_coercions": tool_arg_coercions,
+            "tool_arg_coercion_calls": tool_arg_coercion_calls,
+            "tool_arg_validation_rejections": tool_arg_validation_rejections,
             "conversation_trace": conversation_trace,
             "usage": result.usage,
             "cost": result.cost,
@@ -475,25 +1085,125 @@ async def main() -> None:
     parser.add_argument("--resume", action="store_true", help="Resume from previous run")
     parser.add_argument("--model", default="codex", help="Agent model (default: codex). Any litellm model string works.")
     parser.add_argument("--effort", default="high", help="Reasoning effort (Codex only): minimal/low/medium/high")
-    parser.add_argument("--max-turns", type=int, default=50, help="Max tool-calling loop iterations (non-Codex only)")
+    parser.add_argument("--max-tool-calls", type=int, default=20,
+                        help="Tool-call budget per question (non-agent models only).")
+    parser.add_argument("--max-turns", type=int, default=80, help=argparse.SUPPRESS)
     parser.add_argument("--data-root", default="./Data", help="Data root directory")
-    parser.add_argument("--mode", default="fixed", choices=["fixed", "adaptive", "aot"],
-                        help="Prompt mode: 'fixed' (prescribed workflow) or 'adaptive' (agent composes freely)")
+    parser.add_argument("--mode", default=CANONICAL_MODE, choices=["fixed", "adaptive", "aot", "hybrid"],
+                        help="Prompt mode. Canonical is 'hybrid'; fixed/adaptive/aot are legacy aliases.")
     parser.add_argument("--questions", type=str, default=None,
                         help="Comma-separated question IDs to run (e.g. 'q1,q4,q7')")
+    parser.add_argument("--only-failures-from", type=str, default=None,
+                        help="Path to a prior benchmark JSON; run only IDs that failed.")
+    parser.add_argument("--failure-metric", type=str, default="llm_em",
+                        choices=["llm_em", "em", "f1"],
+                        help="Metric used to define failures for --only-failures-from (default: llm_em).")
+    parser.add_argument("--failure-threshold", type=float, default=None,
+                        help="Failure threshold for metric (< threshold => fail). "
+                             "Defaults: llm_em/em=0.5, f1=0.999999.")
+    parser.add_argument("--write-failing-ids", type=str, default=None,
+                        help="Write failing IDs from this run to a file (one ID per line).")
     parser.add_argument("--parallel", type=int, default=1,
                         help="Number of concurrent questions (each gets its own MCP server). Default: 1 (sequential)")
     parser.add_argument("--backend", default="mcp", choices=["mcp", "direct"],
                         help="Tool backend: 'mcp' (subprocess, default) or 'direct' (in-process Python tools)")
     parser.add_argument("--judge-model", default="openrouter/deepseek/deepseek-chat",
                         help="LLM judge model for format-agnostic scoring (default: openrouter/deepseek/deepseek-chat). Set to 'none' to disable.")
-    parser.add_argument("--fallback-models", default="gemini/gemini-2.5-flash",
-                        help="Comma-separated fallback models if primary fails (default: gemini/gemini-2.5-flash). Set to 'none' to disable.")
+    parser.add_argument("--fallback-models", default="",
+                        help="Comma-separated fallback models if primary fails. "
+                             "Default: provider-aware auto chain with primary de-duplicated. "
+                             "Set to 'none' to disable.")
     parser.add_argument("--num-retries", type=int, default=2,
                         help="Number of retries per LLM call with exponential backoff (default: 2). Set higher for flaky models.")
+    parser.add_argument("--temperature", type=float, default=0.0,
+                        help="Sampling temperature for non-SDK tool-calling runs (default: 0.0).")
+    parser.add_argument("--embed-model", type=str, default="",
+                        help="Optional embedding model override for DIGIMON tools (e.g. text-embedding-004).")
+    parser.add_argument("--embed-dimensions", type=int, default=None,
+                        help="Optional embedding dimensions override (must match chosen embed model).")
+    parser.add_argument("--disable-embedding-tools", action="store_true",
+                        help="Disable embedding-based retrieval tools (entity_vdb_search/chunk_vdb_search).")
+    parser.add_argument(
+        "--agent-spec",
+        type=str,
+        default=str(Path(__file__).parent.parent / "specs" / "agent_spec.benchmark.yaml"),
+        help="AgentSpec path (required for benchmark/eval runs unless explicitly opted out). Use 'none' with --allow-missing-agent-spec to bypass.",
+    )
+    parser.add_argument(
+        "--allow-missing-agent-spec",
+        action="store_true",
+        help="Explicitly opt out of AgentSpec requirement. Must provide --missing-agent-spec-reason.",
+    )
+    parser.add_argument(
+        "--missing-agent-spec-reason",
+        type=str,
+        default="",
+        help="Required justification when --allow-missing-agent-spec is set.",
+    )
     parser.add_argument("--verbose", action="store_true",
                         help="Show full DIGIMON debug logs on stderr. Default: quiet (WARNING+ only on stderr, DEBUG in log file).")
+    parser.add_argument(
+        "--post-det-checks",
+        type=str,
+        default="default",
+        help="Post-run deterministic checks over logged items: none|default|comma-separated names.",
+    )
+    parser.add_argument(
+        "--post-review-rubric",
+        type=str,
+        default="",
+        help="Optional post-run LLM review rubric name/path (e.g. extraction_quality).",
+    )
+    parser.add_argument(
+        "--post-review-model",
+        type=str,
+        default="",
+        help="Optional judge model override for --post-review-rubric.",
+    )
+    parser.add_argument(
+        "--post-review-max-items",
+        type=int,
+        default=0,
+        help="Max items to review in post-run rubric scoring (0=all).",
+    )
+    parser.add_argument(
+        "--post-gate-policy",
+        type=str,
+        default="",
+        help="Optional gate policy JSON or @path evaluated after run completion. "
+             "If omitted, dataset defaults may apply (MuSiQue).",
+    )
+    parser.add_argument(
+        "--post-gate-fail-exit-code",
+        action="store_true",
+        help="Exit with code 2 when post-run gate policy evaluates to FAIL.",
+    )
     args = parser.parse_args()
+    requested_mode = args.mode
+    effective_mode, was_aliased = _resolve_mode(requested_mode)
+    args.mode = effective_mode
+    effective_embed_model = _resolve_embed_model_for_benchmark(
+        explicit_embed_model=(args.embed_model or ""),
+        disable_embedding_tools=bool(args.disable_embedding_tools),
+    )
+    if was_aliased:
+        print(
+            f"WARNING: --mode {requested_mode!r} is a legacy alias; using canonical mode '{effective_mode}'.",
+            file=sys.stderr,
+        )
+    if args.allow_missing_agent_spec and not (args.missing_agent_spec_reason or "").strip():
+        print(
+            "ERROR: --allow-missing-agent-spec requires --missing-agent-spec-reason "
+            "with an explicit justification.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    agent_spec_arg = (args.agent_spec or "").strip()
+    agent_spec_value: Path | None
+    if agent_spec_arg.lower() in {"", "none", "off"}:
+        agent_spec_value = None
+    else:
+        agent_spec_value = Path(agent_spec_arg).expanduser()
 
     # Suppress DIGIMON internal logging on stderr unless --verbose
     if not args.verbose:
@@ -501,17 +1211,19 @@ async def main() -> None:
 
     # Rebuild MCP servers with correct benchmark mode + dataset pre-loading
     global DIGIMON_MCP_SERVERS, DIRECT_TOOLS
-    benchmark_mode = 1  # both fixed and adaptive hide build/pipeline tools
-    DIGIMON_MCP_SERVERS = _build_mcp_servers(benchmark_mode, dataset_name=args.dataset)
+    benchmark_mode = 1  # benchmark mode hides build/pipeline shortcuts
+    DIGIMON_MCP_SERVERS = _build_mcp_servers(
+        benchmark_mode,
+        dataset_name=args.dataset,
+        embed_model=effective_embed_model,
+        embed_dimensions=args.embed_dimensions,
+        disable_embedding_tools=args.disable_embedding_tools,
+    )
 
     # Validate backend choice
     if args.backend == "direct" and _is_agent_sdk_model(args.model):
         print("ERROR: --backend direct is only for litellm models (not agent SDKs like codex/claude-code)")
         sys.exit(1)
-
-    # Initialize direct backend if requested
-    if args.backend == "direct":
-        DIRECT_TOOLS = await _init_direct_tools(args.dataset)
 
     dataset_path = Path(args.data_root) / args.dataset
     if not dataset_path.exists():
@@ -519,22 +1231,89 @@ async def main() -> None:
         sys.exit(1)
 
     all_questions = load_questions(str(dataset_path))
+    selected_ids: set[str] | None = None
+
+    if args.only_failures_from:
+        failure_path = Path(args.only_failures_from)
+        if not failure_path.exists():
+            print(f"ERROR: --only-failures-from file not found: {failure_path}")
+            sys.exit(1)
+        selected_ids = _load_failing_ids_from_results_file(
+            failure_path,
+            metric=args.failure_metric,
+            threshold=args.failure_threshold,
+        )
+        resolved_threshold = _resolve_failure_threshold(args.failure_metric, args.failure_threshold)
+        print(
+            f"Loaded {len(selected_ids)} failing IDs from {failure_path} "
+            f"(metric={args.failure_metric}, threshold={resolved_threshold})"
+        )
+
     if args.questions:
-        qids = set(args.questions.split(","))
-        questions = [q for q in all_questions if q["id"] in qids]
-        print(f"Loaded {len(questions)} questions from {args.dataset} (ids={args.questions})")
+        requested_ids = {qid.strip() for qid in args.questions.split(",") if qid.strip()}
+        selected_ids = requested_ids if selected_ids is None else (selected_ids & requested_ids)
+        print(f"Question ID filter active: {len(selected_ids)} IDs")
+
+    if selected_ids is not None:
+        known_ids = {q.get("id") for q in all_questions if q.get("id")}
+        missing_ids = sorted([qid for qid in selected_ids if qid not in known_ids])
+        if missing_ids:
+            preview = ", ".join(missing_ids[:8])
+            extra = f" (+{len(missing_ids)-8} more)" if len(missing_ids) > 8 else ""
+            print(f"WARNING: {len(missing_ids)} selected IDs not found in dataset: {preview}{extra}")
+        questions = [q for q in all_questions if q.get("id") in selected_ids]
+        print(f"Loaded {len(questions)} selected questions from {args.dataset}")
     else:
         questions = all_questions[args.start:]
         if args.num is not None:
             questions = questions[:args.num]
         print(f"Loaded {len(questions)} questions from {args.dataset} (start={args.start}, num={args.num})")
 
+    if not questions:
+        print("No questions selected; exiting.")
+        return
+
+    post_gate_policy_effective, post_gate_policy_source = _resolve_post_gate_policy(
+        args.dataset,
+        args.post_gate_policy,
+    )
+
+    # Initialize direct backend only after question selection resolves.
+    if args.backend == "direct":
+        if effective_embed_model:
+            os.environ["DIGIMON_EMBED_MODEL"] = effective_embed_model
+        if isinstance(args.embed_dimensions, int) and args.embed_dimensions > 0:
+            os.environ["DIGIMON_EMBED_DIMENSIONS"] = str(args.embed_dimensions)
+        DIRECT_TOOLS = await _init_direct_tools(
+            args.dataset,
+            disable_embedding_tools=args.disable_embedding_tools,
+        )
+
+    run_provenance = _build_run_provenance(
+        dataset_path=dataset_path,
+        questions=questions,
+        mode=args.mode,
+    )
+    run_provenance["post_run_eval_config"] = {
+        "det_checks": args.post_det_checks,
+        "review_rubric": (args.post_review_rubric or "").strip() or None,
+        "review_model": (args.post_review_model or "").strip() or None,
+        "review_max_items": args.post_review_max_items,
+        "gate_policy": post_gate_policy_effective or None,
+        "gate_policy_source": post_gate_policy_source,
+        "gate_fail_exit_code": bool(args.post_gate_fail_exit_code),
+    }
+    run_provenance["agent_spec_path"] = str(agent_spec_value) if agent_spec_value is not None else None
+    run_provenance["allow_missing_agent_spec"] = bool(args.allow_missing_agent_spec)
+    if args.allow_missing_agent_spec:
+        run_provenance["missing_agent_spec_reason"] = (args.missing_agent_spec_reason or "").strip() or None
+
     # Output files — include model slug + timestamp so runs never overwrite
     run_ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     slug = _model_slug(args.model)
     output_dir = Path("results")
     output_dir.mkdir(exist_ok=True)
-    mode_tag = f"_{args.mode}" if args.mode != "fixed" else ""
+    mode_tag = f"_{args.mode}" if args.mode != CANONICAL_MODE else ""
     output_path = output_dir / f"{args.dataset}_{slug}{mode_tag}_{run_ts}.json"
     log_path = output_dir / f"{args.dataset}_{slug}{mode_tag}_{run_ts}.log"
 
@@ -560,9 +1339,20 @@ async def main() -> None:
     total_f1 = 0.0
     total_cost = 0.0
     judge_model = args.judge_model if args.judge_model.lower() != "none" else ""
-    fallback_models = [m.strip() for m in args.fallback_models.split(",") if m.strip().lower() != "none"] or None
+    fallback_models = _resolve_fallback_models_for_benchmark(
+        model=args.model,
+        fallback_models_arg=(args.fallback_models or ""),
+    )
     total_llm_em: int | None = 0 if judge_model else None
     n_done = len(results)
+    feature_profile = {
+        "name": "benchmark_strict",
+        "features": {
+            "experiment_context": True,
+            "provenance": True,
+            "tool_reasoning": True,
+        },
+    }
 
     for r in results:
         total_em += r["em"]
@@ -583,6 +1373,34 @@ async def main() -> None:
     else:
         backend = "MCP agent loop"
     print(f"Model: {args.model} ({backend}, timeout={args.timeout}s)")
+    print(f"Mode: {args.mode}" + (f" (requested: {requested_mode})" if requested_mode != args.mode else ""))
+    if args.backend != "mcp" or not _is_agent_sdk_model(args.model):
+        print(f"Temperature: {args.temperature}")
+    print(f"Fallback models: {fallback_models if fallback_models else 'none'}")
+    if effective_embed_model:
+        print(f"Embedding model override: {effective_embed_model}")
+    print(f"Post-run deterministic checks: {args.post_det_checks}")
+    if args.post_review_rubric:
+        print(
+            "Post-run review: "
+            f"rubric={args.post_review_rubric} "
+            f"model={(args.post_review_model or 'default')} "
+            f"max_items={(args.post_review_max_items if args.post_review_max_items > 0 else 'all')}"
+        )
+    if post_gate_policy_effective:
+        gate_policy_label = (
+            "dataset default"
+            if post_gate_policy_source == "dataset_default"
+            else "explicit"
+        )
+        print(
+            "Post-run gate policy: "
+            f"{post_gate_policy_effective[:120]}"
+            f"{'...' if len(post_gate_policy_effective) > 120 else ''}"
+            f" ({gate_policy_label})"
+        )
+    if not _is_agent_sdk_model(args.model):
+        print(f"Tool-call budget (retrieval only; todo_* + submit_answer exempt): {args.max_tool_calls}")
 
     parallel = max(1, args.parallel)
     if parallel > 1 and _is_agent_sdk_model(args.model):
@@ -593,19 +1411,40 @@ async def main() -> None:
     print(f"AGENT BENCHMARK: {args.dataset} ({len(questions)} questions, parallel={parallel})")
     print(f"{'='*70}\n")
 
-    _wall_t0 = time.monotonic()
-
     # Register experiment run in llm_client observability
     _experiment_run_id = llm_start_run(
         dataset=args.dataset,
         model=args.model,
+        task="digimon.benchmark",
         config={
-            "backend": args.backend, "mode": args.mode,
-            "timeout": args.timeout, "max_turns": args.max_turns,
+            "backend": args.backend,
+            "mode": args.mode,
+            "requested_mode": requested_mode,
+            "timeout": args.timeout,
+            "max_tool_calls": args.max_tool_calls,
+            "require_tool_reasoning": True,
+            "max_turns_fuse": args.max_turns,
             "parallel": parallel, "judge_model": judge_model or None,
             "fallback_models": fallback_models,
             "num_retries": args.num_retries,
+            "temperature": args.temperature,
+            "embed_model": (args.embed_model or "").strip() or None,
+            "effective_embed_model": effective_embed_model or None,
+            "embed_dimensions": args.embed_dimensions,
+            "disable_embedding_tools": bool(args.disable_embedding_tools),
+            "post_det_checks": args.post_det_checks,
+            "post_review_rubric": (args.post_review_rubric or "").strip() or None,
+            "post_review_model": (args.post_review_model or "").strip() or None,
+            "post_review_max_items": args.post_review_max_items,
+            "post_gate_policy": post_gate_policy_effective or None,
+            "post_gate_policy_source": post_gate_policy_source,
+            "post_gate_fail_exit_code": bool(args.post_gate_fail_exit_code),
         },
+        provenance=run_provenance,
+        feature_profile=feature_profile,
+        agent_spec=agent_spec_value,
+        allow_missing_agent_spec=bool(args.allow_missing_agent_spec),
+        missing_agent_spec_reason=(args.missing_agent_spec_reason or "").strip() or None,
         metrics_schema=["em", "f1", "llm_em"],
         project="Digimon_for_KG_application",
     )
@@ -615,7 +1454,12 @@ async def main() -> None:
     # Lock protects running totals, results list, log_file, and incremental saves
     output_lock = asyncio.Lock()
 
-    def _score_and_record(q: dict, agent_result: dict, llm_em_val: int | None = None) -> dict:
+    def _score_and_record(
+        q: dict,
+        agent_result: dict,
+        llm_em_val: int | None = None,
+        trace_id: str | None = None,
+    ) -> dict:
         """Score a question result and build the result record. Pure function."""
         q_id = q["id"]
         gold = q["answer"]
@@ -642,12 +1486,21 @@ async def main() -> None:
         duration_ms = usage.get("duration_ms", 0)
         duration_api_ms = usage.get("duration_api_ms", 0)
         num_turns = usage.get("num_turns", 0)
+        composability = _build_composability_diagnostics(
+            tool_calls=tool_calls,
+            tool_contract_rejections=agent_result.get("tool_contract_rejections"),
+            rejected_missing_reasoning_calls=agent_result.get("rejected_missing_reasoning_calls"),
+            control_loop_suppressed_calls=agent_result.get("control_loop_suppressed_calls"),
+            tool_contract_violation_events=agent_result.get("tool_contract_violation_events"),
+            available_artifacts_final=agent_result.get("available_artifacts_final"),
+        )
 
         return {
             "id": q_id,
             "question": question,
             "gold": gold,
             "predicted": predicted,
+            "trace_id": trace_id,
             "reasoning": reasoning,
             "full_response": agent_result.get("full_response"),
             "type": q_type,
@@ -657,6 +1510,21 @@ async def main() -> None:
             "latency_s": elapsed,
             "cost": cost,
             "n_tool_calls": len(tool_calls),
+            "n_budgeted_tool_calls": agent_result.get("budgeted_tool_calls_used"),
+            "n_rejected_missing_reasoning_calls": agent_result.get("rejected_missing_reasoning_calls"),
+            "n_control_loop_suppressed_calls": agent_result.get("control_loop_suppressed_calls"),
+            "n_tool_contract_rejections": agent_result.get("tool_contract_rejections"),
+            "n_tool_arg_coercions": agent_result.get("tool_arg_coercions"),
+            "n_tool_arg_coercion_calls": agent_result.get("tool_arg_coercion_calls"),
+            "n_tool_arg_validation_rejections": agent_result.get("tool_arg_validation_rejections"),
+            "n_tool_call_errors": composability.get("n_errors", 0),
+            "n_tool_unavailable_errors": composability.get("error_categories", {}).get("tool_unavailable", 0),
+            "n_tool_interface_mismatch_errors": composability.get("error_categories", {}).get("tool_interface_mismatch", 0),
+            "n_tool_missing_prerequisite_errors": composability.get("error_categories", {}).get("missing_prerequisite", 0),
+            "available_artifacts_final": agent_result.get("available_artifacts_final"),
+            "tool_contract_violation_events": agent_result.get("tool_contract_violation_events"),
+            "artifact_timeline": agent_result.get("artifact_timeline"),
+            "composability": composability,
             "tool_calls": tool_names,
             "tool_details": tool_calls,
             "input_tokens": input_tokens,
@@ -694,7 +1562,52 @@ async def main() -> None:
         total_in = record["input_tokens"] + record["cache_read_input_tokens"]
         llm_em_str = f"  LLM_EM={record['llm_em']}" if record.get("llm_em") is not None else ""
         lines.append(f"  EM={record['em']}{llm_em_str}  F1={record['f1']:.2f}  ({record['latency_s']:.1f}s, ${record['cost']:.4f})")
-        lines.append(f"  Tools: {record['n_tool_calls']} calls {record['tool_calls']}")
+        budgeted_calls = record.get("n_budgeted_tool_calls")
+        rejected_reasoning = record.get("n_rejected_missing_reasoning_calls")
+        contract_rejections = record.get("n_tool_contract_rejections")
+        if budgeted_calls is None:
+            lines.append(f"  Tools: {record['n_tool_calls']} calls {record['tool_calls']}")
+        else:
+            suffix_parts: list[str] = []
+            if isinstance(rejected_reasoning, int) and rejected_reasoning > 0:
+                suffix_parts.append(f"{rejected_reasoning} rejected-missing-reasoning")
+            if isinstance(contract_rejections, int) and contract_rejections > 0:
+                suffix_parts.append(f"{contract_rejections} rejected-contract")
+            suffix = ""
+            if suffix_parts:
+                suffix = ", " + ", ".join(suffix_parts)
+            lines.append(
+                f"  Tools: {record['n_tool_calls']} calls ({budgeted_calls} budgeted{suffix}) {record['tool_calls']}"
+            )
+        comp = record.get("composability") or {}
+        if comp:
+            cat = comp.get("error_categories") or {}
+            lines.append(
+                "  Composability: "
+                f"status={comp.get('status', 'unknown')} "
+                f"errors={comp.get('n_errors', 0)} "
+                f"unavailable={cat.get('tool_unavailable', 0)} "
+                f"interface={cat.get('tool_interface_mismatch', 0)} "
+                f"prereq={cat.get('missing_prerequisite', 0)} "
+                f"contract={comp.get('n_contract_rejections', 0)} "
+                f"suppressed={comp.get('n_control_loop_suppressed', 0)}"
+            )
+            error_tools = comp.get("error_tools") or {}
+            if error_tools:
+                top_tools = ", ".join(f"{k}:{v}" for k, v in list(error_tools.items())[:5])
+                lines.append(f"  ComposabilityTools: {top_tools}")
+            unknown_tools = comp.get("unknown_tools") or []
+            if unknown_tools:
+                lines.append(f"  ComposabilityUnknownTools: {', '.join(unknown_tools)}")
+        arg_coercions = int(record.get("n_tool_arg_coercions") or 0)
+        arg_coercion_calls = int(record.get("n_tool_arg_coercion_calls") or 0)
+        arg_validation_rejections = int(record.get("n_tool_arg_validation_rejections") or 0)
+        if arg_coercions or arg_validation_rejections:
+            lines.append(
+                "  ToolArgs: "
+                f"coercions={arg_coercions} across {arg_coercion_calls} calls, "
+                f"validation_rejections={arg_validation_rejections}"
+            )
         lines.append(f"  Tokens: {fresh:,} fresh + {record['cache_read_input_tokens']:,} cached = {total_in:,} total in, {record['output_tokens']:,} out")
         if record["duration_ms"]:
             api_s = record["duration_api_ms"] / 1000
@@ -720,11 +1633,21 @@ async def main() -> None:
             llm_em_icon = "L" if record["llm_em"] else "l"
         err = " ERR" if record.get("error") else ""
         warn = " W" if record.get("warnings") else ""
+        comp_errors = int(record.get("n_tool_call_errors") or 0)
+        interface_errors = int(record.get("n_tool_interface_mismatch_errors") or 0)
+        arg_validation_rejections = int(record.get("n_tool_arg_validation_rejections") or 0)
+        comp = ""
+        if comp_errors > 0:
+            comp = f" C{comp_errors}"
+            if interface_errors > 0:
+                comp += f"/I{interface_errors}"
+        if arg_validation_rejections > 0:
+            comp += f" A{arg_validation_rejections}"
         running_em = 100 * total_em_now / n_done_now
         running_llm = f" LLM={100*total_llm_em_now/n_done_now:.0f}%" if total_llm_em_now is not None else ""
         return (f"[{n_done_now:3d}/{n_total}] {q_id:5s} {em_icon}{llm_em_icon} "
                 f"F1={record['f1']:.2f} {record['n_tool_calls']:2d}t {record['latency_s']:5.1f}s "
-                f"${record['cost']:.4f}{err}{warn}  "
+                f"${record['cost']:.4f}{err}{warn}{comp}  "
                 f"| EM={running_em:.1f}%{running_llm} ${total_cost_now:.2f}")
 
     async def _process_question(q: dict, session_pool: object) -> dict:
@@ -735,30 +1658,33 @@ async def main() -> None:
         q_hash = md5(q["question"].encode()).hexdigest()[:8]
         trace_id = f"digimon.benchmark.{args.dataset}.{q_id}.{q_hash}"
 
-        agent_result = await run_agent(
-            q["question"], args.dataset,
-            timeout=args.timeout,
-            model=args.model,
-            reasoning_effort=args.effort,
-            max_turns=args.max_turns,
-            mcp_session_pool=session_pool,
-            mode=args.mode,
-            backend=args.backend,
-            python_tools=DIRECT_TOOLS if args.backend == "direct" else None,
-            fallback_models=fallback_models,
-            num_retries=args.num_retries,
-            trace_id=trace_id,
-        )
+        with llm_activate_feature_profile(feature_profile), llm_activate_experiment_run(_experiment_run_id):
+            agent_result = await run_agent(
+                q["question"], args.dataset,
+                timeout=args.timeout,
+                model=args.model,
+                reasoning_effort=args.effort,
+                max_turns=args.max_turns,
+                max_tool_calls=args.max_tool_calls,
+                mcp_session_pool=session_pool,
+                mode=args.mode,
+                backend=args.backend,
+                python_tools=DIRECT_TOOLS if args.backend == "direct" else None,
+                temperature=args.temperature,
+                fallback_models=fallback_models,
+                num_retries=args.num_retries,
+                trace_id=trace_id,
+            )
 
-        # LLM judge (runs before lock — it's an independent LLM call)
-        llm_em_val: int | None = None
-        if judge_model and agent_result["answer"]:
-            llm_em_val = int(await llm_judge(
-                q["question"], agent_result["answer"], q["answer"],
-                model=judge_model,
-            ))
+            # LLM judge (runs before lock — it's an independent LLM call)
+            llm_em_val: int | None = None
+            if judge_model and agent_result["answer"]:
+                llm_em_val = int(await llm_judge(
+                    q["question"], agent_result["answer"], q["answer"],
+                    model=judge_model,
+                ))
 
-        record = _score_and_record(q, agent_result, llm_em_val=llm_em_val)
+        record = _score_and_record(q, agent_result, llm_em_val=llm_em_val, trace_id=trace_id)
 
         # Log to centralized experiment tracking (thread-safe, never raises)
         llm_log_item(
@@ -767,8 +1693,10 @@ async def main() -> None:
             predicted=record["predicted"], gold=record["gold"],
             latency_s=record["latency_s"], cost=record["cost"],
             n_tool_calls=record["n_tool_calls"], error=record.get("error"),
+            trace_id=trace_id,
             extra={
                 "tool_calls": record["tool_calls"],
+                "composability": record.get("composability"),
                 "warnings": record.get("warnings"),
                 "models_used": record.get("models_used"),
                 "input_tokens": record.get("input_tokens"),
@@ -802,7 +1730,8 @@ async def main() -> None:
 
             results.append(record)
             _save_results(output_path, args.dataset, args.model, len(questions),
-                          n_done, total_em, total_f1, total_cost, results)
+                          n_done, total_em, total_f1, total_cost, results,
+                          run_provenance=run_provenance)
 
         return record
 
@@ -879,16 +1808,39 @@ async def main() -> None:
     finally:
         log_file.close()
 
-    # Final summary + experiment log
+    # Finalize centralized experiment log (timing auto-captured by llm_client)
+    run_status = "completed" if n_done == len(questions) else "interrupted"
+    run_record = llm_finish_run(run_id=_experiment_run_id, status=run_status)
+    post_run_eval: dict[str, object] = {}
+    exit_code = 0
+
+    # Final summary
     if n_done > 0:
         avg_tools = sum(r["n_tool_calls"] for r in results) / n_done
         avg_latency = sum(r["latency_s"] for r in results) / n_done
         total_input = sum(r.get("input_tokens", 0) for r in results)
         total_output = sum(r.get("output_tokens", 0) for r in results)
         n_errors = sum(1 for r in results if r.get("error"))
+        total_tool_call_errors = sum(int(r.get("n_tool_call_errors") or 0) for r in results)
+        total_interface_errors = sum(int(r.get("n_tool_interface_mismatch_errors") or 0) for r in results)
+        total_prereq_errors = sum(int(r.get("n_tool_missing_prerequisite_errors") or 0) for r in results)
+        total_arg_coercions = sum(int(r.get("n_tool_arg_coercions") or 0) for r in results)
+        total_arg_validation_rejections = sum(
+            int(r.get("n_tool_arg_validation_rejections") or 0) for r in results
+        )
+        total_unavailable_errors = sum(
+            int((r.get("composability") or {}).get("error_categories", {}).get("tool_unavailable", 0))
+            for r in results
+        )
+        comp_affected_questions = sum(1 for r in results if int(r.get("n_tool_call_errors") or 0) > 0)
 
         print(f"\n{'='*70}")
-        wall_time = time.monotonic() - _wall_t0
+        wall_time = float(run_record.get("wall_time_s") or 0.0)
+        cpu_time = float(run_record.get("cpu_time_s") or 0.0)
+        cpu_user = float(run_record.get("cpu_user_s") or 0.0)
+        cpu_system = float(run_record.get("cpu_system_s") or 0.0)
+        wall_per_q = (wall_time / n_done) if wall_time > 0 else 0.0
+        cpu_wall = (cpu_time / wall_time) if wall_time > 0 else 0.0
         print(f"FINAL: {n_done}/{len(questions)} questions (parallel={parallel})")
         print(f"  EM:    {100*total_em/n_done:.1f}%")
         if total_llm_em is not None:
@@ -896,24 +1848,155 @@ async def main() -> None:
         print(f"  F1:    {100*total_f1/n_done:.1f}%")
         print(f"  Cost:  ${total_cost:.2f}")
         print(f"  Tools: {avg_tools:.1f} calls/question avg")
-        print(f"  Wall:  {wall_time:.1f}s ({wall_time/n_done:.1f}s/q effective)")
+        print(
+            f"  Composability: {total_tool_call_errors} tool-call errors "
+            f"({total_unavailable_errors} unavailable, {total_interface_errors} interface, {total_prereq_errors} prereq) "
+            f"across {comp_affected_questions}/{n_done} questions"
+        )
+        print(
+            "  ToolArgs: "
+            f"{total_arg_coercions} coercions, "
+            f"{total_arg_validation_rejections} validation rejections"
+        )
+        print(f"  Wall:  {wall_time:.1f}s ({wall_per_q:.1f}s/q effective)")
+        print(
+            f"  CPU:   {cpu_time:.1f}s"
+            f" (user={cpu_user:.1f}s, sys={cpu_system:.1f}s, cpu/wall={cpu_wall:.2f}x)"
+        )
+
+        # Post-run evaluation hooks (triage/checks/review/gates).
+        run_items = llm_get_run_items(_experiment_run_id)
+        if not run_items:
+            run_items = [
+                {
+                    "item_id": r.get("id"),
+                    "metrics": {
+                        "em": r.get("em"),
+                        "f1": r.get("f1"),
+                        "llm_em": r.get("llm_em"),
+                    },
+                    "predicted": r.get("predicted"),
+                    "gold": r.get("gold"),
+                    "error": r.get("error"),
+                    "trace_id": r.get("trace_id"),
+                    "extra": {
+                        "composability": r.get("composability"),
+                        "warnings": r.get("warnings"),
+                        "tool_calls": r.get("tool_calls"),
+                    },
+                }
+                for r in results
+            ]
+
+        triage_report = triage_items(run_items)
+        post_run_eval["triage"] = triage_report
+        triage_counts = triage_report.get("category_counts") or {}
+        triage_str = "  ".join(f"{k}={v}" for k, v in triage_counts.items())
+        print(f"  PostEval Triage: {triage_str or '-'}")
+
+        det_checks_raw = (args.post_det_checks or "").strip()
+        deterministic_report = None
+        if det_checks_raw.lower() not in {"", "none", "off", "0", "false"}:
+            deterministic_report = run_deterministic_checks_for_items(
+                run_items,
+                checks=det_checks_raw,
+            )
+            post_run_eval["deterministic_checks"] = deterministic_report
+            print(
+                "  PostEval Checks: "
+                f"pass_rate={deterministic_report.get('pass_rate')} "
+                f"failed_items={deterministic_report.get('n_failed_items')}/"
+                f"{deterministic_report.get('n_items')}"
+            )
+
+        review_report = None
+        review_rubric = (args.post_review_rubric or "").strip()
+        if review_rubric:
+            review_report = review_items_with_rubric(
+                run_items,
+                rubric=review_rubric,
+                judge_model=(args.post_review_model or "").strip() or None,
+                task_prefix=f"digimon.benchmark.post_review.{_experiment_run_id}",
+                max_items=args.post_review_max_items if args.post_review_max_items > 0 else None,
+            )
+            post_run_eval["review"] = review_report
+            print(
+                "  PostEval Review: "
+                f"rubric={review_report.get('rubric')} "
+                f"avg={review_report.get('avg_overall_score')} "
+                f"scored={review_report.get('n_scored')}/"
+                f"{review_report.get('n_items_considered')} "
+                f"failed={review_report.get('n_failed')}"
+            )
+
+        gate_failed = False
+        gate_policy_raw = (post_gate_policy_effective or "").strip()
+        if gate_policy_raw:
+            try:
+                gate_policy = load_gate_policy(gate_policy_raw)
+                gate_signals = build_gate_signals(
+                    run_info=run_record,
+                    items=run_items,
+                    deterministic_report=deterministic_report,
+                    review_report=review_report,
+                )
+                gate_result = evaluate_gate_policy(policy=gate_policy, signals=gate_signals)
+                post_run_eval["gate_policy"] = gate_policy
+                post_run_eval["gate_policy_source"] = post_gate_policy_source
+                post_run_eval["gate_result"] = gate_result
+                gate_failed = not bool(gate_result.get("passed", False))
+                print(f"  PostEval Gate: {'PASS' if not gate_failed else 'FAIL'}")
+            except Exception as exc:
+                gate_failed = True
+                post_run_eval["gate_policy_error"] = str(exc)
+                print(f"  PostEval Gate: FAIL ({exc})")
+
+        if gate_failed:
+            run_status = "failed_gate"
+            run_record = llm_finish_run(run_id=_experiment_run_id, status=run_status)
+            if args.post_gate_fail_exit_code:
+                exit_code = 2
+
         print(f"{'='*70}")
         print(f"Results saved to {output_path}")
 
-        # Finalize centralized experiment log
-        run_status = "completed" if n_done == len(questions) else "interrupted"
-        llm_finish_run(
-            run_id=_experiment_run_id,
-            wall_time_s=wall_time,
-            status=run_status,
+        if args.write_failing_ids:
+            failing_ids = sorted(
+                _collect_failing_ids(
+                    results,
+                    metric=args.failure_metric,
+                    threshold=args.failure_threshold,
+                )
+            )
+            failing_path = Path(args.write_failing_ids)
+            failing_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = "\n".join(failing_ids)
+            if payload:
+                payload += "\n"
+            failing_path.write_text(payload)
+            resolved_threshold = _resolve_failure_threshold(args.failure_metric, args.failure_threshold)
+            print(
+                f"Failing IDs written to {failing_path} "
+                f"(count={len(failing_ids)}, metric={args.failure_metric}, threshold={resolved_threshold})"
+            )
+
+        # Persist post-run evaluation bundle into the benchmark JSON artifact.
+        _save_results(
+            output_path, args.dataset, args.model, len(questions),
+            n_done, total_em, total_f1, total_cost, results,
+            run_provenance=run_provenance,
+            post_run_eval=post_run_eval,
         )
-        print(f"Experiment logged to llm_client observability (run_id={_experiment_run_id})")
+
+    print(f"Experiment logged to llm_client observability (run_id={_experiment_run_id})")
 
     # Close litellm's cached async HTTP clients and let pending logging coroutines
     # drain so asyncio.run() can tear down cleanly (no SSL transport errors).
     import litellm
     await litellm.close_litellm_async_clients()
     await asyncio.sleep(0.1)
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 def _save_results(
@@ -926,31 +2009,76 @@ def _save_results(
     total_f1: float,
     total_cost: float,
     results: list[dict],
+    run_provenance: dict[str, object] | None = None,
+    post_run_eval: dict[str, object] | None = None,
 ) -> None:
     """Save results JSON incrementally."""
     avg_tools = sum(r["n_tool_calls"] for r in results) / len(results) if results else 0
     avg_latency = sum(r["latency_s"] for r in results) / len(results) if results else 0
     total_input = sum(r.get("input_tokens", 0) for r in results)
     total_output = sum(r.get("output_tokens", 0) for r in results)
+    comp_total_errors = sum(int(r.get("n_tool_call_errors") or 0) for r in results)
+    comp_total_interface = sum(int(r.get("n_tool_interface_mismatch_errors") or 0) for r in results)
+    comp_total_prereq = sum(int(r.get("n_tool_missing_prerequisite_errors") or 0) for r in results)
+    comp_total_arg_coercions = sum(int(r.get("n_tool_arg_coercions") or 0) for r in results)
+    comp_total_arg_validation_rejections = sum(
+        int(r.get("n_tool_arg_validation_rejections") or 0) for r in results
+    )
+    comp_total_unavailable = sum(
+        int((r.get("composability") or {}).get("error_categories", {}).get("tool_unavailable", 0))
+        for r in results
+    )
+    comp_affected_questions = sum(1 for r in results if int(r.get("n_tool_call_errors") or 0) > 0)
+    comp_top_question_ids = [
+        r.get("id")
+        for r in sorted(
+            results,
+            key=lambda rec: int(rec.get("n_tool_call_errors") or 0),
+            reverse=True,
+        )
+        if int(r.get("n_tool_call_errors") or 0) > 0
+    ][:10]
 
-    # Compute LLM EM if any results have it
-    llm_em_vals = [r["llm_em"] for r in results if r.get("llm_em") is not None]
-    avg_llm_em = 100 * sum(llm_em_vals) / len(llm_em_vals) if llm_em_vals else None
+    # Compute LLM EM in two forms:
+    # - avg_llm_em: across all completed questions (None treated as 0/fail)
+    # - avg_llm_em_judged: across only judged rows (llm_em is 0/1)
+    llm_em_judged = [int(r["llm_em"]) for r in results if r.get("llm_em") is not None]
+    if llm_em_judged:
+        llm_em_all = [int(r.get("llm_em") or 0) for r in results]
+        avg_llm_em = (100 * sum(llm_em_all) / n_done) if n_done else None
+        avg_llm_em_judged = 100 * sum(llm_em_judged) / len(llm_em_judged)
+    else:
+        avg_llm_em = None
+        avg_llm_em_judged = None
 
     with open(output_path, "w") as f:
         json.dump({
             "dataset": dataset,
             "model": model,
+            "run_provenance": run_provenance or {},
             "n_questions": n_questions,
             "n_completed": n_done,
             "avg_em": 100 * total_em / n_done if n_done else 0,
             "avg_llm_em": avg_llm_em,
+            "avg_llm_em_judged": avg_llm_em_judged,
+            "n_llm_judged": len(llm_em_judged),
             "avg_f1": 100 * total_f1 / n_done if n_done else 0,
             "total_cost": round(total_cost, 4),
             "avg_tool_calls": round(avg_tools, 1),
             "avg_latency_s": round(avg_latency, 1),
             "total_input_tokens": total_input,
             "total_output_tokens": total_output,
+            "composability_summary": {
+                "total_tool_call_errors": comp_total_errors,
+                "total_unavailable_tool_errors": comp_total_unavailable,
+                "total_interface_mismatch_errors": comp_total_interface,
+                "total_missing_prerequisite_errors": comp_total_prereq,
+                "total_tool_arg_coercions": comp_total_arg_coercions,
+                "total_tool_arg_validation_rejections": comp_total_arg_validation_rejections,
+                "questions_with_composability_errors": comp_affected_questions,
+                "top_error_question_ids": comp_top_question_ids,
+            },
+            "post_run_eval": post_run_eval or {},
             "results": results,
         }, f, indent=2, default=str)
 

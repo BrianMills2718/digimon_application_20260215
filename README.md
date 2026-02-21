@@ -72,6 +72,28 @@ The system features a modular design with distinct operational modes, manageable
     python main.py evaluate -opt Option/Method/RAPTOR.yaml -dataset_name your_dataset
     ```
 
+### Agent Benchmark Runner (`eval/run_agent_benchmark.py`)
+
+For agentic QA benchmarking (MuSiQue/HotpotQA), use:
+
+```bash
+python eval/run_agent_benchmark.py --dataset MuSiQue --num 10 --model gemini/gemini-2.5-flash --backend direct
+```
+
+The runner now includes post-run evaluation hooks:
+- deterministic checks (`--post-det-checks`, default `default`),
+- optional rubric review (`--post-review-rubric`, `--post-review-model`),
+- optional gate policy (`--post-gate-policy`).
+
+If `--post-gate-policy` is omitted, MuSiQue runs automatically use:
+`eval/gate_policies/musique_default.json`.
+
+To fail CI when a gate fails:
+
+```bash
+python eval/run_agent_benchmark.py --dataset MuSiQue --num 10 --post-gate-fail-exit-code
+```
+
 ### Web Interface (API & UI)
 
 A Flask API server (`api.py`) and an initial React UI provide user-friendly interaction, though current development is heavily focused on backend agent capabilities.
@@ -168,4 +190,3 @@ In-depth Analysis of Graph-based RAG in a Unified Framework
   journal={arXiv preprint arXiv:2503.04338},
   year={2025}
 }
-
