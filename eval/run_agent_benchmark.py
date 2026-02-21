@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import re
@@ -814,6 +815,7 @@ async def run_agent(
     question: str,
     dataset_name: str,
     timeout: int = 120,
+    turn_timeout: int | None = None,
     model: str = "codex",
     reasoning_effort: str = "high",
     max_turns: int = 20,
@@ -836,6 +838,9 @@ async def run_agent(
     Args:
         mcp_session_pool: Optional MCPSessionPool for reusing MCP connections
             across questions (non-Codex models only).
+        timeout: Hard timeout per question (seconds).
+        turn_timeout: Per-LLM-call timeout (seconds). If omitted, defaults to
+            min(timeout, 60).
         max_tool_calls: Tool-call budget per question for non-agent tool loops.
         mode: Prompt mode (canonical hybrid; legacy aliases are mapped).
         backend: 'mcp' (default) or 'direct' (in-process Python tools)
@@ -850,87 +855,88 @@ async def run_agent(
     project_root = str(Path(__file__).parent.parent)
     messages = build_messages(question, dataset_name, mode=mode)
 
+    effective_turn_timeout = max(1, int(turn_timeout if turn_timeout is not None else min(timeout, 60)))
     t0 = time.monotonic()
     try:
-        if backend == "direct" and python_tools:
-            # Direct Python tool loop — no MCP subprocess
-            # Reset chunk dedup between questions
-            import digimon_mcp_stdio_server as dms
-            dms._reset_chunk_dedup()
+        async def _invoke_agent() -> object:
+            if backend == "direct" and python_tools:
+                # Direct Python tool loop — no MCP subprocess
+                # Reset chunk dedup between questions
+                import digimon_mcp_stdio_server as dms
+                dms._reset_chunk_dedup()
 
-            result = await acall_llm(
-                model,
-                messages,
-                timeout=timeout,
-                python_tools=python_tools,
-                max_turns=max_turns,
-                max_tool_calls=max_tool_calls,
-                require_tool_reasoning=True,
-                enforce_tool_contracts=True,
-                tool_contracts=_BENCHMARK_TOOL_CONTRACTS,
-                initial_artifacts=_BENCHMARK_INITIAL_ARTIFACTS,
-                num_retries=num_retries,
-                task=task,
-                trace_id=trace_id,
-                max_budget=0,
-                **({"temperature": temperature} if temperature is not None else {}),
-                **({"fallback_models": fallback_models} if fallback_models else {}),
-            )
-        elif _is_codex_model(model):
-            # Codex SDK path — agent-specific kwargs
-            result = await acall_llm(
-                model,
-                messages,
-                timeout=timeout,
-                working_directory=project_root,
-                approval_policy="never",
-                sandbox_mode="workspace-write",
-                model_reasoning_effort=reasoning_effort,
-                mcp_servers=DIGIMON_MCP_SERVERS,
-                task=task,
-                trace_id=trace_id,
-                max_budget=0,
-            )
-        elif _is_claude_code_model(model):
-            # Claude Agent SDK path
-            result = await acall_llm(
-                model,
-                messages,
-                timeout=timeout,
-                cwd=project_root,
-                permission_mode="bypassPermissions",
-                max_turns=max_turns,
-                mcp_servers=DIGIMON_MCP_SERVERS,
-                task=task,
-                trace_id=trace_id,
-                max_budget=0,
-            )
-        elif mcp_session_pool is not None:
-            # MCP agent loop with persistent session pool
-            result = await acall_llm(
-                model,
-                messages,
-                timeout=timeout,
-                mcp_sessions=mcp_session_pool,
-                max_turns=max_turns,
-                max_tool_calls=max_tool_calls,
-                require_tool_reasoning=True,
-                enforce_tool_contracts=True,
-                tool_contracts=_BENCHMARK_TOOL_CONTRACTS,
-                initial_artifacts=_BENCHMARK_INITIAL_ARTIFACTS,
-                num_retries=num_retries,
-                task=task,
-                trace_id=trace_id,
-                max_budget=0,
-                **({"temperature": temperature} if temperature is not None else {}),
-                **({"fallback_models": fallback_models} if fallback_models else {}),
-            )
-        else:
+                return await acall_llm(
+                    model,
+                    messages,
+                    timeout=effective_turn_timeout,
+                    python_tools=python_tools,
+                    max_turns=max_turns,
+                    max_tool_calls=max_tool_calls,
+                    require_tool_reasoning=True,
+                    enforce_tool_contracts=True,
+                    tool_contracts=_BENCHMARK_TOOL_CONTRACTS,
+                    initial_artifacts=_BENCHMARK_INITIAL_ARTIFACTS,
+                    num_retries=num_retries,
+                    task=task,
+                    trace_id=trace_id,
+                    max_budget=0,
+                    **({"temperature": temperature} if temperature is not None else {}),
+                    **({"fallback_models": fallback_models} if fallback_models else {}),
+                )
+            if _is_codex_model(model):
+                # Codex SDK path — agent-specific kwargs
+                return await acall_llm(
+                    model,
+                    messages,
+                    timeout=effective_turn_timeout,
+                    working_directory=project_root,
+                    approval_policy="never",
+                    sandbox_mode="workspace-write",
+                    model_reasoning_effort=reasoning_effort,
+                    mcp_servers=DIGIMON_MCP_SERVERS,
+                    task=task,
+                    trace_id=trace_id,
+                    max_budget=0,
+                )
+            if _is_claude_code_model(model):
+                # Claude Agent SDK path
+                return await acall_llm(
+                    model,
+                    messages,
+                    timeout=effective_turn_timeout,
+                    cwd=project_root,
+                    permission_mode="bypassPermissions",
+                    max_turns=max_turns,
+                    mcp_servers=DIGIMON_MCP_SERVERS,
+                    task=task,
+                    trace_id=trace_id,
+                    max_budget=0,
+                )
+            if mcp_session_pool is not None:
+                # MCP agent loop with persistent session pool
+                return await acall_llm(
+                    model,
+                    messages,
+                    timeout=effective_turn_timeout,
+                    mcp_sessions=mcp_session_pool,
+                    max_turns=max_turns,
+                    max_tool_calls=max_tool_calls,
+                    require_tool_reasoning=True,
+                    enforce_tool_contracts=True,
+                    tool_contracts=_BENCHMARK_TOOL_CONTRACTS,
+                    initial_artifacts=_BENCHMARK_INITIAL_ARTIFACTS,
+                    num_retries=num_retries,
+                    task=task,
+                    trace_id=trace_id,
+                    max_budget=0,
+                    **({"temperature": temperature} if temperature is not None else {}),
+                    **({"fallback_models": fallback_models} if fallback_models else {}),
+                )
             # MCP agent loop — fresh server per call (legacy)
-            result = await acall_llm(
+            return await acall_llm(
                 model,
                 messages,
-                timeout=timeout,
+                timeout=effective_turn_timeout,
                 mcp_servers=DIGIMON_MCP_SERVERS,
                 max_turns=max_turns,
                 max_tool_calls=max_tool_calls,
@@ -945,6 +951,9 @@ async def run_agent(
                 **({"temperature": temperature} if temperature is not None else {}),
                 **({"fallback_models": fallback_models} if fallback_models else {}),
             )
+
+        # Enforce hard per-question watchdog; this prevents long silent churn.
+        result = await asyncio.wait_for(_invoke_agent(), timeout=timeout)
 
         elapsed = time.monotonic() - t0
 
@@ -1062,7 +1071,10 @@ async def run_agent(
             "usage": {},
             "cost": 0.0,
             "latency_s": round(elapsed, 2),
-            "error": f"TIMEOUT after {timeout}s",
+            "error": (
+                f"TIMEOUT after {round(elapsed, 2)}s "
+                f"(question_timeout={timeout}s, turn_timeout={effective_turn_timeout}s)"
+            ),
         }
     except Exception as e:
         elapsed = time.monotonic() - t0
@@ -1081,7 +1093,9 @@ async def main() -> None:
     parser.add_argument("--dataset", required=True, help="Dataset name (e.g. HotpotQAsmallest)")
     parser.add_argument("--start", type=int, default=0, help="Start from question index (0-based)")
     parser.add_argument("--num", type=int, default=None, help="Number of questions to run")
-    parser.add_argument("--timeout", type=int, default=120, help="Timeout per question in seconds")
+    parser.add_argument("--timeout", type=int, default=120, help="Hard timeout per question in seconds")
+    parser.add_argument("--turn-timeout", type=int, default=60,
+                        help="Per-LLM-call timeout in seconds within a question (default: 60).")
     parser.add_argument("--resume", action="store_true", help="Resume from previous run")
     parser.add_argument("--model", default="codex", help="Agent model (default: codex). Any litellm model string works.")
     parser.add_argument("--effort", default="high", help="Reasoning effort (Codex only): minimal/low/medium/high")
@@ -1142,6 +1156,12 @@ async def main() -> None:
     )
     parser.add_argument("--verbose", action="store_true",
                         help="Show full DIGIMON debug logs on stderr. Default: quiet (WARNING+ only on stderr, DEBUG in log file).")
+    parser.add_argument(
+        "--heartbeat-secs",
+        type=int,
+        default=20,
+        help="Emit per-question progress heartbeat every N seconds (0 disables).",
+    )
     parser.add_argument(
         "--post-det-checks",
         type=str,
@@ -1372,7 +1392,10 @@ async def main() -> None:
         backend = "Claude Agent SDK"
     else:
         backend = "MCP agent loop"
-    print(f"Model: {args.model} ({backend}, timeout={args.timeout}s)")
+    print(
+        f"Model: {args.model} ({backend}, "
+        f"question_timeout={args.timeout}s, turn_timeout={args.turn_timeout}s)"
+    )
     print(f"Mode: {args.mode}" + (f" (requested: {requested_mode})" if requested_mode != args.mode else ""))
     if args.backend != "mcp" or not _is_agent_sdk_model(args.model):
         print(f"Temperature: {args.temperature}")
@@ -1401,6 +1424,7 @@ async def main() -> None:
         )
     if not _is_agent_sdk_model(args.model):
         print(f"Tool-call budget (retrieval only; todo_* + submit_answer exempt): {args.max_tool_calls}")
+    print(f"Progress heartbeat: {'off' if args.heartbeat_secs <= 0 else f'every {args.heartbeat_secs}s'}")
 
     parallel = max(1, args.parallel)
     if parallel > 1 and _is_agent_sdk_model(args.model):
@@ -1421,6 +1445,8 @@ async def main() -> None:
             "mode": args.mode,
             "requested_mode": requested_mode,
             "timeout": args.timeout,
+            "question_timeout": args.timeout,
+            "turn_timeout": args.turn_timeout,
             "max_tool_calls": args.max_tool_calls,
             "require_tool_reasoning": True,
             "max_turns_fuse": args.max_turns,
@@ -1428,6 +1454,7 @@ async def main() -> None:
             "fallback_models": fallback_models,
             "num_retries": args.num_retries,
             "temperature": args.temperature,
+            "heartbeat_secs": args.heartbeat_secs,
             "embed_model": (args.embed_model or "").strip() or None,
             "effective_embed_model": effective_embed_model or None,
             "embed_dimensions": args.embed_dimensions,
@@ -1657,32 +1684,57 @@ async def main() -> None:
         q_id = q.get("id", "unknown")
         q_hash = md5(q["question"].encode()).hexdigest()[:8]
         trace_id = f"digimon.benchmark.{args.dataset}.{q_id}.{q_hash}"
+        started_at = time.monotonic()
+        heartbeat_task: asyncio.Task[None] | None = None
+        heartbeat_enabled = args.heartbeat_secs > 0 and parallel <= 1
 
-        with llm_activate_feature_profile(feature_profile), llm_activate_experiment_run(_experiment_run_id):
-            agent_result = await run_agent(
-                q["question"], args.dataset,
-                timeout=args.timeout,
-                model=args.model,
-                reasoning_effort=args.effort,
-                max_turns=args.max_turns,
-                max_tool_calls=args.max_tool_calls,
-                mcp_session_pool=session_pool,
-                mode=args.mode,
-                backend=args.backend,
-                python_tools=DIRECT_TOOLS if args.backend == "direct" else None,
-                temperature=args.temperature,
-                fallback_models=fallback_models,
-                num_retries=args.num_retries,
-                trace_id=trace_id,
-            )
+        if heartbeat_enabled:
+            print(f"START [{q_id}] trace={trace_id}", flush=True)
 
-            # LLM judge (runs before lock — it's an independent LLM call)
-            llm_em_val: int | None = None
-            if judge_model and agent_result["answer"]:
-                llm_em_val = int(await llm_judge(
-                    q["question"], agent_result["answer"], q["answer"],
-                    model=judge_model,
-                ))
+            async def _heartbeat() -> None:
+                while True:
+                    await asyncio.sleep(args.heartbeat_secs)
+                    elapsed = time.monotonic() - started_at
+                    print(
+                        f"HEARTBEAT [{q_id}] running {elapsed:.1f}s "
+                        f"(question_timeout={args.timeout}s, turn_timeout={args.turn_timeout}s)",
+                        flush=True,
+                    )
+
+            heartbeat_task = asyncio.create_task(_heartbeat())
+
+        try:
+            with llm_activate_feature_profile(feature_profile), llm_activate_experiment_run(_experiment_run_id):
+                agent_result = await run_agent(
+                    q["question"], args.dataset,
+                    timeout=args.timeout,
+                    turn_timeout=args.turn_timeout,
+                    model=args.model,
+                    reasoning_effort=args.effort,
+                    max_turns=args.max_turns,
+                    max_tool_calls=args.max_tool_calls,
+                    mcp_session_pool=session_pool,
+                    mode=args.mode,
+                    backend=args.backend,
+                    python_tools=DIRECT_TOOLS if args.backend == "direct" else None,
+                    temperature=args.temperature,
+                    fallback_models=fallback_models,
+                    num_retries=args.num_retries,
+                    trace_id=trace_id,
+                )
+
+                # LLM judge (runs before lock — it's an independent LLM call)
+                llm_em_val: int | None = None
+                if judge_model and agent_result["answer"]:
+                    llm_em_val = int(await llm_judge(
+                        q["question"], agent_result["answer"], q["answer"],
+                        model=judge_model,
+                    ))
+        finally:
+            if heartbeat_task:
+                heartbeat_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await heartbeat_task
 
         record = _score_and_record(q, agent_result, llm_em_val=llm_em_val, trace_id=trace_id)
 

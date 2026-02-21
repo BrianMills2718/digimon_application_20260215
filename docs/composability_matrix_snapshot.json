@@ -1,0 +1,725 @@
+{
+  "initial_artifacts": [
+    "QUERY_TEXT"
+  ],
+  "tools": {
+    "entity_vdb_search": {
+      "contract": {
+        "requires_any": [
+          "QUERY_TEXT",
+          "ENTITY_SET",
+          "CHUNK_SET"
+        ],
+        "produces": [
+          "ENTITY_SET"
+        ]
+      },
+      "first_call_legal": true,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_onehop",
+        "entity_ppr",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_onehop",
+        "relationship_score_aggregator",
+        "relationship_vdb_search",
+        "chunk_occurrence",
+        "chunk_get_text",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "chunk_aggregator",
+        "list_available_resources",
+        "subgraph_khop_paths",
+        "subgraph_steiner_tree",
+        "meta_pcst_optimize",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "bridge_disambiguate",
+        "submit_answer"
+      ]
+    },
+    "entity_onehop": {
+      "contract": {
+        "requires_all": [
+          "ENTITY_SET"
+        ],
+        "produces": [
+          "ENTITY_SET"
+        ]
+      },
+      "first_call_legal": false,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_onehop",
+        "entity_ppr",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_onehop",
+        "relationship_score_aggregator",
+        "relationship_vdb_search",
+        "chunk_occurrence",
+        "chunk_get_text",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "chunk_aggregator",
+        "list_available_resources",
+        "subgraph_khop_paths",
+        "subgraph_steiner_tree",
+        "meta_pcst_optimize",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "bridge_disambiguate",
+        "submit_answer"
+      ]
+    },
+    "entity_ppr": {
+      "contract": {
+        "requires_all": [
+          "ENTITY_SET"
+        ],
+        "produces": [
+          "ENTITY_SET"
+        ]
+      },
+      "first_call_legal": false,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_onehop",
+        "entity_ppr",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_onehop",
+        "relationship_score_aggregator",
+        "relationship_vdb_search",
+        "chunk_occurrence",
+        "chunk_get_text",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "chunk_aggregator",
+        "list_available_resources",
+        "subgraph_khop_paths",
+        "subgraph_steiner_tree",
+        "meta_pcst_optimize",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "bridge_disambiguate",
+        "submit_answer"
+      ]
+    },
+    "entity_link": {
+      "contract": {
+        "requires_any": [
+          "QUERY_TEXT",
+          "CHUNK_SET"
+        ],
+        "produces": [
+          "ENTITY_SET"
+        ]
+      },
+      "first_call_legal": true,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_onehop",
+        "entity_ppr",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_onehop",
+        "relationship_score_aggregator",
+        "relationship_vdb_search",
+        "chunk_occurrence",
+        "chunk_get_text",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "chunk_aggregator",
+        "list_available_resources",
+        "subgraph_khop_paths",
+        "subgraph_steiner_tree",
+        "meta_pcst_optimize",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "bridge_disambiguate",
+        "submit_answer"
+      ]
+    },
+    "entity_tfidf": {
+      "contract": {
+        "requires_any": [
+          "QUERY_TEXT",
+          "CHUNK_SET"
+        ],
+        "produces": [
+          "ENTITY_SET"
+        ]
+      },
+      "first_call_legal": true,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_onehop",
+        "entity_ppr",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_onehop",
+        "relationship_score_aggregator",
+        "relationship_vdb_search",
+        "chunk_occurrence",
+        "chunk_get_text",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "chunk_aggregator",
+        "list_available_resources",
+        "subgraph_khop_paths",
+        "subgraph_steiner_tree",
+        "meta_pcst_optimize",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "bridge_disambiguate",
+        "submit_answer"
+      ]
+    },
+    "relationship_onehop": {
+      "contract": {
+        "requires_all": [
+          "ENTITY_SET"
+        ],
+        "produces": [
+          "RELATIONSHIP_SET"
+        ]
+      },
+      "first_call_legal": false,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_score_aggregator",
+        "relationship_vdb_search",
+        "chunk_from_relationships",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "chunk_aggregator",
+        "list_available_resources",
+        "meta_pcst_optimize",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "submit_answer"
+      ]
+    },
+    "relationship_score_aggregator": {
+      "contract": {
+        "requires_any": [
+          "ENTITY_SET",
+          "RELATIONSHIP_SET"
+        ],
+        "produces": [
+          "RELATIONSHIP_SET"
+        ]
+      },
+      "first_call_legal": false,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_score_aggregator",
+        "relationship_vdb_search",
+        "chunk_from_relationships",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "chunk_aggregator",
+        "list_available_resources",
+        "meta_pcst_optimize",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "submit_answer"
+      ]
+    },
+    "relationship_vdb_search": {
+      "contract": {
+        "requires_any": [
+          "QUERY_TEXT",
+          "ENTITY_SET",
+          "CHUNK_SET"
+        ],
+        "produces": [
+          "RELATIONSHIP_SET"
+        ]
+      },
+      "first_call_legal": true,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_score_aggregator",
+        "relationship_vdb_search",
+        "chunk_from_relationships",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "chunk_aggregator",
+        "list_available_resources",
+        "meta_pcst_optimize",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "submit_answer"
+      ]
+    },
+    "chunk_from_relationships": {
+      "contract": {
+        "requires_all": [
+          "RELATIONSHIP_SET"
+        ],
+        "produces": [
+          "CHUNK_SET"
+        ]
+      },
+      "first_call_legal": false,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_vdb_search",
+        "chunk_get_text",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "list_available_resources",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "bridge_disambiguate",
+        "submit_answer"
+      ]
+    },
+    "chunk_occurrence": {
+      "contract": {
+        "requires_all": [
+          "ENTITY_SET"
+        ],
+        "produces": [
+          "CHUNK_SET"
+        ]
+      },
+      "first_call_legal": false,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_vdb_search",
+        "chunk_get_text",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "list_available_resources",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "bridge_disambiguate",
+        "submit_answer"
+      ]
+    },
+    "chunk_get_text": {
+      "contract": {
+        "requires_any": [
+          "ENTITY_SET",
+          "CHUNK_SET"
+        ],
+        "produces": [
+          "CHUNK_SET"
+        ]
+      },
+      "first_call_legal": false,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_vdb_search",
+        "chunk_get_text",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "list_available_resources",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "bridge_disambiguate",
+        "submit_answer"
+      ]
+    },
+    "chunk_text_search": {
+      "contract": {
+        "requires_all": [
+          "QUERY_TEXT"
+        ],
+        "produces": [
+          "CHUNK_SET"
+        ]
+      },
+      "first_call_legal": true,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_vdb_search",
+        "chunk_get_text",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "list_available_resources",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "bridge_disambiguate",
+        "submit_answer"
+      ]
+    },
+    "chunk_vdb_search": {
+      "contract": {
+        "requires_any": [
+          "QUERY_TEXT",
+          "ENTITY_SET",
+          "CHUNK_SET"
+        ],
+        "produces": [
+          "CHUNK_SET"
+        ]
+      },
+      "first_call_legal": true,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_vdb_search",
+        "chunk_get_text",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "list_available_resources",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "bridge_disambiguate",
+        "submit_answer"
+      ]
+    },
+    "chunk_aggregator": {
+      "contract": {
+        "requires_any": [
+          "ENTITY_SET",
+          "RELATIONSHIP_SET"
+        ],
+        "produces": [
+          "CHUNK_SET"
+        ]
+      },
+      "first_call_legal": false,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_vdb_search",
+        "chunk_get_text",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "list_available_resources",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "bridge_disambiguate",
+        "submit_answer"
+      ]
+    },
+    "list_available_resources": {
+      "contract": {
+        "is_control": true
+      },
+      "first_call_legal": true,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_vdb_search",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "list_available_resources",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "submit_answer"
+      ]
+    },
+    "subgraph_khop_paths": {
+      "contract": {
+        "requires_all": [
+          "ENTITY_SET"
+        ],
+        "produces": [
+          "SUBGRAPH"
+        ]
+      },
+      "first_call_legal": false,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_vdb_search",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "list_available_resources",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "submit_answer"
+      ]
+    },
+    "subgraph_steiner_tree": {
+      "contract": {
+        "requires_all": [
+          "ENTITY_SET"
+        ],
+        "produces": [
+          "SUBGRAPH"
+        ]
+      },
+      "first_call_legal": false,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_vdb_search",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "list_available_resources",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "submit_answer"
+      ]
+    },
+    "meta_pcst_optimize": {
+      "contract": {
+        "requires_any": [
+          "ENTITY_SET",
+          "RELATIONSHIP_SET"
+        ],
+        "produces": [
+          "SUBGRAPH"
+        ]
+      },
+      "first_call_legal": false,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_vdb_search",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "list_available_resources",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "submit_answer"
+      ]
+    },
+    "semantic_plan": {
+      "contract": {
+        "is_control": true
+      },
+      "first_call_legal": true,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_vdb_search",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "list_available_resources",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "submit_answer"
+      ]
+    },
+    "todo_create": {
+      "contract": {
+        "is_control": true
+      },
+      "first_call_legal": true,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_vdb_search",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "list_available_resources",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "submit_answer"
+      ]
+    },
+    "todo_update": {
+      "contract": {
+        "is_control": true
+      },
+      "first_call_legal": true,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_vdb_search",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "list_available_resources",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "submit_answer"
+      ]
+    },
+    "todo_list": {
+      "contract": {
+        "is_control": true
+      },
+      "first_call_legal": true,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_vdb_search",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "list_available_resources",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "submit_answer"
+      ]
+    },
+    "todo_reset": {
+      "contract": {
+        "is_control": true
+      },
+      "first_call_legal": true,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_vdb_search",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "list_available_resources",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "submit_answer"
+      ]
+    },
+    "bridge_disambiguate": {
+      "contract": {
+        "requires_any": [
+          "ENTITY_SET",
+          "CHUNK_SET"
+        ],
+        "produces": [
+          "ENTITY_SET"
+        ]
+      },
+      "first_call_legal": false,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_onehop",
+        "entity_ppr",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_onehop",
+        "relationship_score_aggregator",
+        "relationship_vdb_search",
+        "chunk_occurrence",
+        "chunk_get_text",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "chunk_aggregator",
+        "list_available_resources",
+        "subgraph_khop_paths",
+        "subgraph_steiner_tree",
+        "meta_pcst_optimize",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "bridge_disambiguate",
+        "submit_answer"
+      ]
+    },
+    "submit_answer": {
+      "contract": {
+        "is_control": true
+      },
+      "first_call_legal": true,
+      "next_legal_tools_if_called_first": [
+        "entity_vdb_search",
+        "entity_link",
+        "entity_tfidf",
+        "relationship_vdb_search",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "list_available_resources",
+        "semantic_plan",
+        "todo_create",
+        "todo_update",
+        "todo_list",
+        "todo_reset",
+        "submit_answer"
+      ]
+    }
+  }
+}
