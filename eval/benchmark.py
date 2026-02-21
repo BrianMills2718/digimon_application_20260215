@@ -22,6 +22,64 @@ from Core.Common.Logger import logger
 JUDGE_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "llm_judge.yaml"
 
 
+def _parse_llm_judge_correct(raw_text: str) -> bool:
+    """Parse judge output robustly and return the boolean correctness verdict."""
+    if not raw_text or not raw_text.strip():
+        return False
+
+    text = raw_text.strip()
+    candidates: list[str] = [text]
+
+    # Prefer parsing a de-fenced payload when the model wraps JSON in markdown.
+    try:
+        from llm_client import strip_fences
+
+        stripped = strip_fences(text)
+        if stripped and stripped not in candidates:
+            candidates.append(stripped)
+    except Exception:
+        pass
+
+    # Also try extracting the largest JSON-looking object span from each candidate.
+    for candidate in list(candidates):
+        start = candidate.find("{")
+        end = candidate.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            span = candidate[start : end + 1]
+            if span not in candidates:
+                candidates.append(span)
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict) and "correct" in parsed:
+            value = parsed.get("correct")
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return bool(value)
+            if isinstance(value, str):
+                norm = value.strip().lower()
+                if norm in {"true", "1", "yes"}:
+                    return True
+                if norm in {"false", "0", "no"}:
+                    return False
+
+    # Conservative text fallback: explicit negative wins.
+    lowered = text.lower()
+    if re.search(r'"correct"\s*:\s*false', lowered):
+        return False
+    if re.search(r"\bincorrect\b", lowered) or re.search(r"\bnot\s+correct\b", lowered):
+        return False
+    if re.search(r'"correct"\s*:\s*true', lowered):
+        return True
+    if re.search(r"\bcorrect\b", lowered):
+        return True
+    return False
+
+
 # --- Scoring (reuses normalize_answer logic from Core/Utils/Evaluation.py) ---
 
 def normalize_answer(s: str) -> str:
@@ -98,17 +156,7 @@ async def llm_judge(
     trace_id = f"digimon.llm_judge.{q_hash}"
     try:
         result = await acall_llm(model, messages, timeout=15, task="digimon.llm_judge", trace_id=trace_id, max_budget=0)
-        text = result.content.strip().lower()
-        # Parse JSON response
-        if "{" in text:
-            import json as _json
-            try:
-                parsed = _json.loads(text)
-                return bool(parsed.get("correct", False))
-            except _json.JSONDecodeError:
-                pass
-        # Fallback: look for "correct" vs "incorrect" in raw text
-        return "incorrect" not in text and "correct" in text
+        return _parse_llm_judge_correct(result.content)
     except Exception as e:
         logger.warning(f"llm_judge failed: {e}")
         return False

@@ -18,6 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from llm_client import acall_llm, render_prompt, strip_fences
+from eval.benchmark import _parse_llm_judge_correct
 
 PROMPT_TEMPLATE = str(Path(__file__).parent.parent / "prompts" / "llm_judge.yaml")
 
@@ -43,10 +44,9 @@ async def judge_one(question: str, gold: str, predicted: str, model: str) -> dic
             "reason": parsed.get("reason", ""),
         }
     except (json.JSONDecodeError, AttributeError):
-        # If LLM didn't return valid JSON, fall back to string matching
-        content = result.content.lower()
+        # If LLM didn't return valid JSON, use shared robust parser.
         return {
-            "correct": "correct" in content and "incorrect" not in content,
+            "correct": _parse_llm_judge_correct(result.content),
             "reason": f"parse fallback: {result.content[:100]}",
         }
 
