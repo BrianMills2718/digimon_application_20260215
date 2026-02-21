@@ -14,14 +14,19 @@ Primary metric: `LLM_EM` (with `EM`/`F1` tracked for regression visibility)
 ## Active Task List
 
 1. `DONE` Fix judge parser false-positive (`{"correct": false}` wrapped in fences previously scored as true).
-2. `IN_PROGRESS` Re-score latest benchmark artifact with patched parser to establish corrected baseline.
-3. `PENDING` Materialize failing-ID set from corrected baseline (`--failure-metric llm_em`).
-4. `PENDING` Run failure-only benchmark on gemini-2.5-flash (direct backend).
-5. `PENDING` Diagnose top failure modes from traces (reasoning/retrieval/composability/control-loop).
-6. `PENDING` Implement one general improvement (no dataset-specific hardcoding).
-7. `PENDING` Re-run failure-only set and compare deltas.
-8. `PENDING` Commit checkpoint after each meaningful improvement and metric change.
-9. `PENDING` Run full 10-question validation every 2 loop cycles or after major architecture change.
+2. `DONE` Re-score latest benchmark artifact with patched parser to establish corrected baseline (`LLM judge accuracy 50%` for `results/MuSiQue_gemini-2-5-flash_20260221T051240Z.json`).
+3. `DONE` Materialize failing-ID set from corrected baseline (5 IDs in `results/MuSiQue_gemini-2-5-flash_20260221T051240Z_judged_failing_ids.txt`).
+4. `DONE` Run first failure-only sweep on gemini-2.5-flash (direct backend) and capture baseline (`1/5 pass`, `4/5 fail`).
+5. `DONE` Diagnose top failure modes from traces (control-loop + submit validation + reasoning/retrieval misses).
+6. `DONE` Implement general agent-loop improvements in `llm_client`:
+   - `submit_answer` `status=needs_revision` no longer treated as success,
+   - `todo_update status=needs_revision` no longer counted as progress,
+   - explicit unfinished-TODO remediation hints.
+7. `IN_PROGRESS` Re-run failure-only set and compare deltas after latest `llm_client` patch.
+8. `PENDING` Tune control-loop policy to avoid deadlock between submit suppression and abstaining/grounding validation.
+9. `PENDING` Reduce empty-content instability for `gemini/gemini-2.5-flash` (provider/retry/fallback policy).
+10. `PENDING` Commit checkpoint after each meaningful improvement and metric change.
+11. `PENDING` Run full 10-question validation every 2 loop cycles or after major architecture change.
 
 ## Commit Cadence
 
