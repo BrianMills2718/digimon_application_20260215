@@ -1077,7 +1077,16 @@ def _normalize_answer_kind(answer_kind: str) -> str:
     return aliases.get(kind, "")
 
 
-_DATE_HINT_RE = re.compile(r"\b(when|what year|which year|what month|what date|born|founded|created|signed)\b")
+_ENTITY_HINT_RE = re.compile(
+    r"(^\s*(who|whom|whose)\b)|"
+    r"(\b(what(?:'s| is)?\s+(?:the\s+)?name of|which\s+(person|individual|player|actor|singer|author|city|country|region|company|river|state))\b)"
+)
+_DATE_HINT_RE = re.compile(
+    r"\b("
+    r"when|what year|which year|what month|which month|what date|which date|"
+    r"date of birth|birth date|born|founded|created|signed|released|died|abolished"
+    r")\b"
+)
 _NUMBER_HINT_RE = re.compile(r"\b(how many|how much|what number|what amount|population|count|total)\b")
 _YESNO_HINT_RE = re.compile(r"^\s*(is|are|was|were|do|does|did|can|could|will|has|have|had)\b")
 _TODO_WEAK_EVIDENCE_NOTE_RE = re.compile(
@@ -1093,6 +1102,10 @@ def _infer_answer_kind(text: str) -> str:
         return "entity"
     if _YESNO_HINT_RE.search(probe):
         return "yes_no"
+    # Entity asks ("who", "name of", etc.) override date keywords in clauses
+    # such as "who was born in ...".
+    if _ENTITY_HINT_RE.search(probe):
+        return "entity"
     if _DATE_HINT_RE.search(probe):
         return "date"
     if _NUMBER_HINT_RE.search(probe):
@@ -4774,6 +4787,32 @@ if BENCHMARK_MODE:
                 if ambiguity_hint not in plan.uncertainty_points:
                     plan.uncertainty_points.append(ambiguity_hint)
 
+            # Safety alignment: if the question clearly asks for date/number/yes_no
+            # but planner returned entity, coerce final/sink atom kinds to avoid
+            # deterministic wrong-answer-type failures.
+            inferred_kind = _infer_answer_kind(question)
+            planned_kind = _normalize_answer_kind(plan.final_answer_kind)
+            if inferred_kind and inferred_kind != "entity" and planned_kind != inferred_kind:
+                logger.warning(
+                    "semantic_plan answer-kind correction: planned=%s inferred=%s question=%r",
+                    planned_kind or "entity",
+                    inferred_kind,
+                    (question or "")[:160],
+                )
+                plan.final_answer_kind = inferred_kind
+
+                # Prefer rewriting sink atoms (not depended on by others) since they
+                # are closest to final answer production.
+                dependent_ids = {
+                    dep_id
+                    for atom in plan.atoms
+                    for dep_id in (atom.depends_on or [])
+                }
+                sink_atoms = [atom for atom in plan.atoms if atom.atom_id not in dependent_ids]
+                target_atoms = sink_atoms or (plan.atoms[-1:] if plan.atoms else [])
+                for atom in target_atoms:
+                    atom.answer_kind = inferred_kind
+
             _current_semantic_plan.clear()
             _current_semantic_plan.update(plan.model_dump())
             _current_semantic_plan_question = (question or "").strip()
@@ -5455,21 +5494,20 @@ if BENCHMARK_MODE:
                 return _submit_needs_revision_response(details)
 
         try:
+            # In benchmark mode, TODO/evidence checks are advisory: avoid hard-looping
+            # on validation and let the model submit best-effort final answers.
+            submit_warnings: list[str] = []
             if not _todos:
-                raise ValueError(
-                    "You must use TODOs first. Create atomic steps via todo_create(), "
-                    "complete them via todo_update(..., status='done'), then submit_answer.",
+                submit_warnings.append(
+                    "No TODOs were created before submission.",
                 )
             unfinished = [
                 t["id"] for t in _todos
                 if t.get("status") not in {"done", "blocked"}
             ]
             if unfinished:
-                raise ValueError(
-                    "Cannot submit yet. Unfinished TODOs: "
-                    + ", ".join(unfinished)
-                    + ". Complete them with todo_update(..., status='done') "
-                    "or mark irrecoverable leaves as status='blocked' with a reason note.",
+                submit_warnings.append(
+                    "Unfinished TODOs at submission: " + ", ".join(unfinished),
                 )
 
             blocked_without_note = [
@@ -5478,13 +5516,10 @@ if BENCHMARK_MODE:
                 if t.get("status") == "blocked" and not (t.get("note") or "").strip()
             ]
             if blocked_without_note:
-                raise ValueError(
-                    "Cannot submit: blocked TODOs must include a reason note: "
-                    + ", ".join(blocked_without_note)
-                    + ". Use todo_update(..., status='blocked', note=...)."
+                submit_warnings.append(
+                    "Blocked TODOs missing note: " + ", ".join(blocked_without_note),
                 )
 
-            # Every completed atom must carry explicit evidence + resolved span.
             incomplete_evidence = [
                 t.get("id", "?")
                 for t in _todos
@@ -5495,10 +5530,8 @@ if BENCHMARK_MODE:
                 )
             ]
             if incomplete_evidence:
-                raise ValueError(
-                    "Cannot submit: completed TODOs missing evidence/span: "
-                    + ", ".join(incomplete_evidence)
-                    + ". Use todo_update(..., answer_span=..., evidence_refs=[...])."
+                submit_warnings.append(
+                    "Completed TODOs missing evidence/span: " + ", ".join(incomplete_evidence),
                 )
 
             if not normalized_answer:
@@ -5527,7 +5560,7 @@ if BENCHMARK_MODE:
             if expected_kind and not _answer_matches_kind(normalized_answer, expected_kind):
                 raise ValueError(
                     f"Answer does not match expected type '{expected_kind}'. "
-                    "Submit a fact with the expected type."
+                    "Submit a factual span with the correct answer type."
                 )
 
             spans = [(t.get("answer_span") or "").strip() for t in _todos]
@@ -5535,15 +5568,14 @@ if BENCHMARK_MODE:
                 normalized_answer.lower() in span.lower() or span.lower() in normalized_answer.lower()
                 for span in spans if span
             ):
-                raise ValueError(
-                    "Answer is not grounded in TODO answer_span fields. "
-                    "Use the shortest factual span supported by your TODO evidence."
+                submit_warnings.append(
+                    "Answer not directly grounded in TODO answer_span fields.",
                 )
 
             if expected_kind == "date":
                 if not any(_answer_matches_kind(span, "date") for span in spans if span):
-                    raise ValueError(
-                        "No date-like atom evidence found. Reopen upstream TODOs and resolve a date span first."
+                    submit_warnings.append(
+                        "No date-like atom evidence found in TODO spans.",
                     )
 
             if not normalized_reasoning:
@@ -5558,6 +5590,7 @@ if BENCHMARK_MODE:
                     "status": "submitted",
                     "answer": normalized_answer,
                     "expected_answer_kind": expected_kind or None,
+                    "validation_warnings": submit_warnings,
                 }
             )
         except ValueError as e:
