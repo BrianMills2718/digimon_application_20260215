@@ -1965,12 +1965,16 @@ async def entity_onehop(
     graph_reference_id: str = "",
     entity_name: str = "",
     dataset_name: str = "",
+    top_k: int | None = None,
+    neighbor_limit_per_entity: int | None = None,
 ) -> str:
     """Find one-hop neighbor entities in the graph.
 
     Args:
         entity_ids: List of entity IDs to find neighbors for
         graph_reference_id: ID of the graph to search
+        top_k: Optional alias for neighbor_limit_per_entity
+        neighbor_limit_per_entity: Optional cap of neighbors per input entity
 
     Returns:
         neighbors: {entity_id: [{...}]}, total_neighbors_found: int, message: str
@@ -1999,10 +2003,21 @@ async def entity_onehop(
             indent=2,
         )
 
+    effective_neighbor_limit = neighbor_limit_per_entity
+    if effective_neighbor_limit is None and top_k is not None:
+        effective_neighbor_limit = top_k
+    if effective_neighbor_limit is not None and int(effective_neighbor_limit) <= 0:
+        return json.dumps(
+            {"error": "neighbor_limit_per_entity/top_k must be a positive integer"},
+            indent=2,
+        )
+
     inputs = {
         "entity_ids": normalized_entity_ids,
         "graph_reference_id": resolved_graph_id,
     }
+    if effective_neighbor_limit is not None:
+        inputs["neighbor_limit_per_entity"] = int(effective_neighbor_limit)
     result = await entity_onehop_neighbors_tool(inputs, _state["context"])
     formatted = _format_result(result)
     try:
@@ -5018,6 +5033,8 @@ if BENCHMARK_MODE:
         evidence_refs: list[str] | None = None,
         confidence: float | None = None,
         alternatives_tested: list[str] | None = None,
+        atom_id: str = "",
+        done_criteria: str = "",
     ) -> str:
         """Update status of an existing TODO.
 
@@ -5029,6 +5046,8 @@ if BENCHMARK_MODE:
             evidence_refs: Evidence refs backing this atom (required for done)
             confidence: Optional confidence score [0,1]
             alternatives_tested: Alternative bridge/hypothesis labels tested
+            atom_id: Optional compatibility field (ignored; TODO identity is todo_id)
+            done_criteria: Optional compatibility field (ignored on update)
 
         Returns:
             Updated TODO item and summary.
@@ -5568,14 +5587,16 @@ if BENCHMARK_MODE:
                 normalized_answer.lower() in span.lower() or span.lower() in normalized_answer.lower()
                 for span in spans if span
             ):
-                submit_warnings.append(
-                    "Answer not directly grounded in TODO answer_span fields.",
+                raise ValueError(
+                    "Answer not grounded in TODO answer_span fields. "
+                    "Use a final span directly supported by completed TODO evidence."
                 )
 
             if expected_kind == "date":
                 if not any(_answer_matches_kind(span, "date") for span in spans if span):
-                    submit_warnings.append(
-                        "No date-like atom evidence found in TODO spans.",
+                    raise ValueError(
+                        "No date-like atom evidence found in TODO spans. "
+                        "Resolve a date span in TODOs before submitting."
                     )
 
             if not normalized_reasoning:

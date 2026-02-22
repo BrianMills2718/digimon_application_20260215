@@ -849,12 +849,12 @@ def _resolve_fallback_models_for_benchmark(
                 candidates = [
                     "openrouter/deepseek/deepseek-chat",
                     "openrouter/google/gemini-2.5-flash",
-                    "openrouter/openai/gpt-4o-mini",
+                    "openrouter/openai/gpt-5-mini",
                 ]
             elif lower.startswith("gemini/"):
                 candidates = [
                     "openrouter/deepseek/deepseek-chat",
-                    "openrouter/openai/gpt-4o-mini",
+                    "openrouter/openai/gpt-5-mini",
                 ]
             else:
                 candidates = [
