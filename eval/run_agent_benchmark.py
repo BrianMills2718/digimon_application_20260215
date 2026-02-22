@@ -747,6 +747,62 @@ def _model_slug(model: str) -> str:
     return slug or "unknown"
 
 
+def _is_image_generation_model(model: str) -> bool:
+    """Return True for known image-generation model families."""
+    lower = (model or "").strip().lower()
+    if not lower:
+        return False
+    base = lower.rsplit("/", 1)[-1]
+    hints = (
+        "gpt-image",
+        "dall-e",
+        "imagen",
+        "stable-diffusion",
+        "sdxl",
+        "flux",
+    )
+    return any(h in base for h in hints)
+
+
+def _normalize_primary_model_for_benchmark(model: str) -> str:
+    """Route non-Gemini, non-image models through OpenRouter by default.
+
+    Policy requested by project owner:
+    - keep Gemini provider-native model IDs (gemini/*)
+    - keep image-generation families provider-native
+    - route everything else through OpenRouter when possible
+    """
+    raw = (model or "").strip()
+    if not raw:
+        return raw
+
+    lower = raw.lower()
+    if lower.startswith(("codex", "claude-code", "openai-agents")):
+        return raw
+    if lower.startswith(("openrouter/", "gemini/")):
+        return raw
+    if _is_image_generation_model(raw):
+        return raw
+
+    # Provider-prefixed model IDs (openai/*, anthropic/*, deepseek/*, etc.).
+    if "/" in raw:
+        return f"openrouter/{raw}"
+
+    # Bare model IDs: map common families to OpenRouter provider namespaces.
+    bare = lower
+    if bare.startswith(("gpt-", "o1", "o3", "o4", "chatgpt", "text-embedding-", "text-moderation-")):
+        return f"openrouter/openai/{raw}"
+    if bare.startswith("claude"):
+        return f"openrouter/anthropic/{raw}"
+    if bare.startswith("deepseek"):
+        return f"openrouter/deepseek/{raw}"
+    if bare.startswith("grok"):
+        return f"openrouter/x-ai/{raw}"
+    if bare.startswith("mistral"):
+        return f"openrouter/mistralai/{raw}"
+    return raw
+
+
 def _resolve_embed_model_for_benchmark(
     *,
     explicit_embed_model: str,
@@ -784,7 +840,7 @@ def _resolve_fallback_models_for_benchmark(
         return None
 
     if raw:
-        candidates = [m.strip() for m in raw.split(",") if m.strip()]
+        candidates = [_normalize_primary_model_for_benchmark(m.strip()) for m in raw.split(",") if m.strip()]
     else:
         prefer_openrouter = bool(os.environ.get("OPENROUTER_API_KEY"))
         lower = model.lower()
@@ -1218,9 +1274,35 @@ async def main() -> None:
         help="Exit with code 2 when post-run gate policy evaluates to FAIL.",
     )
     args = parser.parse_args()
+    requested_model = (args.model or "").strip()
+    requested_judge_model = (args.judge_model or "").strip()
     requested_mode = args.mode
     effective_mode, was_aliased = _resolve_mode(requested_mode)
     args.mode = effective_mode
+    args.model = _normalize_primary_model_for_benchmark(requested_model)
+    if args.model != requested_model:
+        print(
+            f"Routing primary model via OpenRouter: {requested_model} -> {args.model}",
+            file=sys.stderr,
+        )
+    if requested_judge_model and requested_judge_model.lower() != "none":
+        args.judge_model = _normalize_primary_model_for_benchmark(requested_judge_model)
+        if args.judge_model != requested_judge_model:
+            print(
+                f"Routing judge model via OpenRouter: {requested_judge_model} -> {args.judge_model}",
+                file=sys.stderr,
+            )
+    if (args.post_review_model or "").strip():
+        requested_post_review_model = (args.post_review_model or "").strip()
+        normalized_post_review_model = _normalize_primary_model_for_benchmark(requested_post_review_model)
+        if normalized_post_review_model != requested_post_review_model:
+            print(
+                f"Routing post-review model via OpenRouter: "
+                f"{requested_post_review_model} -> {normalized_post_review_model}",
+                file=sys.stderr,
+            )
+        args.post_review_model = normalized_post_review_model
+
     effective_embed_model = _resolve_embed_model_for_benchmark(
         explicit_embed_model=(args.embed_model or ""),
         disable_embedding_tools=bool(args.disable_embedding_tools),
@@ -1415,6 +1497,8 @@ async def main() -> None:
         f"Model: {args.model} ({backend}, "
         f"question_timeout={args.timeout}s, turn_timeout={args.turn_timeout}s)"
     )
+    if requested_model and requested_model != args.model:
+        print(f"Requested model: {requested_model}")
     print(f"Mode: {args.mode}" + (f" (requested: {requested_mode})" if requested_mode != args.mode else ""))
     if args.backend != "mcp" or not _is_agent_sdk_model(args.model):
         print(f"Temperature: {args.temperature}")
