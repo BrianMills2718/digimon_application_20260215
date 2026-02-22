@@ -786,13 +786,32 @@ def _resolve_fallback_models_for_benchmark(
     if raw:
         candidates = [m.strip() for m in raw.split(",") if m.strip()]
     else:
+        prefer_openrouter = bool(os.environ.get("OPENROUTER_API_KEY"))
         lower = model.lower()
-        if lower.startswith("gemini/"):
-            candidates = ["openrouter/deepseek/deepseek-chat", "gpt-5-mini"]
-        elif lower.startswith("openrouter/"):
-            candidates = ["gpt-5-mini", "gemini/gemini-2.5-flash"]
+        if prefer_openrouter:
+            if lower.startswith("openrouter/"):
+                candidates = [
+                    "openrouter/deepseek/deepseek-chat",
+                    "openrouter/google/gemini-2.5-flash",
+                    "openrouter/openai/gpt-4o-mini",
+                ]
+            elif lower.startswith("gemini/"):
+                candidates = [
+                    "openrouter/deepseek/deepseek-chat",
+                    "openrouter/openai/gpt-4o-mini",
+                ]
+            else:
+                candidates = [
+                    "openrouter/deepseek/deepseek-chat",
+                    "openrouter/google/gemini-2.5-flash",
+                ]
         else:
-            candidates = ["openrouter/deepseek/deepseek-chat", "gemini/gemini-2.5-flash"]
+            if lower.startswith("gemini/"):
+                candidates = ["openrouter/deepseek/deepseek-chat", "gpt-5-mini"]
+            elif lower.startswith("openrouter/"):
+                candidates = ["gpt-5-mini", "gemini/gemini-2.5-flash"]
+            else:
+                candidates = ["openrouter/deepseek/deepseek-chat", "gemini/gemini-2.5-flash"]
 
     primary = model.strip().lower()
     resolved: list[str] = []
