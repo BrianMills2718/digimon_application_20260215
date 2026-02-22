@@ -134,11 +134,11 @@ async def llm_judge(
     predicted: str,
     gold: str,
     model: str = "deepseek/deepseek-chat",
-) -> bool:
+) -> bool | None:
     """Use an LLM to judge if the predicted answer is correct.
 
-    Returns True if the LLM deems the prediction correct, False otherwise.
-    On any error (timeout, parse failure, API error), returns False.
+    Returns True if the LLM deems the prediction correct, False if judged incorrect,
+    and None when the judge call fails (timeout, API, parse/runtime failure).
     """
     if not predicted or not predicted.strip():
         return False
@@ -159,7 +159,7 @@ async def llm_judge(
         return _parse_llm_judge_correct(result.content)
     except Exception as e:
         logger.warning(f"llm_judge failed: {e}")
-        return False
+        return None
 
 
 # --- Data structures ---

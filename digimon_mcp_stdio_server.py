@@ -85,6 +85,8 @@ _BENCHMARK_HIDDEN_TOOLS: set[str] = {
     # Cross-modal (not relevant for QA)
     "convert_modality", "validate_conversion", "select_analysis_mode",
     "list_modality_conversions",
+    # Explicit wrappers are used in benchmark mode to avoid multi-mode ambiguity.
+    "chunk_get_text",
 }
 
 # Short descriptions for benchmark mode — the system prompt already explains
@@ -94,13 +96,17 @@ _BENCHMARK_SHORT_DESCS: dict[str, str] = {
     "entity_onehop": "Get all neighbor entities of a given entity.",
     "entity_ppr": "Personalized PageRank from seed entities.",
     "entity_link": "Match entity names to graph nodes.",
+    "entity_resolve_names_to_ids": "Resolve free-form entity names to canonical graph IDs.",
+    "entity_profile": "Get canonical name, aliases, type, and evidence refs for one entity.",
     "entity_tfidf": "Find entities by TF-IDF keyword matching.",
     "relationship_onehop": "Get typed relationships for an entity.",
     "relationship_score_aggregator": "Aggregate entity scores into relationship scores.",
     "relationship_vdb_search": "Semantic vector search over relationships.",
     "chunk_from_relationships": "Get text chunks for given relationships.",
     "chunk_occurrence": "Find chunks where two entities co-occur.",
-    "chunk_get_text": "Get source text by entity IDs or chunk IDs.",
+    "chunk_get_text_by_chunk_ids": "Get source text by explicit chunk IDs only.",
+    "chunk_get_text_by_entity_ids": "Get source text for explicit entity IDs.",
+    "extract_date_mentions": "Extract normalized date mentions with evidence refs from chunk text.",
     "chunk_text_search": "Keyword search over source text chunks.",
     "chunk_aggregator": "Score chunks by relationship/PPR scores via sparse matrices.",
     "subgraph_khop_paths": "Find all paths between entities within k hops.",
@@ -134,6 +140,17 @@ def _compact_tool_schemas() -> None:
             for prop in params.get("properties", {}).values():
                 if isinstance(prop, dict):
                     prop.pop("title", None)
+
+
+# Explicit mode boundaries for chunk_get_text to avoid silent branch selection.
+_CHUNK_GET_TEXT_MODE_AUTO = "auto"
+_CHUNK_GET_TEXT_MODE_BY_CHUNK_IDS = "chunk_ids"
+_CHUNK_GET_TEXT_MODE_BY_ENTITY_IDS = "entity_ids"
+_CHUNK_GET_TEXT_VALID_MODES = {
+    _CHUNK_GET_TEXT_MODE_AUTO,
+    _CHUNK_GET_TEXT_MODE_BY_CHUNK_IDS,
+    _CHUNK_GET_TEXT_MODE_BY_ENTITY_IDS,
+}
 
 
 # --- Initialize MCP Server ---
@@ -809,6 +826,14 @@ def _classify_todo_update_error(message: str) -> dict[str, Any]:
             "Test both parse hypotheses and record both alternatives.",
             "Cite evidence for each tested parse before marking done.",
         ]
+    elif "confidence must be in [0, 1]" in msg_l:
+        reason_code = "confidence_out_of_range"
+        required_fields = ["confidence"]
+        suggested_next_actions = [
+            "Set confidence to a numeric value between 0 and 1.",
+            "Retry todo_update with corrected confidence.",
+        ]
+        requires_new_evidence = False
     elif "low-confidence todo completion requires alternatives_tested" in msg_l:
         reason_code = "low_confidence_without_alternatives"
         required_fields = ["alternatives_tested"]
@@ -1492,10 +1517,10 @@ def _build_entity_search_guidance(similar_entities: list[dict]) -> list[str]:
         bridge_entity = person_like[0] if person_like else non_date_candidates[0]
         hints.append(
             "Top candidates include both a date-like entity and a person/entity. "
-            "Verify this pair with chunk_get_text before deciding.",
+            "Verify this pair with chunk_get_text_by_entity_ids before deciding.",
         )
         hints.append(
-            f"Try: chunk_get_text(graph_reference_id=..., entity_ids=[{bridge_entity!r}]) "
+            f"Try: chunk_get_text_by_entity_ids(graph_reference_id=..., entity_ids=[{bridge_entity!r}]) "
             "and check whether it supports the date.",
         )
 
@@ -2116,6 +2141,310 @@ async def entity_link(source_entities: list[str], vdb_reference_id: str,
 
 
 @mcp.tool()
+async def entity_resolve_names_to_ids(
+    entity_names: list[str],
+    vdb_reference_id: str = "",
+    dataset_name: str = "",
+    top_k_per_name: int = 3,
+    similarity_threshold: float = 0.0,
+) -> str:
+    """Resolve free-form entity names into canonical entity IDs via entity VDB search.
+
+    This is a composability conversion operator:
+    - input: names/candidates
+    - output: canonical IDs for downstream graph tools
+    """
+    await _ensure_initialized()
+    normalized_names: list[str] = []
+    seen: set[str] = set()
+    for raw in entity_names or []:
+        name = (raw or "").strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized_names.append(name)
+
+    if not normalized_names:
+        return json.dumps({"error": "entity_names is required"}, indent=2)
+
+    resolved_vdb = _resolve_vdb_reference_id(
+        vdb_reference_id=vdb_reference_id,
+        dataset_name=dataset_name,
+        kind="entity",
+    )
+    if not resolved_vdb:
+        return json.dumps(
+            {
+                "error": (
+                    f"Could not resolve entity VDB from vdb_reference_id={vdb_reference_id!r} "
+                    f"dataset_name={dataset_name!r}"
+                ),
+            },
+            indent=2,
+        )
+
+    resolved_entities: list[dict[str, Any]] = []
+    unresolved_entity_names: list[str] = []
+
+    for entity_name in normalized_names:
+        raw_payload = await entity_vdb_search(
+            vdb_reference_id=resolved_vdb,
+            query_text=entity_name,
+            top_k=max(1, int(top_k_per_name)),
+            dataset_name=dataset_name,
+        )
+        try:
+            payload = json.loads(raw_payload)
+        except Exception:
+            payload = {}
+
+        candidates = payload.get("similar_entities") if isinstance(payload, dict) else None
+        if not isinstance(candidates, list):
+            candidates = []
+
+        best: dict[str, Any] | None = None
+        best_score = float("-inf")
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            entity_id = str(item.get("node_id") or item.get("entity_name") or "").strip()
+            if not entity_id:
+                continue
+            score_raw = item.get("score")
+            try:
+                score = float(score_raw)
+            except (TypeError, ValueError):
+                score = None
+
+            if score is not None and score < float(similarity_threshold):
+                continue
+
+            if best is None:
+                best = item
+                best_score = score if score is not None else 0.0
+                continue
+            if score is not None and score > best_score:
+                best = item
+                best_score = score
+
+        if best is None:
+            unresolved_entity_names.append(entity_name)
+            continue
+
+        resolved_entities.append(
+            {
+                "source_entity_name": entity_name,
+                "resolved_entity_id": str(best.get("node_id") or best.get("entity_name") or "").strip(),
+                "resolved_entity_name": str(best.get("entity_name") or "").strip() or None,
+                "score": best.get("score"),
+                "top_candidates": [
+                    {
+                        "entity_id": str(c.get("node_id") or c.get("entity_name") or "").strip(),
+                        "entity_name": c.get("entity_name"),
+                        "score": c.get("score"),
+                    }
+                    for c in candidates[: max(1, int(top_k_per_name))]
+                    if isinstance(c, dict)
+                ],
+            }
+        )
+
+    return json.dumps(
+        {
+            "resolved_entities": resolved_entities,
+            "unresolved_entity_names": unresolved_entity_names,
+            "resolved_vdb_reference_id": resolved_vdb,
+            "status_message": (
+                f"Resolved {len(resolved_entities)}/{len(normalized_names)} entity names to IDs"
+            ),
+        },
+        indent=2,
+        default=str,
+    )
+
+
+@mcp.tool()
+async def entity_profile(
+    entity_id: str = "",
+    entity_name: str = "",
+    graph_reference_id: str = "",
+    dataset_name: str = "",
+) -> str:
+    """Get a compact profile for one entity (canonical name, aliases, type, evidence refs)."""
+    await _ensure_initialized()
+    from Core.Common.Utils import clean_str
+
+    query_value = (entity_id or entity_name or "").strip()
+    if not query_value:
+        return json.dumps({"error": "entity_id or entity_name is required"}, indent=2)
+
+    resolved_graph_id = _resolve_graph_reference_id(
+        graph_reference_id=graph_reference_id,
+        dataset_name=dataset_name,
+    )
+    if not resolved_graph_id:
+        return json.dumps(
+            {
+                "error": (
+                    f"Could not resolve graph_reference_id from graph_reference_id={graph_reference_id!r} "
+                    f"dataset_name={dataset_name!r}"
+                ),
+            },
+            indent=2,
+        )
+
+    ctx = _state["context"]
+    graph_instance = ctx.get_graph_instance(resolved_graph_id) if hasattr(ctx, "get_graph_instance") else None
+    if not graph_instance or not hasattr(graph_instance, "_graph") or not hasattr(graph_instance._graph, "graph"):
+        return json.dumps(
+            {"error": f"Graph instance not available for {resolved_graph_id!r}"},
+            indent=2,
+        )
+
+    nx_graph = graph_instance._graph.graph
+    candidate_ids: list[str] = []
+    for candidate in (query_value, clean_str(query_value)):
+        value = (candidate or "").strip()
+        if value and value not in candidate_ids:
+            candidate_ids.append(value)
+
+    resolved_entity_id: str | None = None
+    for candidate in candidate_ids:
+        if candidate in nx_graph:
+            resolved_entity_id = candidate
+            break
+
+    vdb_candidates: list[dict[str, Any]] = []
+    if resolved_entity_id is None and entity_name:
+        resolved_vdb = _resolve_vdb_reference_id(
+            vdb_reference_id="",
+            dataset_name=dataset_name,
+            kind="entity",
+        )
+        if resolved_vdb:
+            raw_payload = await entity_vdb_search(
+                vdb_reference_id=resolved_vdb,
+                query_text=entity_name,
+                top_k=5,
+                dataset_name=dataset_name,
+            )
+            try:
+                payload = json.loads(raw_payload)
+            except Exception:
+                payload = {}
+            raw_candidates = payload.get("similar_entities") if isinstance(payload, dict) else []
+            if isinstance(raw_candidates, list):
+                for item in raw_candidates:
+                    if not isinstance(item, dict):
+                        continue
+                    cid = str(item.get("node_id") or item.get("entity_name") or "").strip()
+                    if not cid:
+                        continue
+                    vdb_candidates.append(
+                        {
+                            "entity_id": cid,
+                            "entity_name": item.get("entity_name"),
+                            "score": item.get("score"),
+                        }
+                    )
+                    if resolved_entity_id is None and cid in nx_graph:
+                        resolved_entity_id = cid
+
+    if resolved_entity_id is None:
+        return json.dumps(
+            {
+                "error": f"Entity {query_value!r} not found in graph {resolved_graph_id!r}",
+                "resolved_graph_reference_id": resolved_graph_id,
+                "candidate_ids_tried": candidate_ids,
+                "vdb_candidates": vdb_candidates,
+            },
+            indent=2,
+            default=str,
+        )
+
+    node_attrs = dict(nx_graph.nodes[resolved_entity_id]) if resolved_entity_id in nx_graph else {}
+    canonical_name = (
+        str(node_attrs.get("entity_name") or "").strip()
+        or str(node_attrs.get("name") or "").strip()
+        or str(node_attrs.get("title") or "").strip()
+        or resolved_entity_id
+    )
+
+    aliases: list[str] = []
+    seen_aliases: set[str] = set()
+    for key in ("aliases", "alias", "aka", "surface_forms", "names"):
+        raw_alias = node_attrs.get(key)
+        values: list[str]
+        if isinstance(raw_alias, str):
+            values = [raw_alias]
+        elif isinstance(raw_alias, (list, tuple, set)):
+            values = [str(v) for v in raw_alias if v is not None]
+        else:
+            values = []
+        for value in values:
+            cleaned = re.sub(r"\s+", " ", value.strip())
+            if len(cleaned) < 2:
+                continue
+            alias_key = cleaned.lower()
+            if alias_key in seen_aliases:
+                continue
+            seen_aliases.add(alias_key)
+            aliases.append(cleaned)
+
+    coarse_type = (
+        str(node_attrs.get("entity_type") or "").strip()
+        or str(node_attrs.get("type") or "").strip()
+        or str(node_attrs.get("category") or "").strip()
+        or str(node_attrs.get("label") or "").strip()
+        or "unknown"
+    )
+
+    short_desc = (
+        str(node_attrs.get("description") or "").strip()
+        or str(node_attrs.get("summary") or "").strip()
+        or str(node_attrs.get("text") or "").strip()
+        or str(node_attrs.get("content") or "").strip()
+    )
+    if len(short_desc) > 280:
+        short_desc = short_desc[:280].rstrip() + "..."
+
+    evidence_refs: list[str] = [f"entity:{resolved_entity_id}"]
+    for key in ("chunk_id", "source_chunk_id", "chunk_ids", "source_chunk_ids"):
+        raw_chunks = node_attrs.get(key)
+        chunk_values: list[str]
+        if isinstance(raw_chunks, str):
+            chunk_values = [raw_chunks]
+        elif isinstance(raw_chunks, (list, tuple, set)):
+            chunk_values = [str(v) for v in raw_chunks if v is not None]
+        else:
+            chunk_values = []
+        for cid in chunk_values:
+            cid_norm = cid.strip()
+            if not cid_norm.startswith("chunk_"):
+                continue
+            if cid_norm not in evidence_refs:
+                evidence_refs.append(cid_norm)
+
+    return json.dumps(
+        {
+            "entity_id": resolved_entity_id,
+            "canonical_name": canonical_name,
+            "aliases": aliases[:12],
+            "coarse_type": coarse_type,
+            "short_description": short_desc,
+            "evidence_refs": evidence_refs,
+            "resolved_graph_reference_id": resolved_graph_id,
+            "status_message": "Entity profile resolved",
+        },
+        indent=2,
+        default=str,
+    )
+
+
+@mcp.tool()
 async def entity_tfidf(candidate_entity_ids: list[str], query_text: str,
                        graph_reference_id: str, top_k: int = 10) -> str:
     """Rank candidate entities by TF-IDF similarity to a query.
@@ -2368,6 +2697,7 @@ async def chunk_get_text(
     max_chunks_per_entity: int = 5,
     entity_names: list[str] | None = None,
     dataset_name: str = "",
+    mode: str = _CHUNK_GET_TEXT_MODE_AUTO,
 ) -> str:
     """Get source text chunks associated with entities or explicit chunk IDs.
 
@@ -2377,6 +2707,8 @@ async def chunk_get_text(
         chunk_ids: Optional list of explicit chunk IDs to fetch (alias path)
         chunk_id: Optional single explicit chunk ID (alias for chunk_ids=[...])
         max_chunks_per_entity: Max chunks per entity
+        mode: One of "entity_ids", "chunk_ids", or "auto". In auto mode,
+            exactly one mode must be inferable from provided args.
 
     Returns:
         retrieved_chunks: list of {entity_id?: str, chunk_id: str, text_content: str}, status_message: str
@@ -2385,14 +2717,84 @@ async def chunk_get_text(
     from Core.AgentTools.chunk_tools import chunk_get_text_for_entities_tool
     from Core.AgentSchema.tool_contracts import ChunkGetTextForEntitiesInput
 
+    normalized_mode = (mode or _CHUNK_GET_TEXT_MODE_AUTO).strip().lower()
+    if normalized_mode not in _CHUNK_GET_TEXT_VALID_MODES:
+        return json.dumps(
+            {
+                "error": (
+                    "mode must be one of "
+                    f"{sorted(_CHUNK_GET_TEXT_VALID_MODES)}"
+                )
+            },
+            indent=2,
+        )
+
     # Robust alias handling for explicit chunk-ID retrieval attempts.
     normalized_chunk_ids = [(c or "").strip() for c in (chunk_ids or []) if (c or "").strip()]
     single_chunk_id = (chunk_id or "").strip()
     if single_chunk_id:
         normalized_chunk_ids.append(single_chunk_id)
-    if normalized_chunk_ids:
+    seen_ids: set[str] = set()
+    ordered_chunk_ids: list[str] = []
+    for cid in normalized_chunk_ids:
+        if cid in seen_ids:
+            continue
+        seen_ids.add(cid)
+        ordered_chunk_ids.append(cid)
+
+    normalized_entity_ids = list(entity_ids or [])
+    if not normalized_entity_ids and entity_names:
+        normalized_entity_ids = list(entity_names)
+
+    has_chunk_refs = bool(ordered_chunk_ids)
+    has_entity_refs = bool(normalized_entity_ids)
+
+    resolved_mode = normalized_mode
+    if normalized_mode == _CHUNK_GET_TEXT_MODE_AUTO:
+        if has_chunk_refs and has_entity_refs:
+            return json.dumps(
+                {
+                    "error": (
+                        "chunk_get_text auto mode is ambiguous: provide only one of "
+                        "(chunk_id/chunk_ids) or (entity_ids/entity_names), or pass "
+                        "mode='chunk_ids' or mode='entity_ids' explicitly."
+                    ),
+                },
+                indent=2,
+            )
+        if has_chunk_refs:
+            resolved_mode = _CHUNK_GET_TEXT_MODE_BY_CHUNK_IDS
+        elif has_entity_refs:
+            resolved_mode = _CHUNK_GET_TEXT_MODE_BY_ENTITY_IDS
+        else:
+            return json.dumps(
+                {
+                    "error": (
+                        "chunk_get_text requires either chunk references or entity references "
+                        "when mode='auto'."
+                    )
+                },
+                indent=2,
+            )
+
+    if resolved_mode == _CHUNK_GET_TEXT_MODE_BY_CHUNK_IDS:
+        if has_entity_refs:
+            return json.dumps(
+                {
+                    "error": "entity_ids/entity_names are not allowed when mode='chunk_ids'",
+                },
+                indent=2,
+            )
+        if not has_chunk_refs:
+            return json.dumps(
+                {
+                    "error": "chunk_id or chunk_ids is required when mode='chunk_ids'",
+                },
+                indent=2,
+            )
+
         seen_ids: set[str] = set()
-        ordered_chunk_ids: list[str] = []
+        ordered_chunk_ids = []
         for cid in normalized_chunk_ids:
             if cid in seen_ids:
                 continue
@@ -2453,6 +2855,7 @@ async def chunk_get_text(
             {
                 "retrieved_chunks": retrieved_chunks,
                 "missing_chunk_ids": missing_chunk_ids,
+                "resolved_mode": resolved_mode,
                 "resolved_dataset_name": resolved_dataset_name or None,
                 "status_message": (
                     f"Retrieved {len(retrieved_chunks)} chunks by chunk-id lookup"
@@ -2463,11 +2866,15 @@ async def chunk_get_text(
             default=str,
         )
 
-    normalized_entity_ids = list(entity_ids or [])
-    if not normalized_entity_ids and entity_names:
-        normalized_entity_ids = list(entity_names)
+    if resolved_mode == _CHUNK_GET_TEXT_MODE_BY_ENTITY_IDS and has_chunk_refs:
+        return json.dumps(
+            {
+                "error": "chunk_id/chunk_ids are not allowed when mode='entity_ids'",
+            },
+            indent=2,
+        )
     if not normalized_entity_ids:
-        return json.dumps({"error": "entity_ids (or entity_names) is required"}, indent=2)
+        return json.dumps({"error": "entity_ids (or entity_names) is required when mode='entity_ids'"}, indent=2)
 
     resolved_graph_id = _resolve_graph_reference_id(
         graph_reference_id=graph_reference_id,
@@ -2506,11 +2913,214 @@ async def chunk_get_text(
                 deduped.append(chunk.model_dump(exclude_none=True) if hasattr(chunk, "model_dump") else {})
         return json.dumps({
             "retrieved_chunks": deduped,
+            "resolved_mode": resolved_mode,
             "resolved_graph_reference_id": resolved_graph_id,
             "status_message": f"Retrieved {len(deduped)} chunks for {len(normalized_entity_ids)} entities",
         }, indent=2, default=str)
 
     return _format_result(result)
+
+
+@mcp.tool()
+async def chunk_get_text_by_chunk_ids(
+    chunk_ids: list[str] | None = None,
+    chunk_id: str = "",
+    dataset_name: str = "",
+) -> str:
+    """Get chunk text by explicit chunk IDs only."""
+    return await chunk_get_text(
+        chunk_ids=chunk_ids,
+        chunk_id=chunk_id,
+        dataset_name=dataset_name,
+        mode=_CHUNK_GET_TEXT_MODE_BY_CHUNK_IDS,
+    )
+
+
+@mcp.tool()
+async def chunk_get_text_by_entity_ids(
+    graph_reference_id: str = "",
+    entity_ids: list[str] | None = None,
+    entity_names: list[str] | None = None,
+    max_chunks_per_entity: int = 5,
+    dataset_name: str = "",
+) -> str:
+    """Get chunk text by canonical entity IDs (or explicit entity-name aliases)."""
+    return await chunk_get_text(
+        graph_reference_id=graph_reference_id,
+        entity_ids=entity_ids,
+        max_chunks_per_entity=max_chunks_per_entity,
+        entity_names=entity_names,
+        dataset_name=dataset_name,
+        mode=_CHUNK_GET_TEXT_MODE_BY_ENTITY_IDS,
+    )
+
+
+@mcp.tool()
+async def extract_date_mentions(
+    chunk_ids: list[str] | None = None,
+    chunk_id: str = "",
+    text: str = "",
+    dataset_name: str = "",
+    max_mentions: int = 20,
+) -> str:
+    """Extract normalized date mentions from chunk text with evidence refs."""
+    await _ensure_initialized()
+
+    sources: list[dict[str, str]] = []
+    if (text or "").strip():
+        sources.append({"chunk_id": "", "text": text.strip()})
+
+    if chunk_ids or (chunk_id or "").strip():
+        payload_raw = await chunk_get_text_by_chunk_ids(
+            chunk_ids=chunk_ids,
+            chunk_id=chunk_id,
+            dataset_name=dataset_name,
+        )
+        try:
+            payload = json.loads(payload_raw)
+        except Exception:
+            payload = {}
+        retrieved_chunks = payload.get("retrieved_chunks") if isinstance(payload, dict) else []
+        if isinstance(retrieved_chunks, list):
+            for item in retrieved_chunks:
+                if not isinstance(item, dict):
+                    continue
+                cid = str(item.get("chunk_id") or "").strip()
+                chunk_text = str(
+                    item.get("text_content")
+                    or item.get("text")
+                    or item.get("content")
+                    or ""
+                )
+                if chunk_text:
+                    sources.append({"chunk_id": cid, "text": chunk_text})
+
+    if not sources:
+        return json.dumps(
+            {
+                "error": "Provide text or chunk_id/chunk_ids.",
+                "status_message": "No source text available for date extraction.",
+            },
+            indent=2,
+        )
+
+    month_pattern = r"(?:%s)" % "|".join(_MONTH_NAMES)
+    full_date_re = re.compile(
+        rf"\b(?P<month>{month_pattern})\s+"
+        r"(?P<day>\d{1,2})(?:st|nd|rd|th)?(?:,)?\s+"
+        r"(?P<year>\d{3,4})\b",
+        flags=re.IGNORECASE,
+    )
+    month_year_re = re.compile(
+        rf"\b(?P<month>{month_pattern})\s+(?P<year>\d{{3,4}})\b",
+        flags=re.IGNORECASE,
+    )
+    year_re = re.compile(r"\b(?P<year>[89]\d{2}|1\d{3}|20\d{2})\b")
+
+    mentions: list[dict[str, Any]] = []
+    seen: set[tuple[str, int, int, str]] = set()
+
+    def _add_mention(
+        *,
+        source_chunk_id: str,
+        source_text: str,
+        start: int,
+        end: int,
+        mention_text: str,
+        normalized_date: str,
+        precision: str,
+    ) -> None:
+        key = (source_chunk_id, start, end, normalized_date)
+        if key in seen:
+            return
+        seen.add(key)
+        evidence_ref = source_chunk_id if source_chunk_id else "inline_text"
+        mentions.append(
+            {
+                "mention_text": mention_text,
+                "normalized_date": normalized_date,
+                "precision": precision,
+                "chunk_id": source_chunk_id or None,
+                "char_start": start,
+                "char_end": end,
+                "evidence_ref": evidence_ref,
+                "context_snippet": source_text[max(0, start - 40): min(len(source_text), end + 40)],
+            }
+        )
+
+    for source in sources:
+        source_chunk_id = source.get("chunk_id", "")
+        source_text = source.get("text", "")
+        if not source_text:
+            continue
+
+        occupied_spans: list[tuple[int, int]] = []
+
+        for match in full_date_re.finditer(source_text):
+            month = match.group("month").capitalize()
+            day = int(match.group("day"))
+            year = match.group("year")
+            normalized_date = f"{month} {day}, {year}"
+            start, end = match.span()
+            occupied_spans.append((start, end))
+            _add_mention(
+                source_chunk_id=source_chunk_id,
+                source_text=source_text,
+                start=start,
+                end=end,
+                mention_text=match.group(0),
+                normalized_date=normalized_date,
+                precision="day",
+            )
+
+        for match in month_year_re.finditer(source_text):
+            start, end = match.span()
+            if any(start >= a and end <= b for a, b in occupied_spans):
+                continue
+            month = match.group("month").capitalize()
+            year = match.group("year")
+            normalized_date = f"{month} {year}"
+            occupied_spans.append((start, end))
+            _add_mention(
+                source_chunk_id=source_chunk_id,
+                source_text=source_text,
+                start=start,
+                end=end,
+                mention_text=match.group(0),
+                normalized_date=normalized_date,
+                precision="month",
+            )
+
+        for match in year_re.finditer(source_text):
+            start, end = match.span()
+            if any(start >= a and end <= b for a, b in occupied_spans):
+                continue
+            year = match.group("year")
+            _add_mention(
+                source_chunk_id=source_chunk_id,
+                source_text=source_text,
+                start=start,
+                end=end,
+                mention_text=match.group(0),
+                normalized_date=year,
+                precision="year",
+            )
+
+    mentions.sort(key=lambda item: (item.get("chunk_id") or "", int(item.get("char_start") or 0)))
+    limited_mentions = mentions[: max(1, int(max_mentions))]
+
+    return json.dumps(
+        {
+            "date_mentions": limited_mentions,
+            "n_date_mentions": len(limited_mentions),
+            "n_sources": len(sources),
+            "status_message": (
+                f"Extracted {len(limited_mentions)} date mentions from {len(sources)} source blocks"
+            ),
+        },
+        indent=2,
+        default=str,
+    )
 
 
 @mcp.tool()
@@ -5064,8 +5674,6 @@ if BENCHMARK_MODE:
         answer_span_text = (answer_span or "").strip()
         refs = _normalize_evidence_refs(evidence_refs)
         alts = _normalize_alternatives_tested(alternatives_tested)
-        if confidence is not None and not (0.0 <= confidence <= 1.0):
-            raise ValueError("confidence must be in [0, 1].")
         if normalized == "done":
             guard = _todo_recovery_guard.get(todo_id)
             if guard:
@@ -5109,6 +5717,9 @@ if BENCHMARK_MODE:
                     )
 
         try:
+            if confidence is not None and not (0.0 <= confidence <= 1.0):
+                raise ValueError("confidence must be in [0, 1].")
+
             answer_kind_norm = (
                 _normalize_answer_kind(target.get("answer_kind", ""))
                 or _infer_answer_kind(target.get("task", ""))

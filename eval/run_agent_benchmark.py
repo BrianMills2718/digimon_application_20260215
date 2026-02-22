@@ -159,13 +159,17 @@ _BENCHMARK_TOOL_NAME_CANDIDATES = [
     "entity_onehop",
     "entity_ppr",
     "entity_link",
+    "entity_resolve_names_to_ids",
+    "entity_profile",
     "entity_tfidf",
     "relationship_onehop",
     "relationship_score_aggregator",
     "relationship_vdb_search",
     "chunk_from_relationships",
     "chunk_occurrence",
-    "chunk_get_text",
+    "chunk_get_text_by_chunk_ids",
+    "chunk_get_text_by_entity_ids",
+    "extract_date_mentions",
     "chunk_text_search",
     "chunk_vdb_search",
     "chunk_aggregator",
@@ -182,31 +186,44 @@ _BENCHMARK_TOOL_NAME_CANDIDATES = [
     "submit_answer",
 ]
 
+_TOOL_MODE_BOUNDARIES: dict[str, str] = {
+    "chunk_get_text_by_chunk_ids": "chunk_ids",
+    "chunk_get_text_by_entity_ids": "entity_ids",
+}
+
 _BENCHMARK_INITIAL_ARTIFACTS: tuple[str, ...] = ("QUERY_TEXT",)
 
 _BENCHMARK_TOOL_CONTRACTS: dict[str, dict[str, object]] = {
     "entity_vdb_search": {
         "requires_any": ["QUERY_TEXT", "ENTITY_SET", "CHUNK_SET"],
-        "produces": ["ENTITY_SET"],
+        "produces": [{"kind": "ENTITY_SET", "ref_type": "id"}],
     },
     "entity_onehop": {
-        "requires_all": ["ENTITY_SET"],
-        "produces": ["ENTITY_SET"],
+        "requires_all": [{"kind": "ENTITY_SET", "ref_type": "id"}],
+        "produces": [{"kind": "ENTITY_SET", "ref_type": "id"}],
     },
     "entity_ppr": {
-        "requires_all": ["ENTITY_SET"],
-        "produces": ["ENTITY_SET"],
+        "requires_all": [{"kind": "ENTITY_SET", "ref_type": "id"}],
+        "produces": [{"kind": "ENTITY_SET", "ref_type": "id"}],
     },
     "entity_link": {
         "requires_any": ["QUERY_TEXT", "CHUNK_SET"],
-        "produces": ["ENTITY_SET"],
+        "produces": [{"kind": "ENTITY_SET", "ref_type": "id"}],
+    },
+    "entity_resolve_names_to_ids": {
+        "requires_any": ["QUERY_TEXT", "ENTITY_SET", "CHUNK_SET"],
+        "produces": [{"kind": "ENTITY_SET", "ref_type": "id"}],
+    },
+    "entity_profile": {
+        "requires_any": ["QUERY_TEXT", {"kind": "ENTITY_SET", "ref_type": "id"}],
+        "produces": [{"kind": "ENTITY_SET", "ref_type": "id"}],
     },
     "entity_tfidf": {
         "requires_any": ["QUERY_TEXT", "CHUNK_SET"],
-        "produces": ["ENTITY_SET"],
+        "produces": [{"kind": "ENTITY_SET", "ref_type": "id"}],
     },
     "relationship_onehop": {
-        "requires_all": ["ENTITY_SET"],
+        "requires_all": [{"kind": "ENTITY_SET", "ref_type": "id"}],
         "produces": ["RELATIONSHIP_SET"],
     },
     "relationship_score_aggregator": {
@@ -222,14 +239,28 @@ _BENCHMARK_TOOL_CONTRACTS: dict[str, dict[str, object]] = {
         "produces": ["CHUNK_SET"],
     },
     "chunk_occurrence": {
-        "requires_all": ["ENTITY_SET"],
+        "requires_all": [{"kind": "ENTITY_SET", "ref_type": "id"}],
         "produces": ["CHUNK_SET"],
     },
-    # chunk_get_text has dynamic requirements handled in llm_client:
-    # chunk_id(s) path -> CHUNK_SET, entity path -> ENTITY_SET.
-    "chunk_get_text": {
-        "requires_any": ["ENTITY_SET", "CHUNK_SET"],
-        "produces": ["CHUNK_SET"],
+    # Explicit wrappers only in benchmark mode (no multi-mode ambiguity).
+    "chunk_get_text_by_chunk_ids": {
+        "artifact_prereqs": "none",
+        "mode": "chunk_ids",
+        "requires_all": [{"kind": "CHUNK_SET", "ref_type": "id"}],
+        "produces": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+    },
+    "chunk_get_text_by_entity_ids": {
+        "artifact_prereqs": "none",
+        "mode": "entity_ids",
+        "requires_all": [{"kind": "ENTITY_SET", "ref_type": "id"}],
+        "produces": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+    },
+    "extract_date_mentions": {
+        "requires_any": [
+            {"kind": "CHUNK_SET", "ref_type": "fulltext"},
+            {"kind": "CHUNK_SET", "ref_type": "id"},
+        ],
+        "produces": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
     },
     "chunk_text_search": {
         "requires_all": ["QUERY_TEXT"],
@@ -244,11 +275,11 @@ _BENCHMARK_TOOL_CONTRACTS: dict[str, dict[str, object]] = {
         "produces": ["CHUNK_SET"],
     },
     "subgraph_khop_paths": {
-        "requires_all": ["ENTITY_SET"],
+        "requires_all": [{"kind": "ENTITY_SET", "ref_type": "id"}],
         "produces": ["SUBGRAPH"],
     },
     "subgraph_steiner_tree": {
-        "requires_all": ["ENTITY_SET"],
+        "requires_all": [{"kind": "ENTITY_SET", "ref_type": "id"}],
         "produces": ["SUBGRAPH"],
     },
     "meta_pcst_optimize": {
@@ -257,7 +288,7 @@ _BENCHMARK_TOOL_CONTRACTS: dict[str, dict[str, object]] = {
     },
     "bridge_disambiguate": {
         "requires_any": ["ENTITY_SET", "CHUNK_SET"],
-        "produces": ["ENTITY_SET"],
+        "produces": [{"kind": "ENTITY_SET", "ref_type": "id"}],
     },
     # Control/planning tools intentionally bypass artifact requirements.
     "list_available_resources": {"is_control": True},
@@ -348,6 +379,8 @@ def _build_run_provenance(
         "tool_surface": tool_surface,
         "tool_contracts_sha256": _sha256_json(_BENCHMARK_TOOL_CONTRACTS),
         "tool_contracts": _BENCHMARK_TOOL_CONTRACTS,
+        "tool_mode_boundaries_sha256": _sha256_json(_TOOL_MODE_BOUNDARIES),
+        "tool_mode_boundaries": _TOOL_MODE_BOUNDARIES,
         "initial_artifacts": list(_BENCHMARK_INITIAL_ARTIFACTS),
         "enforce_tool_contracts": True,
     }
@@ -382,6 +415,48 @@ def _extract_tool_error_text(tool_call: dict) -> str:
     if tool_call.get("has_error") or tool_call.get("is_error"):
         return "tool call marked as error"
     return ""
+
+
+def _parse_tool_arguments(raw_arguments: object) -> dict[str, object] | None:
+    if isinstance(raw_arguments, dict):
+        return raw_arguments
+    if isinstance(raw_arguments, str):
+        text = raw_arguments.strip()
+        if not text:
+            return None
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return None
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _extract_tool_mode_trace(tool_calls: list[dict]) -> list[dict[str, object]]:
+    mode_trace: list[dict[str, object]] = []
+    for idx, tool_call in enumerate(tool_calls):
+        tool_name = str(tool_call.get("tool", "")).strip()
+        expected_mode = _TOOL_MODE_BOUNDARIES.get(tool_name)
+        if not expected_mode:
+            continue
+        parsed_args = _parse_tool_arguments(tool_call.get("arguments"))
+        declared_mode = ""
+        if isinstance(parsed_args, dict):
+            raw_mode = parsed_args.get("mode")
+            if isinstance(raw_mode, str):
+                declared_mode = raw_mode.strip().lower()
+        mode_trace.append(
+            {
+                "turn_index": idx,
+                "tool": tool_name,
+                "expected_mode": expected_mode,
+                "declared_mode": declared_mode or None,
+                "mode_matches_expected": declared_mode == expected_mode if declared_mode else None,
+                "arg_keys": sorted(parsed_args.keys()) if isinstance(parsed_args, dict) else [],
+            }
+        )
+    return mode_trace
 
 
 def _classify_tool_error(error_text: str) -> str:
@@ -640,13 +715,17 @@ async def _init_direct_tools(dataset_name: str, disable_embedding_tools: bool = 
         dms.entity_onehop,
         dms.entity_ppr,
         dms.entity_link,
+        dms.entity_resolve_names_to_ids,
+        dms.entity_profile,
         dms.entity_tfidf,
         dms.relationship_onehop,
         dms.relationship_score_aggregator,
         dms.relationship_vdb_search,
         dms.chunk_from_relationships,
         dms.chunk_occurrence,
-        dms.chunk_get_text,
+        dms.chunk_get_text_by_chunk_ids,
+        dms.chunk_get_text_by_entity_ids,
+        dms.extract_date_mentions,
         dms.chunk_text_search,
         dms.chunk_vdb_search,
         dms.chunk_aggregator,
@@ -807,14 +886,17 @@ def _resolve_embed_model_for_benchmark(
     *,
     explicit_embed_model: str,
     disable_embedding_tools: bool,
+    primary_model: str,
 ) -> str:
     """Choose embedding model for benchmark runs when caller did not specify one.
 
     Priority:
     1) explicit --embed-model
     2) if embedding tools disabled: no override needed
-    3) OPENROUTER_API_KEY present -> route embeddings via OpenRouter credits
-    4) GEMINI_API_KEY present -> use Gemini embedding model
+    3) provider-aware default based on primary model lane
+       - gemini/* primary + GEMINI_API_KEY -> Gemini embeddings
+       - openrouter/* primary + OPENROUTER_API_KEY -> OpenRouter embeddings
+    4) fallback to available provider keys
     5) else: keep default config
     """
     explicit = (explicit_embed_model or "").strip()
@@ -822,10 +904,19 @@ def _resolve_embed_model_for_benchmark(
         return explicit
     if disable_embedding_tools:
         return ""
-    if os.environ.get("OPENROUTER_API_KEY"):
+    model_lower = (primary_model or "").strip().lower()
+    has_openrouter = bool(os.environ.get("OPENROUTER_API_KEY"))
+    has_gemini = bool(os.environ.get("GEMINI_API_KEY"))
+
+    if model_lower.startswith("gemini/") and has_gemini:
+        return "gemini/gemini-embedding-001"
+    if model_lower.startswith("openrouter/") and has_openrouter:
         return "openrouter/openai/text-embedding-3-small"
-    if os.environ.get("GEMINI_API_KEY"):
-        return "gemini/text-embedding-004"
+
+    if has_openrouter:
+        return "openrouter/openai/text-embedding-3-small"
+    if has_gemini:
+        return "gemini/gemini-embedding-001"
     return ""
 
 
@@ -884,6 +975,46 @@ def _resolve_fallback_models_for_benchmark(
     return resolved or None
 
 
+def _resolve_finalization_fallback_models_for_benchmark(
+    *,
+    model: str,
+    lane_policy: str,
+    fallback_models: list[str] | None,
+    finalization_fallback_models_arg: str,
+) -> list[str] | None:
+    """Resolve forced-final fallback chain.
+
+    Rules:
+    1) explicit --finalization-fallback-models wins ("none" disables)
+    2) reliability lane defaults to first two normal fallback models
+    3) pure lane defaults to none
+    """
+    raw = (finalization_fallback_models_arg or "").strip()
+    if raw.lower() == "none":
+        return None
+
+    if raw:
+        candidates = [_normalize_primary_model_for_benchmark(m.strip()) for m in raw.split(",") if m.strip()]
+    elif lane_policy == "reliability":
+        candidates = list(fallback_models or [])[:2]
+    else:
+        candidates = []
+
+    primary = (model or "").strip().lower()
+    deduped: list[str] = []
+    seen: set[str] = {primary}
+    for candidate in candidates:
+        value = (candidate or "").strip()
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(value)
+    return deduped or None
+
+
 # --- Run agent ---
 
 async def run_agent(
@@ -901,8 +1032,14 @@ async def run_agent(
     python_tools: list | None = None,
     temperature: float | None = 0.0,
     fallback_models: list[str] | None = None,
+    finalization_fallback_models: list[str] | None = None,
     num_retries: int = 2,
+    forced_final_max_attempts: int = 1,
+    forced_final_circuit_breaker_threshold: int = 2,
+    retrieval_stagnation_turns: int = 4,
+    lane_policy: str = "pure",
     trace_id: str = "",
+    max_message_chars: int = 180_000,
 ) -> dict:
     """Run an agent on a single question via llm_client.
 
@@ -920,6 +1057,7 @@ async def run_agent(
         mode: Prompt mode (canonical hybrid; legacy aliases are mapped).
         backend: 'mcp' (default) or 'direct' (in-process Python tools)
         python_tools: List of Python callables for direct backend
+        lane_policy: 'pure' (strict attribution) or 'reliability' (finalization rescue allowed)
         trace_id: Trace ID for correlating LLM calls
 
     Returns dict with: answer, tool_calls, usage, cost, latency_s, error
@@ -955,8 +1093,13 @@ async def run_agent(
                     task=task,
                     trace_id=trace_id,
                     max_budget=0,
+                    max_message_chars=max_message_chars,
+                    forced_final_max_attempts=forced_final_max_attempts,
+                    forced_final_circuit_breaker_threshold=forced_final_circuit_breaker_threshold,
+                    retrieval_stagnation_turns=retrieval_stagnation_turns,
                     **({"temperature": temperature} if temperature is not None else {}),
                     **({"fallback_models": fallback_models} if fallback_models else {}),
+                    **({"finalization_fallback_models": finalization_fallback_models} if finalization_fallback_models else {}),
                 )
             if _is_codex_model(model):
                 # Codex SDK path — agent-specific kwargs
@@ -1004,8 +1147,13 @@ async def run_agent(
                     task=task,
                     trace_id=trace_id,
                     max_budget=0,
+                    max_message_chars=max_message_chars,
+                    forced_final_max_attempts=forced_final_max_attempts,
+                    forced_final_circuit_breaker_threshold=forced_final_circuit_breaker_threshold,
+                    retrieval_stagnation_turns=retrieval_stagnation_turns,
                     **({"temperature": temperature} if temperature is not None else {}),
                     **({"fallback_models": fallback_models} if fallback_models else {}),
+                    **({"finalization_fallback_models": finalization_fallback_models} if finalization_fallback_models else {}),
                 )
             # MCP agent loop — fresh server per call (legacy)
             return await acall_llm(
@@ -1023,8 +1171,13 @@ async def run_agent(
                 task=task,
                 trace_id=trace_id,
                 max_budget=0,
+                max_message_chars=max_message_chars,
+                forced_final_max_attempts=forced_final_max_attempts,
+                forced_final_circuit_breaker_threshold=forced_final_circuit_breaker_threshold,
+                retrieval_stagnation_turns=retrieval_stagnation_turns,
                 **({"temperature": temperature} if temperature is not None else {}),
                 **({"fallback_models": fallback_models} if fallback_models else {}),
+                **({"finalization_fallback_models": finalization_fallback_models} if finalization_fallback_models else {}),
             )
 
         # Enforce hard per-question watchdog; this prevents long silent churn.
@@ -1058,6 +1211,26 @@ async def run_agent(
         tool_arg_coercions = None
         tool_arg_coercion_calls = None
         tool_arg_validation_rejections = None
+        available_capabilities_final = None
+        primary_failure_class = None
+        secondary_failure_classes = None
+        first_terminal_failure_event_code = None
+        failure_event_codes = None
+        failure_event_code_counts = None
+        no_legal_noncontrol_turns = None
+        retrieval_no_hits_count = None
+        hard_bindings_hash = None
+        full_bindings_hash = None
+        run_config_hash = None
+        lane_closure_analysis = None
+        tool_disclosure_repair_suggestions = None
+        finalization_fallback_used = None
+        finalization_fallback_succeeded = None
+        finalization_events = None
+        forced_final_attempts = None
+        forced_final_circuit_breaker_opened = None
+        retrieval_stagnation_triggered = None
+        retrieval_stagnation_turn = None
         if isinstance(result.raw_response, dict):
             conversation_trace = result.raw_response.get("conversation_trace")
         elif isinstance(result.raw_response, MCPAgentResult):
@@ -1072,6 +1245,36 @@ async def run_agent(
             tool_arg_coercions = result.raw_response.metadata.get("tool_arg_coercions")
             tool_arg_coercion_calls = result.raw_response.metadata.get("tool_arg_coercion_calls")
             tool_arg_validation_rejections = result.raw_response.metadata.get("tool_arg_validation_rejections")
+            available_capabilities_final = result.raw_response.metadata.get("available_capabilities_final")
+            primary_failure_class = result.raw_response.metadata.get("primary_failure_class")
+            secondary_failure_classes = result.raw_response.metadata.get("secondary_failure_classes")
+            first_terminal_failure_event_code = result.raw_response.metadata.get(
+                "first_terminal_failure_event_code"
+            )
+            failure_event_codes = result.raw_response.metadata.get("failure_event_codes")
+            failure_event_code_counts = result.raw_response.metadata.get("failure_event_code_counts")
+            no_legal_noncontrol_turns = result.raw_response.metadata.get("no_legal_noncontrol_turns")
+            retrieval_no_hits_count = result.raw_response.metadata.get("retrieval_no_hits_count")
+            hard_bindings_hash = result.raw_response.metadata.get("hard_bindings_hash")
+            full_bindings_hash = result.raw_response.metadata.get("full_bindings_hash")
+            run_config_hash = result.raw_response.metadata.get("run_config_hash")
+            lane_closure_analysis = result.raw_response.metadata.get("lane_closure_analysis")
+            tool_disclosure_repair_suggestions = result.raw_response.metadata.get(
+                "tool_disclosure_repair_suggestions"
+            )
+            finalization_fallback_used = result.raw_response.metadata.get("finalization_fallback_used")
+            finalization_fallback_succeeded = result.raw_response.metadata.get(
+                "finalization_fallback_succeeded"
+            )
+            finalization_events = result.raw_response.metadata.get("finalization_events")
+            forced_final_attempts = result.raw_response.metadata.get("forced_final_attempts")
+            forced_final_circuit_breaker_opened = result.raw_response.metadata.get(
+                "forced_final_circuit_breaker_opened"
+            )
+            retrieval_stagnation_triggered = result.raw_response.metadata.get(
+                "retrieval_stagnation_triggered"
+            )
+            retrieval_stagnation_turn = result.raw_response.metadata.get("retrieval_stagnation_turn")
 
         # Extract answer from the most recent successful submit_answer call.
         # Ignore rejected/errored submits so the agent can keep searching.
@@ -1126,6 +1329,27 @@ async def run_agent(
             "available_artifacts_final": available_artifacts_final,
             "tool_contract_violation_events": tool_contract_violation_events,
             "artifact_timeline": artifact_timeline,
+            "available_capabilities_final": available_capabilities_final,
+            "primary_failure_class": primary_failure_class,
+            "secondary_failure_classes": secondary_failure_classes,
+            "first_terminal_failure_event_code": first_terminal_failure_event_code,
+            "failure_event_codes": failure_event_codes,
+            "failure_event_code_counts": failure_event_code_counts,
+            "no_legal_noncontrol_turns": no_legal_noncontrol_turns,
+            "retrieval_no_hits_count": retrieval_no_hits_count,
+            "hard_bindings_hash": hard_bindings_hash,
+            "full_bindings_hash": full_bindings_hash,
+            "run_config_hash": run_config_hash,
+            "lane_closure_analysis": lane_closure_analysis,
+            "lane_policy": lane_policy,
+            "tool_disclosure_repair_suggestions": tool_disclosure_repair_suggestions,
+            "finalization_fallback_used": finalization_fallback_used,
+            "finalization_fallback_succeeded": finalization_fallback_succeeded,
+            "finalization_events": finalization_events,
+            "forced_final_attempts": forced_final_attempts,
+            "forced_final_circuit_breaker_opened": forced_final_circuit_breaker_opened,
+            "retrieval_stagnation_triggered": retrieval_stagnation_triggered,
+            "retrieval_stagnation_turn": retrieval_stagnation_turn,
             "tool_arg_coercions": tool_arg_coercions,
             "tool_arg_coercion_calls": tool_arg_coercion_calls,
             "tool_arg_validation_rejections": tool_arg_validation_rejections,
@@ -1198,16 +1422,28 @@ async def main() -> None:
                         help="Tool backend: 'mcp' (subprocess, default) or 'direct' (in-process Python tools)")
     parser.add_argument("--judge-model", default="openrouter/deepseek/deepseek-chat",
                         help="LLM judge model for format-agnostic scoring (default: openrouter/deepseek/deepseek-chat). Set to 'none' to disable.")
+    parser.add_argument("--lane-policy", default="pure", choices=["pure", "reliability"],
+                        help="Execution lane policy: pure (strict attribution) or reliability (completion-first finalization rescue).")
     parser.add_argument("--fallback-models", default="",
                         help="Comma-separated fallback models if primary fails. "
                              "Default: provider-aware auto chain with primary de-duplicated. "
                              "Set to 'none' to disable.")
+    parser.add_argument("--finalization-fallback-models", default="",
+                        help="Comma-separated forced-final fallback models (no tools allowed). "
+                             "Default: none for pure lane; first two fallback models for reliability lane. "
+                             "Set to 'none' to disable.")
+    parser.add_argument("--forced-final-max-attempts", type=int, default=0,
+                        help="Max forced-final attempts across primary + finalization fallbacks (0=lane default).")
+    parser.add_argument("--forced-final-circuit-breaker-threshold", type=int, default=2,
+                        help="Open forced-final circuit breaker after this many consecutive forced-final failures.")
+    parser.add_argument("--retrieval-stagnation-turns", type=int, default=4,
+                        help="Consecutive evidence turns with no new evidence before forcing final answer.")
     parser.add_argument("--num-retries", type=int, default=2,
                         help="Number of retries per LLM call with exponential backoff (default: 2). Set higher for flaky models.")
     parser.add_argument("--temperature", type=float, default=0.0,
                         help="Sampling temperature for non-SDK tool-calling runs (default: 0.0).")
     parser.add_argument("--embed-model", type=str, default="",
-                        help="Optional embedding model override for DIGIMON tools (e.g. text-embedding-004).")
+                        help="Optional embedding model override for DIGIMON tools (e.g. gemini/gemini-embedding-001).")
     parser.add_argument("--embed-dimensions", type=int, default=None,
                         help="Optional embedding dimensions override (must match chosen embed model).")
     parser.add_argument("--disable-embedding-tools", action="store_true",
@@ -1306,6 +1542,7 @@ async def main() -> None:
     effective_embed_model = _resolve_embed_model_for_benchmark(
         explicit_embed_model=(args.embed_model or ""),
         disable_embedding_tools=bool(args.disable_embedding_tools),
+        primary_model=args.model,
     )
     if was_aliased:
         print(
@@ -1464,7 +1701,27 @@ async def main() -> None:
         model=args.model,
         fallback_models_arg=(args.fallback_models or ""),
     )
-    total_llm_em: int | None = 0 if judge_model else None
+    finalization_fallback_models = _resolve_finalization_fallback_models_for_benchmark(
+        model=args.model,
+        lane_policy=args.lane_policy,
+        fallback_models=fallback_models,
+        finalization_fallback_models_arg=(args.finalization_fallback_models or ""),
+    )
+    forced_final_max_attempts = int(args.forced_final_max_attempts or 0)
+    if forced_final_max_attempts <= 0:
+        if finalization_fallback_models:
+            forced_final_max_attempts = 1 + len(finalization_fallback_models)
+        else:
+            forced_final_max_attempts = 1
+    forced_final_circuit_breaker_threshold = max(1, int(args.forced_final_circuit_breaker_threshold))
+    retrieval_stagnation_turns = max(2, int(args.retrieval_stagnation_turns))
+    run_provenance["lane_policy"] = args.lane_policy
+    run_provenance["fallback_models"] = fallback_models
+    run_provenance["finalization_fallback_models"] = finalization_fallback_models
+    run_provenance["forced_final_max_attempts"] = forced_final_max_attempts
+    run_provenance["forced_final_circuit_breaker_threshold"] = forced_final_circuit_breaker_threshold
+    run_provenance["retrieval_stagnation_turns"] = retrieval_stagnation_turns
+    total_llm_em: int | None = None
     n_done = len(results)
     feature_profile = {
         "name": "benchmark_strict",
@@ -1479,7 +1736,9 @@ async def main() -> None:
         total_em += r["em"]
         total_f1 += r["f1"]
         total_cost += r.get("cost", 0.0)
-        if total_llm_em is not None and r.get("llm_em") is not None:
+        if judge_model and r.get("llm_em") is not None:
+            if total_llm_em is None:
+                total_llm_em = 0
             total_llm_em += r["llm_em"]
 
     log_file = open(log_path, "a")
@@ -1502,7 +1761,14 @@ async def main() -> None:
     print(f"Mode: {args.mode}" + (f" (requested: {requested_mode})" if requested_mode != args.mode else ""))
     if args.backend != "mcp" or not _is_agent_sdk_model(args.model):
         print(f"Temperature: {args.temperature}")
+    print(f"Lane policy: {args.lane_policy}")
     print(f"Fallback models: {fallback_models if fallback_models else 'none'}")
+    print(
+        "Forced-final fallback models: "
+        f"{finalization_fallback_models if finalization_fallback_models else 'none'} "
+        f"(max_attempts={forced_final_max_attempts}, breaker={forced_final_circuit_breaker_threshold})"
+    )
+    print(f"Retrieval stagnation fuse: {retrieval_stagnation_turns} consecutive evidence turns")
     if effective_embed_model:
         print(f"Embedding model override: {effective_embed_model}")
     print(f"Post-run deterministic checks: {args.post_det_checks}")
@@ -1547,6 +1813,7 @@ async def main() -> None:
             "backend": args.backend,
             "mode": args.mode,
             "requested_mode": requested_mode,
+            "tool_mode_boundaries": _TOOL_MODE_BOUNDARIES,
             "timeout": args.timeout,
             "question_timeout": args.timeout,
             "turn_timeout": args.turn_timeout,
@@ -1554,8 +1821,13 @@ async def main() -> None:
             "require_tool_reasoning": True,
             "max_turns_fuse": args.max_turns,
             "parallel": parallel, "judge_model": judge_model or None,
+            "lane_policy": args.lane_policy,
             "fallback_models": fallback_models,
+            "finalization_fallback_models": finalization_fallback_models,
             "num_retries": args.num_retries,
+            "forced_final_max_attempts": forced_final_max_attempts,
+            "forced_final_circuit_breaker_threshold": forced_final_circuit_breaker_threshold,
+            "retrieval_stagnation_turns": retrieval_stagnation_turns,
             "temperature": args.temperature,
             "heartbeat_secs": args.heartbeat_secs,
             "embed_model": (args.embed_model or "").strip() or None,
@@ -1608,6 +1880,7 @@ async def main() -> None:
         f1, prec, recall = token_f1(predicted, gold) if predicted else (0.0, 0.0, 0.0)
 
         tool_names = [tc["tool"] for tc in tool_calls]
+        tool_mode_trace = _extract_tool_mode_trace(tool_calls)
         input_tokens = usage.get("input_tokens", 0)
         output_tokens = usage.get("output_tokens", 0)
         cached_tokens = usage.get("cached_tokens", 0)
@@ -1640,6 +1913,7 @@ async def main() -> None:
             "latency_s": elapsed,
             "cost": cost,
             "n_tool_calls": len(tool_calls),
+            "n_tool_mode_boundary_calls": len(tool_mode_trace),
             "n_budgeted_tool_calls": agent_result.get("budgeted_tool_calls_used"),
             "n_rejected_missing_reasoning_calls": agent_result.get("rejected_missing_reasoning_calls"),
             "n_control_loop_suppressed_calls": agent_result.get("control_loop_suppressed_calls"),
@@ -1652,11 +1926,32 @@ async def main() -> None:
             "n_tool_interface_mismatch_errors": composability.get("error_categories", {}).get("tool_interface_mismatch", 0),
             "n_tool_missing_prerequisite_errors": composability.get("error_categories", {}).get("missing_prerequisite", 0),
             "available_artifacts_final": agent_result.get("available_artifacts_final"),
+            "available_capabilities_final": agent_result.get("available_capabilities_final"),
             "tool_contract_violation_events": agent_result.get("tool_contract_violation_events"),
             "artifact_timeline": agent_result.get("artifact_timeline"),
+            "primary_failure_class": agent_result.get("primary_failure_class"),
+            "secondary_failure_classes": agent_result.get("secondary_failure_classes"),
+            "first_terminal_failure_event_code": agent_result.get("first_terminal_failure_event_code"),
+            "failure_event_code_counts": agent_result.get("failure_event_code_counts"),
+            "no_legal_noncontrol_turns": agent_result.get("no_legal_noncontrol_turns"),
+            "retrieval_no_hits_count": agent_result.get("retrieval_no_hits_count"),
+            "hard_bindings_hash": agent_result.get("hard_bindings_hash"),
+            "full_bindings_hash": agent_result.get("full_bindings_hash"),
+            "run_config_hash": agent_result.get("run_config_hash"),
+            "lane_closure_analysis": agent_result.get("lane_closure_analysis"),
+            "lane_policy": agent_result.get("lane_policy"),
+            "tool_disclosure_repair_suggestions": agent_result.get("tool_disclosure_repair_suggestions"),
+            "finalization_fallback_used": agent_result.get("finalization_fallback_used"),
+            "finalization_fallback_succeeded": agent_result.get("finalization_fallback_succeeded"),
+            "forced_final_attempts": agent_result.get("forced_final_attempts"),
+            "forced_final_circuit_breaker_opened": agent_result.get("forced_final_circuit_breaker_opened"),
+            "finalization_events": agent_result.get("finalization_events"),
+            "retrieval_stagnation_triggered": agent_result.get("retrieval_stagnation_triggered"),
+            "retrieval_stagnation_turn": agent_result.get("retrieval_stagnation_turn"),
             "composability": composability,
             "tool_calls": tool_names,
             "tool_details": tool_calls,
+            "tool_mode_trace": tool_mode_trace,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "cached_input_tokens": cached_tokens,
@@ -1695,6 +1990,11 @@ async def main() -> None:
         budgeted_calls = record.get("n_budgeted_tool_calls")
         rejected_reasoning = record.get("n_rejected_missing_reasoning_calls")
         contract_rejections = record.get("n_tool_contract_rejections")
+        primary_failure_class = record.get("primary_failure_class")
+        first_terminal = record.get("first_terminal_failure_event_code")
+        fallback_used = bool(record.get("finalization_fallback_used"))
+        fallback_succeeded = bool(record.get("finalization_fallback_succeeded"))
+        retrieval_stagnation = bool(record.get("retrieval_stagnation_triggered"))
         if budgeted_calls is None:
             lines.append(f"  Tools: {record['n_tool_calls']} calls {record['tool_calls']}")
         else:
@@ -1703,6 +2003,17 @@ async def main() -> None:
                 suffix_parts.append(f"{rejected_reasoning} rejected-missing-reasoning")
             if isinstance(contract_rejections, int) and contract_rejections > 0:
                 suffix_parts.append(f"{contract_rejections} rejected-contract")
+            if isinstance(primary_failure_class, str) and primary_failure_class and primary_failure_class != "none":
+                suffix_parts.append(f"primary_failure={primary_failure_class}")
+            if isinstance(first_terminal, str) and first_terminal:
+                suffix_parts.append(f"first_terminal={first_terminal}")
+            if fallback_used:
+                suffix_parts.append(
+                    "finalization_fallback="
+                    + ("success" if fallback_succeeded else "used")
+                )
+            if retrieval_stagnation:
+                suffix_parts.append("retrieval_stagnation")
             suffix = ""
             if suffix_parts:
                 suffix = ", " + ", ".join(suffix_parts)
@@ -1773,6 +2084,10 @@ async def main() -> None:
                 comp += f"/I{interface_errors}"
         if arg_validation_rejections > 0:
             comp += f" A{arg_validation_rejections}"
+        if record.get("finalization_fallback_used"):
+            comp += " Ff"
+        if record.get("retrieval_stagnation_triggered"):
+            comp += " Rs"
         running_em = 100 * total_em_now / n_done_now
         running_llm = f" LLM={100*total_llm_em_now/n_done_now:.0f}%" if total_llm_em_now is not None else ""
         return (f"[{n_done_now:3d}/{n_total}] {q_id:5s} {em_icon}{llm_em_icon} "
@@ -1822,17 +2137,24 @@ async def main() -> None:
                     python_tools=DIRECT_TOOLS if args.backend == "direct" else None,
                     temperature=args.temperature,
                     fallback_models=fallback_models,
+                    finalization_fallback_models=finalization_fallback_models,
                     num_retries=args.num_retries,
+                    forced_final_max_attempts=forced_final_max_attempts,
+                    forced_final_circuit_breaker_threshold=forced_final_circuit_breaker_threshold,
+                    retrieval_stagnation_turns=retrieval_stagnation_turns,
+                    lane_policy=args.lane_policy,
                     trace_id=trace_id,
                 )
 
                 # LLM judge (runs before lock — it's an independent LLM call)
                 llm_em_val: int | None = None
                 if judge_model and agent_result["answer"]:
-                    llm_em_val = int(await llm_judge(
+                    judged = await llm_judge(
                         q["question"], agent_result["answer"], q["answer"],
                         model=judge_model,
-                    ))
+                    )
+                    if judged is not None:
+                        llm_em_val = int(judged)
         finally:
             if heartbeat_task:
                 heartbeat_task.cancel()
@@ -1865,7 +2187,9 @@ async def main() -> None:
             total_em += record["em"]
             total_f1 += record["f1"]
             total_cost += record["cost"]
-            if total_llm_em is not None and llm_em_val is not None:
+            if llm_em_val is not None:
+                if total_llm_em is None:
+                    total_llm_em = 0
                 total_llm_em += llm_em_val
 
             verbose_output = _format_output(record, n_done, len(questions),
@@ -1976,6 +2300,31 @@ async def main() -> None:
         total_input = sum(r.get("input_tokens", 0) for r in results)
         total_output = sum(r.get("output_tokens", 0) for r in results)
         n_errors = sum(1 for r in results if r.get("error"))
+        n_completed_success = max(0, n_done - n_errors)
+        completion_rate = (100.0 * n_completed_success / n_done) if n_done else 0.0
+        provider_failures = sum(1 for r in results if (r.get("primary_failure_class") or "") == "provider")
+        provider_failure_rate = (100.0 * provider_failures / n_done) if n_done else 0.0
+        fallback_used_count = sum(1 for r in results if bool(r.get("finalization_fallback_used")))
+        fallback_used_rate = (100.0 * fallback_used_count / n_done) if n_done else 0.0
+        retrieval_stagnation_count = sum(1 for r in results if bool(r.get("retrieval_stagnation_triggered")))
+        retrieval_stagnation_rate = (100.0 * retrieval_stagnation_count / n_done) if n_done else 0.0
+        em_completed = (
+            100.0 * sum(int(r.get("em") or 0) for r in results if not r.get("error")) / n_completed_success
+            if n_completed_success else None
+        )
+        f1_completed = (
+            100.0 * sum(float(r.get("f1") or 0.0) for r in results if not r.get("error")) / n_completed_success
+            if n_completed_success else None
+        )
+        llm_completed_vals = [
+            int(r.get("llm_em"))
+            for r in results
+            if (not r.get("error")) and r.get("llm_em") is not None
+        ]
+        llm_em_completed_judged = (
+            100.0 * sum(llm_completed_vals) / len(llm_completed_vals)
+            if llm_completed_vals else None
+        )
         total_tool_call_errors = sum(int(r.get("n_tool_call_errors") or 0) for r in results)
         total_interface_errors = sum(int(r.get("n_tool_interface_mismatch_errors") or 0) for r in results)
         total_prereq_errors = sum(int(r.get("n_tool_missing_prerequisite_errors") or 0) for r in results)
@@ -2002,6 +2351,28 @@ async def main() -> None:
             print(f"  LLM_EM:{100*total_llm_em/n_done:.1f}%  (judge: {judge_model})")
         print(f"  F1:    {100*total_f1/n_done:.1f}%")
         print(f"  Cost:  ${total_cost:.2f}")
+        print(
+            f"  Completion: {completion_rate:.1f}% "
+            f"({n_completed_success}/{n_done})"
+        )
+        if em_completed is not None:
+            llm_conditional = (
+                f", LLM_EM={llm_em_completed_judged:.1f}%"
+                if llm_em_completed_judged is not None else ""
+            )
+            print(
+                "  Conditional Accuracy (completed only): "
+                f"EM={em_completed:.1f}%, F1={f1_completed:.1f}%{llm_conditional}"
+            )
+        print(
+            f"  Provider failures: {provider_failures}/{n_done} ({provider_failure_rate:.1f}%)"
+        )
+        print(
+            f"  Finalization fallback used: {fallback_used_count}/{n_done} ({fallback_used_rate:.1f}%)"
+        )
+        print(
+            f"  Retrieval stagnation triggered: {retrieval_stagnation_count}/{n_done} ({retrieval_stagnation_rate:.1f}%)"
+        )
         print(f"  Tools: {avg_tools:.1f} calls/question avg")
         print(
             f"  Composability: {total_tool_call_errors} tool-call errors "
@@ -2206,6 +2577,33 @@ def _save_results(
         avg_llm_em = None
         avg_llm_em_judged = None
 
+    n_errors = sum(1 for r in results if r.get("error"))
+    n_completed_success = max(0, n_done - n_errors)
+    completion_rate = (100.0 * n_completed_success / n_done) if n_done else 0.0
+    provider_failures = sum(1 for r in results if (r.get("primary_failure_class") or "") == "provider")
+    provider_failure_rate = (100.0 * provider_failures / n_done) if n_done else 0.0
+    finalization_fallback_used = sum(1 for r in results if bool(r.get("finalization_fallback_used")))
+    finalization_fallback_usage_rate = (100.0 * finalization_fallback_used / n_done) if n_done else 0.0
+    retrieval_stagnation_count = sum(1 for r in results if bool(r.get("retrieval_stagnation_triggered")))
+    retrieval_stagnation_rate = (100.0 * retrieval_stagnation_count / n_done) if n_done else 0.0
+    avg_em_completed = (
+        100.0 * sum(int(r.get("em") or 0) for r in results if not r.get("error")) / n_completed_success
+        if n_completed_success else None
+    )
+    avg_f1_completed = (
+        100.0 * sum(float(r.get("f1") or 0.0) for r in results if not r.get("error")) / n_completed_success
+        if n_completed_success else None
+    )
+    llm_completed_vals = [
+        int(r.get("llm_em"))
+        for r in results
+        if (not r.get("error")) and r.get("llm_em") is not None
+    ]
+    avg_llm_em_completed_judged = (
+        100.0 * sum(llm_completed_vals) / len(llm_completed_vals)
+        if llm_completed_vals else None
+    )
+
     with open(output_path, "w") as f:
         json.dump({
             "dataset": dataset,
@@ -2213,11 +2611,22 @@ def _save_results(
             "run_provenance": run_provenance or {},
             "n_questions": n_questions,
             "n_completed": n_done,
+            "n_errors": n_errors,
+            "completion_rate": completion_rate,
             "avg_em": 100 * total_em / n_done if n_done else 0,
+            "avg_em_completed": avg_em_completed,
             "avg_llm_em": avg_llm_em,
             "avg_llm_em_judged": avg_llm_em_judged,
+            "avg_llm_em_completed_judged": avg_llm_em_completed_judged,
             "n_llm_judged": len(llm_em_judged),
             "avg_f1": 100 * total_f1 / n_done if n_done else 0,
+            "avg_f1_completed": avg_f1_completed,
+            "n_provider_failures": provider_failures,
+            "provider_failure_rate": provider_failure_rate,
+            "n_finalization_fallback_used": finalization_fallback_used,
+            "finalization_fallback_usage_rate": finalization_fallback_usage_rate,
+            "n_retrieval_stagnation": retrieval_stagnation_count,
+            "retrieval_stagnation_rate": retrieval_stagnation_rate,
             "total_cost": round(total_cost, 4),
             "avg_tool_calls": round(avg_tools, 1),
             "avg_latency_s": round(avg_latency, 1),
