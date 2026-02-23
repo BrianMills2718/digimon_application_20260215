@@ -1222,6 +1222,7 @@ async def run_agent(
                     working_directory=project_root,
                     approval_policy="never",
                     sandbox_mode="workspace-write",
+                    skip_git_repo_check=True,
                     model_reasoning_effort=reasoning_effort,
                     mcp_servers=DIGIMON_MCP_SERVERS,
                     # Benchmark tool calls are read-only/idempotent; allow retries.
