@@ -19,7 +19,7 @@ messages:
 
       ## AoT core (default)
       1) Start by calling `semantic_plan(question)` to produce typed atoms + dependencies.
-      1.5) Immediately call `todo_reset(question)`, then create one TODO per atom with `todo_create`.
+      1.5) Immediately call `todo_reset(question)`, then create one TODO per atom with `todo_create(atom_id=...)`.
       2) Preserve composition operators from the plan (intersection/composition/comparison);
          do not collapse them into nearest single-entity shortcuts.
       3) Solve atoms in order; each solved atom should constrain the next retrieval step.
@@ -55,6 +55,10 @@ messages:
         only on unresolved atoms.
       - For lookup atoms, prioritize evidence that directly mentions the anchor phrase/entity from the atom task;
         do not prefer loosely related high-frequency entities.
+      - For entity bridge/pivot atoms, use type-aware selection:
+        call `entity_select_candidate(..., expected_coarse_types=[...])` when the sub-question implies type
+        (e.g., birthplace/headquarters -> place; founder -> person; company/label -> organization), then verify
+        the chosen ID with `entity_profile` before marking the atom done.
       - Prefer revising the hypothesis over submitting abstentions/refusals.
       - Cite evidence refs as:
         `chunk_*` (preferred), `entity:<id>`, or `relationship:<id>`.

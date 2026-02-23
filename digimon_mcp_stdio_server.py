@@ -109,7 +109,7 @@ _BENCHMARK_SHORT_DESCS: dict[str, str] = {
     "extract_date_mentions": "Extract normalized date mentions with evidence refs from chunk text.",
     "chunk_text_search": "Keyword search over source text chunks.",
     "chunk_vdb_search": "Semantic vector search over source text chunks.",
-    "entity_select_candidate": "Select canonical entity IDs from candidate entity sets.",
+    "entity_select_candidate": "Select canonical entity IDs from candidates (optional expected_coarse_types filter).",
     "search_then_expand_onehop": "Composite search->candidate->onehop expansion with bounded output.",
     "chunk_aggregator": "Score chunks by relationship/PPR scores via sparse matrices.",
     "subgraph_khop_paths": "Find all paths between entities within k hops.",
@@ -1168,6 +1168,7 @@ _DATE_HINT_RE = re.compile(
 )
 _NUMBER_HINT_RE = re.compile(r"\b(how many|how much|what number|what amount|population|count|total)\b")
 _YESNO_HINT_RE = re.compile(r"^\s*(is|are|was|were|do|does|did|can|could|will|has|have|had)\b")
+_CAPITALIZED_MENTION_RE = re.compile(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b")
 _TODO_WEAK_EVIDENCE_NOTE_RE = re.compile(
     r"(no (?:evidence|information|support)|not found|unknown|insufficient|cannot|unable|could not find)",
     flags=re.IGNORECASE,
@@ -1190,6 +1191,97 @@ def _infer_answer_kind(text: str) -> str:
     if _NUMBER_HINT_RE.search(probe):
         return "number"
     return "entity"
+
+
+def _normalize_coarse_type(value: str) -> str:
+    """Normalize coarse entity types for lightweight compatibility checks."""
+    raw = (value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if not raw:
+        return "unknown"
+    aliases = {
+        "location": "place",
+        "geo": "place",
+        "city": "place",
+        "country": "place",
+        "state": "place",
+        "region": "place",
+        "province": "place",
+        "human": "person",
+        "people": "person",
+        "org": "organization",
+        "company": "organization",
+        "institution": "organization",
+    }
+    return aliases.get(raw, raw)
+
+
+def _coarse_type_matches(candidate_type: str, expected_types: set[str]) -> bool:
+    """Return True when candidate coarse type is compatible with expected types."""
+    if not expected_types:
+        return True
+    norm = _normalize_coarse_type(candidate_type)
+    if norm in expected_types:
+        return True
+    return any(norm in item or item in norm for item in expected_types)
+
+
+def _infer_expected_coarse_types(text: str) -> set[str]:
+    """Infer expected entity coarse types from natural-language query/task text."""
+    probe = (text or "").strip().lower()
+    if not probe:
+        return set()
+    expected: set[str] = set()
+    if re.search(r"\b(birthplace|headquarter|headquarters|city|country|province|state|region|where|located)\b", probe):
+        expected.add("place")
+    if re.search(r"\b(founder|author|actor|player|person|individual|who)\b", probe):
+        expected.add("person")
+    if re.search(r"\b(company|organization|organisation|group|label|team|university|agency|government)\b", probe):
+        expected.add("organization")
+    return expected
+
+
+def _extract_context_entity_mentions(text: str, *, limit: int = 8) -> list[str]:
+    """Extract lightweight proper-noun mentions from chunk snippets."""
+    if not text:
+        return []
+    blocked = {
+        "It", "The", "A", "An", "In", "On", "At", "By", "Of", "And",
+        "However", "Despite", "After", "Before", "During",
+    }
+    mentions: list[str] = []
+    seen: set[str] = set()
+    for match in _CAPITALIZED_MENTION_RE.findall(text):
+        mention = (match or "").strip()
+        if not mention or mention in blocked:
+            continue
+        if mention in seen:
+            continue
+        mentions.append(mention)
+        seen.add(mention)
+        if len(mentions) >= max(1, int(limit)):
+            break
+    return mentions
+
+
+def _lookup_entity_coarse_type(entity_id: str, dataset_name: str = "") -> str:
+    """Resolve coarse entity type from graph node metadata when available."""
+    resolved_graph_id = _resolve_graph_reference_id(dataset_name=dataset_name)
+    if not resolved_graph_id:
+        return "unknown"
+    ctx = _state.get("context")
+    graph_instance = (
+        ctx.get_graph_instance(resolved_graph_id)
+        if ctx is not None and hasattr(ctx, "get_graph_instance")
+        else None
+    )
+    if not graph_instance or not hasattr(graph_instance, "_graph") or not hasattr(graph_instance._graph, "graph"):
+        return "unknown"
+    nx_graph = graph_instance._graph.graph
+    if entity_id not in nx_graph:
+        return "unknown"
+    attrs = dict(nx_graph.nodes[entity_id] or {})
+    coarse_type = str(attrs.get("entity_type") or attrs.get("type") or "").strip()
+    return _normalize_coarse_type(coarse_type)
 
 
 def _answer_matches_kind(answer: str, answer_kind: str) -> bool:
@@ -2778,6 +2870,7 @@ async def entity_select_candidate(
     chunk_ids: list[str] | None = None,
     chunk_id: str = "",
     entity_name: str = "",
+    expected_coarse_types: list[str] | None = None,
     dataset_name: str = "",
     top_k: int = 3,
     min_candidate_score: float = 0.0,
@@ -2825,6 +2918,17 @@ async def entity_select_candidate(
 
     by_entity: dict[str, dict[str, Any]] = {}
     unresolved_names: list[str] = []
+    expected_types_norm = {
+        _normalize_coarse_type(str(v))
+        for v in (expected_coarse_types or [])
+        if str(v).strip()
+    }
+    expected_types_source = "args" if expected_types_norm else ""
+    if not expected_types_norm:
+        inferred_types = _infer_expected_coarse_types(entity_name or _current_question)
+        if inferred_types:
+            expected_types_norm = {t for t in inferred_types if t}
+            expected_types_source = "inferred"
     for item in pool:
         entity_id = str(
             item.get("entity_id")
@@ -2844,6 +2948,7 @@ async def entity_select_candidate(
             normalized = {
                 "entity_id": entity_id,
                 "entity_name": candidate_name or entity_id,
+                "coarse_type": str(item.get("coarse_type") or "unknown"),
                 "candidate_score": score,
                 "chunk_id": item.get("chunk_id"),
                 "evidence_ref": item.get("evidence_ref") or item.get("chunk_id") or f"entity:{entity_id}",
@@ -2857,6 +2962,15 @@ async def entity_select_candidate(
             unresolved_names.append(candidate_name)
 
     # Optional name->ID conversion fallback when candidates are name-only.
+    # Also extract mention candidates from snippet context when explicit IDs are sparse.
+    if not unresolved_names:
+        snippet_mentions: list[str] = []
+        for item in pool[:8]:
+            snippet_mentions.extend(
+                _extract_context_entity_mentions(str(item.get("context_snippet") or ""), limit=4)
+            )
+        unresolved_names.extend(snippet_mentions)
+
     unresolved_names = _normalize_alternatives_tested(unresolved_names)
     if unresolved_names:
         resolved_raw = await entity_resolve_names_to_ids(
@@ -2885,6 +2999,10 @@ async def entity_select_candidate(
                 normalized = {
                     "entity_id": entity_id,
                     "entity_name": str(item.get("resolved_entity_name") or entity_id),
+                    "coarse_type": _lookup_entity_coarse_type(
+                        entity_id=entity_id,
+                        dataset_name=dataset_name,
+                    ),
                     "candidate_score": score,
                     "chunk_id": None,
                     "evidence_ref": f"entity:{entity_id}",
@@ -2899,8 +3017,36 @@ async def entity_select_candidate(
         key=lambda x: float(x.get("candidate_score") or 0.0),
         reverse=True,
     )
+    type_matched = [
+        item for item in ordered
+        if _coarse_type_matches(str(item.get("coarse_type") or ""), expected_types_norm)
+    ]
+    strict_type_filter = bool(expected_types_norm and expected_types_source == "args")
+    if strict_type_filter and not type_matched:
+        return json.dumps(
+            {
+                "selected_entities": [],
+                "n_selected": 0,
+                "n_candidates_considered": len(pool),
+                "expected_coarse_types": sorted(expected_types_norm),
+                "expected_coarse_types_source": expected_types_source,
+                "n_type_matches": 0,
+                "type_filter_applied": True,
+                "rejected_top_candidates": ordered[: min(5, len(ordered))],
+                "status_message": (
+                    "No candidates matched expected_coarse_types. "
+                    "Broaden retrieval and/or provide different candidates."
+                ),
+            },
+            indent=2,
+            default=str,
+        )
+    candidates_for_selection = type_matched if (expected_types_norm and type_matched) else ordered
     threshold = float(min_candidate_score or 0.0)
-    selected = [item for item in ordered if float(item.get("candidate_score") or 0.0) >= threshold]
+    selected = [
+        item for item in candidates_for_selection
+        if float(item.get("candidate_score") or 0.0) >= threshold
+    ]
     selected = selected[: max(1, int(top_k))]
 
     return json.dumps(
@@ -2908,6 +3054,10 @@ async def entity_select_candidate(
             "selected_entities": selected,
             "n_selected": len(selected),
             "n_candidates_considered": len(pool),
+            "expected_coarse_types": sorted(expected_types_norm) if expected_types_norm else [],
+            "expected_coarse_types_source": expected_types_source or None,
+            "n_type_matches": len(type_matched),
+            "type_filter_applied": bool(expected_types_norm and type_matched),
             "status_message": f"Selected {len(selected)} canonical entity IDs from candidate set",
         },
         indent=2,
@@ -6276,9 +6426,25 @@ if BENCHMARK_MODE:
                             f"Unknown atom_id: {atom_id_norm!r}. Known atom_ids: {known_atoms}."
                         )
                 if atom_id_norm in _atom_todo_map:
+                    existing_todo_id = _atom_todo_map[atom_id_norm]
+                    existing_todo = next((t for t in _todos if t.get("id") == existing_todo_id), None)
+                    if existing_todo is not None:
+                        return json.dumps(
+                            {
+                                "status": "exists",
+                                "todo": existing_todo,
+                                "summary": _todo_summary(),
+                                "status_message": (
+                                    f"atom_id {atom_id_norm!r} already mapped to {existing_todo_id!r}; "
+                                    "reusing existing TODO."
+                                ),
+                            },
+                            indent=2,
+                            default=str,
+                        )
                     raise ValueError(
-                        f"atom_id {atom_id_norm!r} already mapped to {_atom_todo_map[atom_id_norm]!r}. "
-                        "Reuse that TODO instead of creating a duplicate."
+                        f"atom_id {atom_id_norm!r} already mapped to {existing_todo_id!r}, "
+                        "but the mapped TODO was not found."
                     )
             else:
                 if is_auxiliary:
@@ -6298,13 +6464,25 @@ if BENCHMARK_MODE:
                             for a in semantic_atoms
                             if (a.get("atom_id") or "").strip() not in _atom_todo_map
                         ]
-                        raise ValueError(
-                            "todo_create could not reliably map this task to semantic_plan atoms. "
-                            "Provide atom_id explicitly from semantic_plan. "
-                            f"Unmapped atoms: {unmapped[:6]}"
-                        )
-                    selected_atom = auto_atom
-                    atom_id_norm = (selected_atom.get("atom_id") or "").strip()
+                        if len(unmapped) == 1:
+                            only_atom_id = (unmapped[0].get("atom_id") or "").strip()
+                            only_atom = _semantic_plan_atom_by_id(only_atom_id) if only_atom_id else None
+                            if only_atom is not None:
+                                selected_atom = only_atom
+                                atom_id_norm = only_atom_id
+                                logger.info(
+                                    "todo_create: auto-mapped single remaining semantic atom_id=%s",
+                                    only_atom_id,
+                                )
+                        if selected_atom is None:
+                            raise ValueError(
+                                "todo_create could not reliably map this task to semantic_plan atoms. "
+                                "Provide atom_id explicitly from semantic_plan. "
+                                f"Unmapped atoms: {unmapped[:6]}"
+                            )
+                    else:
+                        selected_atom = auto_atom
+                        atom_id_norm = (selected_atom.get("atom_id") or "").strip()
 
         if selected_atom is not None:
             expected_op = _normalize_todo_operation(
