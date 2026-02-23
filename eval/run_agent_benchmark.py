@@ -784,6 +784,10 @@ async def _init_direct_tools(dataset_name: str, disable_embedding_tools: bool = 
     # Benchmark planning/disambiguation controls (if available in server mode)
     for maybe_tool in (
         "semantic_plan",
+        "todo_reset",
+        "todo_create",
+        "todo_update",
+        "todo_list",
         "bridge_disambiguate",
     ):
         if hasattr(dms, maybe_tool):

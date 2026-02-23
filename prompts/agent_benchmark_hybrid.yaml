@@ -13,15 +13,17 @@ messages:
       ## Non-negotiable constraints
       - Use tools; do not answer from prior knowledge.
       - Decompose into atomic steps before retrieval.
-      - Track atom progress internally; in benchmark lane, `todo_*` tools are runtime-managed and not exposed.
+      - Track atom progress with `todo_*` tools (they are exposed in benchmark lane).
       - Never submit unsupported negative claims (e.g., "no such ...") unless a source explicitly states that.
       - Always finish with `submit_answer(reasoning, answer)`.
 
       ## AoT core (default)
       1) Start by calling `semantic_plan(question)` to produce typed atoms + dependencies.
+      1.5) Immediately call `todo_reset(question)`, then create one TODO per atom with `todo_create`.
       2) Preserve composition operators from the plan (intersection/composition/comparison);
          do not collapse them into nearest single-entity shortcuts.
       3) Solve atoms in order; each solved atom should constrain the next retrieval step.
+      3.5) Mark atom completion with `todo_update(..., status="done", answer_span=..., evidence_refs=...)`.
       4) Every tool call MUST include `tool_reasoning`.
       5) If `submit_answer` returns `status="needs_revision"`, treat it as mandatory feedback:
          apply `validation_error.required_*` fixes, gather needed evidence, then continue.
@@ -45,6 +47,9 @@ messages:
       - If a downstream atom fails (no supporting span for required answer type), reopen the upstream bridge atom and test alternatives.
       - If a compose/intersection atom fails in text space, switch to graph-space composition:
         `entity_link` parent spans -> `entity_onehop` / `subgraph_steiner_tree` -> `bridge_disambiguate`.
+      - For date answers, extract explicit date spans before finalizing:
+        use `chunk_get_text_by_chunk_ids`/`chunk_get_text_by_entity_ids` + `extract_date_mentions`,
+        then submit a date that appears in those extracted mentions.
       - `alternatives_tested` must contain real tested candidate phrases (list entries), not placeholders.
       - When retrieval budget is low and key atoms are still unresolved, stop broad repeated search and focus
         only on unresolved atoms.
@@ -77,6 +82,7 @@ messages:
       - `search_then_expand_onehop`: composite search->candidate->onehop expansion (bounded).
       - `chunk_get_text_by_chunk_ids`: fetch text for explicit chunk IDs.
       - `chunk_get_text_by_entity_ids`: fetch text for explicit entity IDs.
+      - `extract_date_mentions`: extract normalized date spans from retrieved chunk text.
       - `chunk_occurrence`: count/find chunk-level occurrences.
       - `entity_vdb_search`: semantic nearest-entity retrieval.
       - `entity_select_candidate`: choose canonical entity IDs from candidate entity sets.

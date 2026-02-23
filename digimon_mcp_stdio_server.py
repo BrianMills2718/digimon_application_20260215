@@ -1001,6 +1001,7 @@ def _classify_submit_error(message: str) -> dict[str, Any]:
             "Use the shortest factual span grounded in completed TODO answer_span fields.",
             "If grounding is weak, gather additional evidence and revise TODO spans.",
         ]
+        requires_new_evidence = False
     elif "no date-like atom evidence found" in msg_l:
         reason_code = "missing_date_atom_evidence"
         required_fixes = ["date TODO completion"]
@@ -5889,6 +5890,7 @@ if BENCHMARK_MODE:
         Use this once at question start to avoid decomposition drift. The output
         is a compact JSON contract for TODO construction and evidence checks.
         """
+        global _current_question, _current_expected_answer_kind
         global _current_semantic_plan_question, _relation_scope_branch_required, _relation_scope_branch_resolved
         await _ensure_initialized()
 
@@ -6114,6 +6116,11 @@ if BENCHMARK_MODE:
             _current_semantic_plan.clear()
             _current_semantic_plan.update(plan.model_dump())
             _current_semantic_plan_question = (question or "").strip()
+            _current_question = _current_semantic_plan_question
+            _current_expected_answer_kind = (
+                _normalize_answer_kind(plan.final_answer_kind)
+                or _infer_answer_kind(_current_question)
+            )
             _relation_scope_branch_required = relation_scope_risk
             _relation_scope_branch_resolved = False
             _atom_todo_map.clear()
@@ -6145,6 +6152,11 @@ if BENCHMARK_MODE:
             _current_semantic_plan.clear()
             _current_semantic_plan.update(fallback)
             _current_semantic_plan_question = (question or "").strip()
+            _current_question = _current_semantic_plan_question
+            _current_expected_answer_kind = (
+                _normalize_answer_kind(fallback.get("final_answer_kind", ""))
+                or _infer_answer_kind(_current_question)
+            )
             _relation_scope_branch_required = False
             _relation_scope_branch_resolved = False
             _atom_todo_map.clear()
@@ -6159,6 +6171,7 @@ if BENCHMARK_MODE:
         operation: str = "",
         atom_id: str = "",
         blocked_by: list[str] | None = None,
+        depends_on: list[str] | None = None,
         done_criteria: str = "",
     ) -> str:
         """Create a TODO item for this question.
@@ -6171,6 +6184,7 @@ if BENCHMARK_MODE:
             operation: Optional semantic operation (lookup/relation/intersection/compose/compare/temporal)
             atom_id: Optional semantic atom id from semantic_plan (e.g., a1)
             blocked_by: Optional TODO IDs that must be done before this one can be done
+            depends_on: Alias of blocked_by for semantic-plan style dependency lists
             done_criteria: Optional explicit completion criteria
 
         Returns:
@@ -6185,9 +6199,15 @@ if BENCHMARK_MODE:
             priority_norm = "medium"
         answer_kind_norm = _normalize_answer_kind(answer_kind) or _infer_answer_kind(task_text)
         operation_norm = _normalize_todo_operation(operation, task_text)
+        raw_dependencies: list[str] = []
+        if blocked_by:
+            raw_dependencies.extend(blocked_by)
+        if depends_on:
+            raw_dependencies.extend(depends_on)
+
         blocked_norm: list[str] = []
         known_ids = {t.get("id") for t in _todos}
-        for dep in blocked_by or []:
+        for dep in raw_dependencies:
             dep_id = (dep or "").strip()
             if not dep_id:
                 continue
