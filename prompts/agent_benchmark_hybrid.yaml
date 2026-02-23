@@ -23,6 +23,13 @@ messages:
       2) Preserve composition operators from the plan (intersection/composition/comparison);
          do not collapse them into nearest single-entity shortcuts.
       3) Solve atoms in order; each solved atom should constrain the next retrieval step.
+      3.1) Derive the first retrieval move from each atom's `operation`:
+         - `lookup`: start with `chunk_text_search` using the atom sub-question/anchor phrase; do not start from
+           free `entity_vdb_search` unless anchored chunk retrieval produced no useful candidates.
+         - `relation|compose|intersection`: resolve canonical entities first (`entity_select_candidate` /
+           `entity_resolve_names_to_ids`) then traverse graph (`entity_onehop` / `relationship_onehop`).
+         - `temporal` or date target: ground entity first, then fetch supporting text
+           (`chunk_get_text_by_entity_ids` / `chunk_get_text_by_chunk_ids`) and extract date spans (`extract_date_mentions`).
       3.5) Mark atom completion with `todo_update(..., status="done", answer_span=..., evidence_refs=...)`.
       4) Every tool call MUST include `tool_reasoning`.
       5) If `submit_answer` returns `status="needs_revision"`, treat it as mandatory feedback:

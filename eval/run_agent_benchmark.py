@@ -26,6 +26,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import re
 import sys
@@ -116,6 +117,49 @@ def extract_tool_calls(raw_response: object) -> list[dict]:
                 "result_preview": str(result_text)[:200] if result_text else None,
             })
     return calls
+
+
+def _install_event_loop_exception_filter() -> None:
+    """Suppress known benign asyncio SSL teardown noise at process shutdown."""
+    loop = asyncio.get_running_loop()
+    prior_handler = loop.get_exception_handler()
+
+    def _handler(loop_: asyncio.AbstractEventLoop, context: dict) -> None:
+        message = str(context.get("message") or "")
+        exc = context.get("exception")
+        exc_text = str(exc) if exc is not None else ""
+        combined = f"{message} {exc_text}"
+        is_benign_ssl_teardown = (
+            ("SSL transport" in message or "socket transport" in message)
+            and ("Event loop is closed" in combined or "Bad file descriptor" in combined)
+        )
+        if is_benign_ssl_teardown:
+            return
+        if prior_handler is not None:
+            prior_handler(loop_, context)
+        else:
+            loop_.default_exception_handler(context)
+
+    loop.set_exception_handler(_handler)
+
+
+class _AsyncioTeardownNoiseFilter(logging.Filter):
+    """Suppress known benign asyncio SSL teardown noise."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        if "Fatal error on SSL transport" in msg:
+            return False
+        if "Fatal write error on socket transport" in msg:
+            return False
+        if "Event loop is closed" in msg and record.name.startswith("asyncio"):
+            return False
+        return True
+
+
+def _install_asyncio_log_filter() -> None:
+    logger = logging.getLogger("asyncio")
+    logger.addFilter(_AsyncioTeardownNoiseFilter())
 
 
 # --- Prompt ---
@@ -1773,6 +1817,8 @@ async def main() -> None:
         help="Exit with code 2 when post-run gate policy evaluates to FAIL.",
     )
     args = parser.parse_args()
+    _install_event_loop_exception_filter()
+    _install_asyncio_log_filter()
     requested_model = (args.model or "").strip()
     requested_judge_model = (args.judge_model or "").strip()
     requested_mode = args.mode
@@ -2875,11 +2921,18 @@ async def main() -> None:
 
     print(f"Experiment logged to llm_client observability (run_id={_experiment_run_id})")
 
-    # Close litellm's cached async HTTP clients and let pending logging coroutines
-    # drain so asyncio.run() can tear down cleanly (no SSL transport errors).
+    # Best-effort async client/loop teardown to reduce noisy SSL transport
+    # errors during asyncio.run() shutdown.
     import litellm
-    await litellm.close_litellm_async_clients()
-    await asyncio.sleep(0.1)
+    with contextlib.suppress(Exception):
+        await litellm.close_litellm_async_clients()
+    with contextlib.suppress(Exception):
+        await asyncio.sleep(0.05)
+    with contextlib.suppress(Exception):
+        loop = asyncio.get_running_loop()
+        await loop.shutdown_asyncgens()
+    with contextlib.suppress(Exception):
+        await asyncio.sleep(0.2)
     if exit_code:
         raise SystemExit(exit_code)
 
