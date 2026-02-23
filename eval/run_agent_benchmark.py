@@ -161,6 +161,7 @@ _BENCHMARK_TOOL_NAME_CANDIDATES = [
     "entity_link",
     "entity_resolve_names_to_ids",
     "entity_profile",
+    "entity_select_candidate",
     "entity_tfidf",
     "relationship_onehop",
     "relationship_score_aggregator",
@@ -172,6 +173,7 @@ _BENCHMARK_TOOL_NAME_CANDIDATES = [
     "extract_date_mentions",
     "chunk_text_search",
     "chunk_vdb_search",
+    "search_then_expand_onehop",
     "chunk_aggregator",
     "list_available_resources",
     "subgraph_khop_paths",
@@ -212,6 +214,14 @@ _BENCHMARK_TOOL_CONTRACTS: dict[str, dict[str, object]] = {
     },
     "entity_profile": {
         "requires_any": ["QUERY_TEXT", {"kind": "ENTITY_SET", "ref_type": "id"}],
+        "produces": [{"kind": "ENTITY_SET", "ref_type": "id"}],
+    },
+    "entity_select_candidate": {
+        "requires_any": [
+            {"kind": "ENTITY_SET", "ref_type": "candidate"},
+            {"kind": "CHUNK_SET", "ref_type": "fulltext"},
+            {"kind": "CHUNK_SET", "ref_type": "id"},
+        ],
         "produces": [{"kind": "ENTITY_SET", "ref_type": "id"}],
     },
     "entity_tfidf": {
@@ -263,6 +273,7 @@ _BENCHMARK_TOOL_CONTRACTS: dict[str, dict[str, object]] = {
         "produces": [
             {"kind": "CHUNK_SET", "ref_type": "id"},
             {"kind": "CHUNK_SET", "ref_type": "fulltext"},
+            {"kind": "ENTITY_SET", "ref_type": "candidate"},
         ],
     },
     "chunk_vdb_search": {
@@ -270,6 +281,16 @@ _BENCHMARK_TOOL_CONTRACTS: dict[str, dict[str, object]] = {
         "produces": [
             {"kind": "CHUNK_SET", "ref_type": "id"},
             {"kind": "CHUNK_SET", "ref_type": "fulltext"},
+            {"kind": "ENTITY_SET", "ref_type": "candidate"},
+        ],
+    },
+    "search_then_expand_onehop": {
+        "requires_all": ["QUERY_TEXT"],
+        "produces": [
+            {"kind": "CHUNK_SET", "ref_type": "id"},
+            {"kind": "CHUNK_SET", "ref_type": "fulltext"},
+            {"kind": "ENTITY_SET", "ref_type": "candidate"},
+            {"kind": "ENTITY_SET", "ref_type": "id"},
         ],
     },
     "chunk_aggregator": {
@@ -740,6 +761,7 @@ async def _init_direct_tools(dataset_name: str, disable_embedding_tools: bool = 
         dms.entity_link,
         dms.entity_resolve_names_to_ids,
         dms.entity_profile,
+        dms.entity_select_candidate,
         dms.entity_tfidf,
         dms.relationship_onehop,
         dms.relationship_score_aggregator,
@@ -751,6 +773,7 @@ async def _init_direct_tools(dataset_name: str, disable_embedding_tools: bool = 
         dms.extract_date_mentions,
         dms.chunk_text_search,
         dms.chunk_vdb_search,
+        dms.search_then_expand_onehop,
         dms.chunk_aggregator,
         dms.list_available_resources,
         dms.subgraph_khop_paths,

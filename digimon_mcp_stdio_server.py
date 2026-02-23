@@ -108,6 +108,9 @@ _BENCHMARK_SHORT_DESCS: dict[str, str] = {
     "chunk_get_text_by_entity_ids": "Get source text for explicit entity IDs.",
     "extract_date_mentions": "Extract normalized date mentions with evidence refs from chunk text.",
     "chunk_text_search": "Keyword search over source text chunks.",
+    "chunk_vdb_search": "Semantic vector search over source text chunks.",
+    "entity_select_candidate": "Select canonical entity IDs from candidate entity sets.",
+    "search_then_expand_onehop": "Composite search->candidate->onehop expansion with bounded output.",
     "chunk_aggregator": "Score chunks by relationship/PPR scores via sparse matrices.",
     "subgraph_khop_paths": "Find all paths between entities within k hops.",
     "subgraph_steiner_tree": "Minimal subgraph connecting a set of entities.",
@@ -447,6 +450,9 @@ def _dedup_chunks_in_dict(d: dict) -> None:
 
 _seen_chunks: dict[str, str] = {}  # chunk_id -> first 80 chars (for reference)
 _seen_chunk_text: dict[str, str] = {}  # chunk_id -> full text (for evidence validation)
+_chunk_entity_index_cache: dict[str, dict[str, list[dict[str, Any]]]] = {}
+_latest_entity_candidates_by_chunk: dict[str, list[dict[str, Any]]] = {}
+_latest_entity_candidates_flat: list[dict[str, Any]] = []
 _todos: list[dict[str, Any]] = []  # question-local TODOs in benchmark mode
 _todo_counter: int = 0
 _current_question: str = ""
@@ -483,10 +489,28 @@ def _dedup_chunk(chunk_id: str, text: str) -> tuple[bool, str]:
     return True, text
 
 
+def _compact_chunk_text_for_prompt(text: str, *, max_chars: int = 1200) -> tuple[str, bool]:
+    """Return bounded chunk text for prompt efficiency while retaining full cache."""
+    if not isinstance(text, str):
+        return str(text), False
+    if text.startswith("[DUPLICATE"):
+        return text, False
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text, False
+    compact = text[:max_chars].rstrip()
+    return (
+        compact + " ... [truncated; use chunk_get_text_by_chunk_ids for full text]",
+        True,
+    )
+
+
 def _reset_chunk_dedup() -> None:
     """Reset seen chunks — call between questions."""
+    global _latest_entity_candidates_flat
     _seen_chunks.clear()
     _seen_chunk_text.clear()
+    _latest_entity_candidates_by_chunk.clear()
+    _latest_entity_candidates_flat = []
     _reset_todos()
     _clear_semantic_plan()
 
@@ -1539,6 +1563,252 @@ def _build_entity_search_guidance(similar_entities: list[dict]) -> list[str]:
     return hints
 
 
+def _chunk_ids_from_node_data(node_data: dict[str, Any]) -> list[str]:
+    """Extract chunk IDs from graph node attributes."""
+    from Core.Common.Constants import GRAPH_FIELD_SEP
+    from Core.Common.Utils import split_string_by_multi_markers
+
+    chunk_ids: list[str] = []
+
+    def _append(raw: Any) -> None:
+        if raw is None:
+            return
+        if isinstance(raw, str):
+            values = split_string_by_multi_markers(raw, [GRAPH_FIELD_SEP])
+        elif isinstance(raw, (list, tuple, set)):
+            values = [str(v) for v in raw if v is not None]
+        else:
+            values = [str(raw)]
+        for value in values:
+            cid = value.strip()
+            if not cid:
+                continue
+            if cid.startswith("chunk_"):
+                chunk_ids.append(cid)
+
+    for key in (
+        "chunk_id",
+        "source_chunk_id",
+        "chunk_ids",
+        "source_chunk_ids",
+        "source_chunks",
+        "source_id",
+    ):
+        _append(node_data.get(key))
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for cid in chunk_ids:
+        if cid in seen:
+            continue
+        seen.add(cid)
+        deduped.append(cid)
+    return deduped
+
+
+def _load_chunk_entity_index_for_dataset(dataset_name: str) -> tuple[str, dict[str, list[dict[str, Any]]]]:
+    """Build or reuse chunk_id -> candidate-entity index for the dataset graph."""
+    resolved_graph_id = _resolve_graph_reference_id(dataset_name=dataset_name)
+    if not resolved_graph_id:
+        return "", {}
+
+    cached = _chunk_entity_index_cache.get(resolved_graph_id)
+    if cached is not None:
+        return resolved_graph_id, cached
+
+    ctx = _state.get("context")
+    graph_instance = ctx.get_graph_instance(resolved_graph_id) if ctx is not None and hasattr(ctx, "get_graph_instance") else None
+    if not graph_instance or not hasattr(graph_instance, "_graph") or not hasattr(graph_instance._graph, "graph"):
+        return resolved_graph_id, {}
+    nx_graph = graph_instance._graph.graph
+
+    chunk_to_candidates: dict[str, list[dict[str, Any]]] = {}
+    for node_id, attrs in nx_graph.nodes(data=True):
+        node_attrs = dict(attrs or {})
+        chunk_ids = _chunk_ids_from_node_data(node_attrs)
+        if not chunk_ids:
+            continue
+
+        entity_id = str(node_id)
+        entity_name = (
+            str(node_attrs.get("entity_name") or "").strip()
+            or str(node_attrs.get("name") or "").strip()
+            or entity_id
+        )
+        coarse_type = (
+            str(node_attrs.get("entity_type") or "").strip()
+            or str(node_attrs.get("type") or "").strip()
+            or "unknown"
+        )
+        degree = 0.0
+        try:
+            degree = float(nx_graph.degree(node_id))
+        except Exception:
+            degree = 0.0
+        salience = round(min(1.0, degree / 20.0), 4)
+        base_payload = {
+            "entity_id": entity_id,
+            "entity_name": entity_name,
+            "coarse_type": coarse_type,
+            "salience": salience,
+            "source": "graph_source_id",
+        }
+
+        for chunk_id in chunk_ids:
+            bucket = chunk_to_candidates.setdefault(chunk_id, [])
+            bucket.append(base_payload)
+
+    # Dedup and stable sort per chunk.
+    for chunk_id, candidates in list(chunk_to_candidates.items()):
+        unique: dict[str, dict[str, Any]] = {}
+        for item in candidates:
+            eid = str(item.get("entity_id") or "").strip()
+            if not eid:
+                continue
+            prev = unique.get(eid)
+            if prev is None or float(item.get("salience") or 0.0) > float(prev.get("salience") or 0.0):
+                unique[eid] = item
+        ordered = sorted(
+            unique.values(),
+            key=lambda x: (
+                float(x.get("salience") or 0.0),
+                str(x.get("entity_name") or ""),
+            ),
+            reverse=True,
+        )
+        chunk_to_candidates[chunk_id] = ordered
+
+    _chunk_entity_index_cache[resolved_graph_id] = chunk_to_candidates
+    return resolved_graph_id, chunk_to_candidates
+
+
+def _enrich_chunks_with_entity_candidates(
+    *,
+    dataset_name: str,
+    query_text: str,
+    chunks: list[dict[str, Any]],
+    max_candidates_per_chunk: int = 4,
+    max_total_candidates: int = 40,
+) -> dict[str, Any]:
+    """Add bounded candidate entities to chunk retrieval payloads."""
+    global _latest_entity_candidates_flat
+
+    resolved_graph_id, chunk_index = _load_chunk_entity_index_for_dataset(dataset_name)
+    if not chunks or not chunk_index:
+        _latest_entity_candidates_by_chunk.clear()
+        _latest_entity_candidates_flat = []
+        return {
+            "resolved_graph_reference_id": resolved_graph_id or None,
+            "entity_candidates": [],
+            "entity_candidates_by_chunk": {},
+            "candidate_summary": {
+                "n_chunks_with_candidates": 0,
+                "n_candidates": 0,
+            },
+        }
+
+    query_tokens = set(re.findall(r"[a-z0-9]+", (query_text or "").lower()))
+    chunk_scores = [float(c.get("score") or 0.0) for c in chunks if isinstance(c, dict)]
+    max_chunk_score = max(chunk_scores) if chunk_scores else 0.0
+    max_chunk_score = max(max_chunk_score, 1e-6)
+
+    entity_candidates_by_chunk: dict[str, list[dict[str, Any]]] = {}
+    flat_candidates: list[dict[str, Any]] = []
+
+    for rank, chunk in enumerate(chunks, start=1):
+        if not isinstance(chunk, dict):
+            continue
+        chunk_id = str(chunk.get("chunk_id") or "").strip()
+        if not chunk_id:
+            continue
+        chunk_text = str(chunk.get("text") or chunk.get("text_content") or "")
+        raw_candidates = chunk_index.get(chunk_id, [])
+        if not raw_candidates:
+            continue
+
+        chunk_signal = float(chunk.get("score") or 0.0) / max_chunk_score
+        chunk_signal = max(0.0, min(1.0, chunk_signal))
+
+        scored: list[dict[str, Any]] = []
+        for candidate in raw_candidates:
+            entity_name = str(candidate.get("entity_name") or "")
+            name_tokens = set(re.findall(r"[a-z0-9]+", entity_name.lower()))
+            overlap = 0.0
+            if query_tokens and name_tokens:
+                overlap = len(query_tokens & name_tokens) / max(1, len(name_tokens))
+            salience = float(candidate.get("salience") or 0.0)
+            candidate_score = (0.55 * overlap) + (0.30 * salience) + (0.15 * chunk_signal)
+            scored.append(
+                {
+                    "chunk_id": chunk_id,
+                    "entity_id": str(candidate.get("entity_id") or "").strip(),
+                    "entity_name": entity_name,
+                    "coarse_type": candidate.get("coarse_type"),
+                    "candidate_score": round(candidate_score, 4),
+                    "salience": round(salience, 4),
+                    "query_overlap": round(overlap, 4),
+                    "chunk_score_signal": round(chunk_signal, 4),
+                    "retrieval_rank": rank,
+                    "mention_text": entity_name,
+                    "evidence_ref": chunk_id,
+                    "source": candidate.get("source", "graph_source_id"),
+                    "context_snippet": chunk_text[:160] if chunk_text else "",
+                }
+            )
+
+        scored.sort(
+            key=lambda x: (
+                float(x.get("candidate_score") or 0.0),
+                float(x.get("salience") or 0.0),
+            ),
+            reverse=True,
+        )
+        selected = scored[: max(1, int(max_candidates_per_chunk))]
+        if selected:
+            entity_candidates_by_chunk[chunk_id] = selected
+            flat_candidates.extend(selected)
+
+    flat_candidates.sort(
+        key=lambda x: (
+            float(x.get("candidate_score") or 0.0),
+            -int(x.get("retrieval_rank") or 9999),
+        ),
+        reverse=True,
+    )
+    if max_total_candidates > 0:
+        flat_candidates = flat_candidates[:max_total_candidates]
+        keep = {
+            (
+                str(item.get("chunk_id") or ""),
+                str(item.get("entity_id") or ""),
+            )
+            for item in flat_candidates
+        }
+        for chunk_id, items in list(entity_candidates_by_chunk.items()):
+            filtered = [
+                it for it in items
+                if (str(it.get("chunk_id") or ""), str(it.get("entity_id") or "")) in keep
+            ]
+            if filtered:
+                entity_candidates_by_chunk[chunk_id] = filtered
+            else:
+                entity_candidates_by_chunk.pop(chunk_id, None)
+
+    _latest_entity_candidates_by_chunk.clear()
+    _latest_entity_candidates_by_chunk.update(entity_candidates_by_chunk)
+    _latest_entity_candidates_flat = list(flat_candidates)
+
+    return {
+        "resolved_graph_reference_id": resolved_graph_id or None,
+        "entity_candidates": flat_candidates,
+        "entity_candidates_by_chunk": entity_candidates_by_chunk,
+        "candidate_summary": {
+            "n_chunks_with_candidates": len(entity_candidates_by_chunk),
+            "n_candidates": len(flat_candidates),
+        },
+    }
+
+
 async def _ensure_corpus(dataset_name: str, input_directory: str | None) -> None:
     """Auto-prepare corpus if Corpus.json doesn't exist and input_directory is given."""
     config = _state["config"]
@@ -2116,7 +2386,8 @@ async def entity_agent(query_text: str, text_context: str,
 
 @mcp.tool()
 async def entity_link(source_entities: list[str], vdb_reference_id: str,
-                      similarity_threshold: float = 0.5) -> str:
+                      similarity_threshold: float = 0.5,
+                      dataset_name: str = "") -> str:
     """Link entity mentions to canonical entities in a VDB.
 
     Args:
@@ -2131,13 +2402,40 @@ async def entity_link(source_entities: list[str], vdb_reference_id: str,
     from Core.AgentTools.entity_tools import entity_link_tool
     from Core.AgentSchema.tool_contracts import EntityLinkInputs
 
+    resolved_vdb = _resolve_vdb_reference_id(
+        vdb_reference_id=vdb_reference_id,
+        dataset_name=dataset_name or vdb_reference_id,
+        kind="entity",
+    )
+    if not resolved_vdb:
+        ctx = _state.get("context")
+        known_vdbs = ctx.list_vdbs() if ctx is not None and hasattr(ctx, "list_vdbs") else []
+        return json.dumps(
+            {
+                "error": (
+                    f"Could not resolve entity VDB from vdb_reference_id={vdb_reference_id!r} "
+                    f"dataset_name={dataset_name!r}"
+                ),
+                "known_vdbs": known_vdbs,
+            },
+            indent=2,
+        )
+
     inputs = EntityLinkInputs(
         source_entities=source_entities,
-        knowledge_base_reference_id=vdb_reference_id,
+        knowledge_base_reference_id=resolved_vdb,
         similarity_threshold=similarity_threshold,
     )
     result = await entity_link_tool(inputs, _state["context"])
-    return _format_result(result)
+    formatted = _format_result(result)
+    try:
+        payload = json.loads(formatted)
+    except Exception:
+        payload = {}
+    if isinstance(payload, dict):
+        payload["resolved_vdb_reference_id"] = resolved_vdb
+        return json.dumps(payload, indent=2, default=str)
+    return formatted
 
 
 @mcp.tool()
@@ -2438,6 +2736,149 @@ async def entity_profile(
             "evidence_refs": evidence_refs,
             "resolved_graph_reference_id": resolved_graph_id,
             "status_message": "Entity profile resolved",
+        },
+        indent=2,
+        default=str,
+    )
+
+
+@mcp.tool()
+async def entity_select_candidate(
+    candidate_entities: list[dict[str, Any]] | None = None,
+    chunk_ids: list[str] | None = None,
+    chunk_id: str = "",
+    entity_name: str = "",
+    dataset_name: str = "",
+    top_k: int = 3,
+    min_candidate_score: float = 0.0,
+) -> str:
+    """Select canonical entity IDs from candidate entity sets."""
+    await _ensure_initialized()
+
+    pool: list[dict[str, Any]] = []
+    if isinstance(candidate_entities, list):
+        for item in candidate_entities:
+            if isinstance(item, dict):
+                pool.append(dict(item))
+
+    normalized_chunk_ids = [(c or "").strip() for c in (chunk_ids or []) if (c or "").strip()]
+    if (chunk_id or "").strip():
+        normalized_chunk_ids.append((chunk_id or "").strip())
+
+    if not pool and normalized_chunk_ids:
+        for cid in normalized_chunk_ids:
+            for item in _latest_entity_candidates_by_chunk.get(cid, []):
+                pool.append(dict(item))
+
+    if not pool and _latest_entity_candidates_flat:
+        pool = [dict(item) for item in _latest_entity_candidates_flat]
+
+    if not pool:
+        return json.dumps(
+            {
+                "selected_entities": [],
+                "status_message": "No candidate entities available. Run chunk_text_search/chunk_vdb_search first.",
+            },
+            indent=2,
+        )
+
+    name_filter = (entity_name or "").strip().lower()
+    if name_filter:
+        filtered: list[dict[str, Any]] = []
+        for item in pool:
+            candidate_name = str(item.get("entity_name") or item.get("resolved_entity_name") or "").lower()
+            candidate_id = str(item.get("entity_id") or item.get("resolved_entity_id") or "").lower()
+            if name_filter in candidate_name or name_filter in candidate_id:
+                filtered.append(item)
+        if filtered:
+            pool = filtered
+
+    by_entity: dict[str, dict[str, Any]] = {}
+    unresolved_names: list[str] = []
+    for item in pool:
+        entity_id = str(
+            item.get("entity_id")
+            or item.get("resolved_entity_id")
+            or item.get("node_id")
+            or ""
+        ).strip()
+        candidate_name = str(item.get("entity_name") or item.get("resolved_entity_name") or "").strip()
+        score_raw = item.get("candidate_score", item.get("score", 0.0))
+        try:
+            score = float(score_raw)
+        except (TypeError, ValueError):
+            score = 0.0
+
+        if entity_id:
+            existing = by_entity.get(entity_id)
+            normalized = {
+                "entity_id": entity_id,
+                "entity_name": candidate_name or entity_id,
+                "candidate_score": score,
+                "chunk_id": item.get("chunk_id"),
+                "evidence_ref": item.get("evidence_ref") or item.get("chunk_id") or f"entity:{entity_id}",
+                "source": item.get("source", "candidate_set"),
+            }
+            if existing is None or float(normalized.get("candidate_score") or 0.0) > float(existing.get("candidate_score") or 0.0):
+                by_entity[entity_id] = normalized
+            continue
+
+        if candidate_name:
+            unresolved_names.append(candidate_name)
+
+    # Optional name->ID conversion fallback when candidates are name-only.
+    unresolved_names = _normalize_alternatives_tested(unresolved_names)
+    if unresolved_names:
+        resolved_raw = await entity_resolve_names_to_ids(
+            entity_names=unresolved_names,
+            dataset_name=dataset_name,
+            top_k_per_name=3,
+            similarity_threshold=0.0,
+        )
+        try:
+            resolved_payload = json.loads(resolved_raw)
+        except Exception:
+            resolved_payload = {}
+        resolved_entities = resolved_payload.get("resolved_entities") if isinstance(resolved_payload, dict) else []
+        if isinstance(resolved_entities, list):
+            for item in resolved_entities:
+                if not isinstance(item, dict):
+                    continue
+                entity_id = str(item.get("resolved_entity_id") or "").strip()
+                if not entity_id:
+                    continue
+                score_raw = item.get("score", 0.5)
+                try:
+                    score = float(score_raw)
+                except (TypeError, ValueError):
+                    score = 0.5
+                normalized = {
+                    "entity_id": entity_id,
+                    "entity_name": str(item.get("resolved_entity_name") or entity_id),
+                    "candidate_score": score,
+                    "chunk_id": None,
+                    "evidence_ref": f"entity:{entity_id}",
+                    "source": "entity_resolve_names_to_ids",
+                }
+                existing = by_entity.get(entity_id)
+                if existing is None or score > float(existing.get("candidate_score") or 0.0):
+                    by_entity[entity_id] = normalized
+
+    ordered = sorted(
+        by_entity.values(),
+        key=lambda x: float(x.get("candidate_score") or 0.0),
+        reverse=True,
+    )
+    threshold = float(min_candidate_score or 0.0)
+    selected = [item for item in ordered if float(item.get("candidate_score") or 0.0) >= threshold]
+    selected = selected[: max(1, int(top_k))]
+
+    return json.dumps(
+        {
+            "selected_entities": selected,
+            "n_selected": len(selected),
+            "n_candidates_considered": len(pool),
+            "status_message": f"Selected {len(selected)} canonical entity IDs from candidate set",
         },
         indent=2,
         default=str,
@@ -3126,7 +3567,9 @@ async def extract_date_mentions(
 @mcp.tool()
 async def chunk_text_search(query_text: str, dataset_name: str,
                              top_k: int = 10,
-                             entity_names: list[str] = None) -> str:
+                             entity_names: list[str] = None,
+                             max_candidates_per_chunk: int = 4,
+                             max_text_chars: int = 1200) -> str:
     """Keyword/TF-IDF search over raw chunk text. Bypasses entity-based retrieval.
 
     Use when entity VDB search misses relevant passages, or as a complementary
@@ -3140,6 +3583,7 @@ async def chunk_text_search(query_text: str, dataset_name: str,
 
     Returns:
         chunks: list of {chunk_id: str, text: str, score: float}
+        entity_candidates: optional candidate entities linked to returned chunks
     """
     await _ensure_initialized()
     from Core.Operators.chunk.text_search import chunk_text_search as _text_search
@@ -3182,15 +3626,55 @@ async def chunk_text_search(query_text: str, dataset_name: str,
     if chunks and hasattr(chunks, "data"):
         deduped = []
         for c in chunks.data:
-            is_new, text = _dedup_chunk(c.chunk_id, c.text)
-            deduped.append({"chunk_id": c.chunk_id, "text": text, "score": c.score})
+            full_text = c.text or ""
+            _is_new, dedup_text = _dedup_chunk(c.chunk_id, full_text)
+            compact_text, was_truncated = _compact_chunk_text_for_prompt(
+                dedup_text,
+                max_chars=max_text_chars,
+            )
+            deduped.append(
+                {
+                    "chunk_id": c.chunk_id,
+                    "text": compact_text,
+                    "score": c.score,
+                    "text_truncated": bool(was_truncated),
+                }
+            )
+        enriched = _enrich_chunks_with_entity_candidates(
+            dataset_name=resolved_dataset_name,
+            query_text=query_text,
+            chunks=deduped,
+            max_candidates_per_chunk=max_candidates_per_chunk,
+            max_total_candidates=24,
+        )
+        compact_candidates_by_chunk = {
+            chunk_id: [
+                str(item.get("entity_id") or "")
+                for item in items
+                if isinstance(item, dict) and str(item.get("entity_id") or "").strip()
+            ]
+            for chunk_id, items in (enriched.get("entity_candidates_by_chunk") or {}).items()
+            if isinstance(items, list)
+        }
         return json.dumps({
             "resolved_dataset_name": resolved_dataset_name,
-            "chunks": [
-                entry for entry in deduped
-            ]
+            "chunks": [entry for entry in deduped],
+            "resolved_graph_reference_id": enriched.get("resolved_graph_reference_id"),
+            "entity_candidates": enriched.get("entity_candidates", []),
+            "entity_candidates_by_chunk": compact_candidates_by_chunk,
+            "candidate_summary": enriched.get("candidate_summary", {}),
         }, indent=2, default=str)
-    return json.dumps({"resolved_dataset_name": resolved_dataset_name, "chunks": []})
+    return json.dumps(
+        {
+            "resolved_dataset_name": resolved_dataset_name,
+            "chunks": [],
+            "entity_candidates": [],
+            "entity_candidates_by_chunk": {},
+            "candidate_summary": {"n_chunks_with_candidates": 0, "n_candidates": 0},
+        },
+        indent=2,
+        default=str,
+    )
 
 
 async def chunk_vdb_build(dataset_name: str, vdb_collection_name: str = "",
@@ -3227,7 +3711,9 @@ if not BENCHMARK_MODE:
 
 @mcp.tool()
 async def chunk_vdb_search(query_text: str, dataset_name: str,
-                            top_k: int = 10) -> str:
+                            top_k: int = 10,
+                            max_candidates_per_chunk: int = 4,
+                            max_text_chars: int = 1200) -> str:
     """Semantic embedding search over document chunks. Finds passages similar in meaning to the query.
 
     Use alongside chunk_text_search for dual retrieval — embedding search catches
@@ -3240,6 +3726,7 @@ async def chunk_vdb_search(query_text: str, dataset_name: str,
 
     Returns:
         chunks: list of {chunk_id: str, text: str, score: float}
+        entity_candidates: optional candidate entities linked to returned chunks
     """
     await _ensure_initialized()
     from Core.Operators.chunk.vdb import chunk_vdb as _chunk_vdb_op
@@ -3258,10 +3745,196 @@ async def chunk_vdb_search(query_text: str, dataset_name: str,
     if chunks and hasattr(chunks, "data"):
         deduped = []
         for c in chunks.data:
-            is_new, text = _dedup_chunk(c.chunk_id, c.text)
-            deduped.append({"chunk_id": c.chunk_id, "text": text, "score": c.score})
-        return json.dumps({"resolved_dataset_name": resolved_dataset_name, "chunks": deduped}, indent=2, default=str)
-    return json.dumps({"resolved_dataset_name": resolved_dataset_name, "chunks": []})
+            full_text = c.text or ""
+            _is_new, dedup_text = _dedup_chunk(c.chunk_id, full_text)
+            compact_text, was_truncated = _compact_chunk_text_for_prompt(
+                dedup_text,
+                max_chars=max_text_chars,
+            )
+            deduped.append(
+                {
+                    "chunk_id": c.chunk_id,
+                    "text": compact_text,
+                    "score": c.score,
+                    "text_truncated": bool(was_truncated),
+                }
+            )
+        enriched = _enrich_chunks_with_entity_candidates(
+            dataset_name=resolved_dataset_name,
+            query_text=query_text,
+            chunks=deduped,
+            max_candidates_per_chunk=max_candidates_per_chunk,
+            max_total_candidates=24,
+        )
+        compact_candidates_by_chunk = {
+            chunk_id: [
+                str(item.get("entity_id") or "")
+                for item in items
+                if isinstance(item, dict) and str(item.get("entity_id") or "").strip()
+            ]
+            for chunk_id, items in (enriched.get("entity_candidates_by_chunk") or {}).items()
+            if isinstance(items, list)
+        }
+        return json.dumps(
+            {
+                "resolved_dataset_name": resolved_dataset_name,
+                "chunks": deduped,
+                "resolved_graph_reference_id": enriched.get("resolved_graph_reference_id"),
+                "entity_candidates": enriched.get("entity_candidates", []),
+                "entity_candidates_by_chunk": compact_candidates_by_chunk,
+                "candidate_summary": enriched.get("candidate_summary", {}),
+            },
+            indent=2,
+            default=str,
+        )
+    return json.dumps(
+        {
+            "resolved_dataset_name": resolved_dataset_name,
+            "chunks": [],
+            "entity_candidates": [],
+            "entity_candidates_by_chunk": {},
+            "candidate_summary": {"n_chunks_with_candidates": 0, "n_candidates": 0},
+        },
+        indent=2,
+        default=str,
+    )
+
+
+@mcp.tool()
+async def search_then_expand_onehop(
+    query_text: str,
+    dataset_name: str,
+    graph_reference_id: str = "",
+    top_k_chunks: int = 6,
+    max_candidates_per_chunk: int = 4,
+    max_entities: int = 5,
+    neighbor_limit_per_entity: int = 20,
+) -> str:
+    """Composite search->candidate selection->entity one-hop expansion."""
+    await _ensure_initialized()
+
+    step_summaries: list[dict[str, Any]] = []
+
+    chunk_raw = await chunk_text_search(
+        query_text=query_text,
+        dataset_name=dataset_name,
+        top_k=max(1, int(top_k_chunks)),
+        max_candidates_per_chunk=max(1, int(max_candidates_per_chunk)),
+    )
+    try:
+        chunk_payload = json.loads(chunk_raw)
+    except Exception:
+        chunk_payload = {}
+
+    chunks = chunk_payload.get("chunks") if isinstance(chunk_payload, dict) else []
+    candidates = chunk_payload.get("entity_candidates") if isinstance(chunk_payload, dict) else []
+    if not isinstance(chunks, list):
+        chunks = []
+    if not isinstance(candidates, list):
+        candidates = []
+
+    step_summaries.append(
+        {
+            "step": "chunk_text_search",
+            "n_chunks": len(chunks),
+            "n_entity_candidates": len(candidates),
+        }
+    )
+
+    select_raw = await entity_select_candidate(
+        candidate_entities=candidates,
+        top_k=max(1, int(max_entities)),
+        dataset_name=dataset_name,
+        min_candidate_score=0.0,
+    )
+    try:
+        select_payload = json.loads(select_raw)
+    except Exception:
+        select_payload = {}
+    selected_entities = select_payload.get("selected_entities") if isinstance(select_payload, dict) else []
+    if not isinstance(selected_entities, list):
+        selected_entities = []
+
+    entity_ids: list[str] = []
+    for item in selected_entities:
+        if not isinstance(item, dict):
+            continue
+        entity_id = str(item.get("entity_id") or "").strip()
+        if entity_id and entity_id not in entity_ids:
+            entity_ids.append(entity_id)
+
+    step_summaries.append(
+        {
+            "step": "entity_select_candidate",
+            "n_selected_entities": len(entity_ids),
+        }
+    )
+
+    if not entity_ids:
+        return json.dumps(
+            {
+                "resolved_dataset_name": _resolve_dataset_name(dataset_name),
+                "chunks": chunks,
+                "entity_candidates": candidates,
+                "selected_entities": [],
+                "neighbors": {},
+                "substeps": step_summaries,
+                "status_message": "No canonical entity candidates selected; expansion skipped.",
+            },
+            indent=2,
+            default=str,
+        )
+
+    onehop_raw = await entity_onehop(
+        entity_ids=entity_ids,
+        graph_reference_id=graph_reference_id,
+        dataset_name=dataset_name,
+        neighbor_limit_per_entity=max(1, int(neighbor_limit_per_entity)),
+    )
+    try:
+        onehop_payload = json.loads(onehop_raw)
+    except Exception:
+        onehop_payload = {}
+
+    neighbors = onehop_payload.get("neighbors") if isinstance(onehop_payload, dict) else {}
+    if not isinstance(neighbors, dict):
+        neighbors = {}
+    step_summaries.append(
+        {
+            "step": "entity_onehop",
+            "n_neighbor_groups": len(neighbors),
+        }
+    )
+
+    compact_chunks: list[dict[str, Any]] = []
+    for item in chunks:
+        if not isinstance(item, dict):
+            continue
+        compact_chunks.append(
+            {
+                "chunk_id": item.get("chunk_id"),
+                "score": item.get("score"),
+                "text": item.get("text"),
+            }
+        )
+
+    return json.dumps(
+        {
+            "resolved_dataset_name": chunk_payload.get("resolved_dataset_name") if isinstance(chunk_payload, dict) else _resolve_dataset_name(dataset_name),
+            "resolved_graph_reference_id": onehop_payload.get("resolved_graph_reference_id") if isinstance(onehop_payload, dict) else None,
+            "chunks": compact_chunks,
+            "entity_candidates": candidates,
+            "selected_entities": selected_entities,
+            "neighbors": neighbors,
+            "substeps": step_summaries,
+            "status_message": (
+                f"Composite search/expand produced {len(compact_chunks)} chunks, "
+                f"{len(selected_entities)} selected entities, {len(neighbors)} one-hop groups"
+            ),
+        },
+        indent=2,
+        default=str,
+    )
 
 
 # =============================================================================

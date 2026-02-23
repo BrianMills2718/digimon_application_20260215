@@ -417,3 +417,22 @@ graphs, enabling recursive meta-analysis. Priority order:
 7. Reified graph type (n-ary relationships)
 
 See `docs/IDEAS.md` for future enhancement ideas and dead code inventory.
+
+
+## Multi-Agent Coordination
+
+This repo uses worktree-based isolation for concurrent AI instances.
+
+**Before starting work:**
+1. Check existing claims: `python scripts/meta/worktree-coordination/check_claims.py --list`
+2. Claim your work: `python scripts/meta/worktree-coordination/check_claims.py --claim --feature <name> --task "description"`
+3. Create a worktree: `make worktree` (or `git worktree add worktrees/plan-N-desc`)
+4. Work in the worktree, not the main directory
+
+**Before committing:**
+- Commits must use prefixes: `[Plan #N]`, `[Trivial]`, or `[Unplanned]`
+- Release claims when done: `python scripts/meta/worktree-coordination/check_claims.py --release`
+
+**Check for messages from other instances:**
+`python scripts/meta/worktree-coordination/check_messages.py`
+

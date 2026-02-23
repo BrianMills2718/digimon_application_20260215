@@ -63,18 +63,26 @@ messages:
       - `entity_*`/`relationship_*` operators consume graph IDs, not raw chunk text.
       - `chunk_*` operators return evidence text/chunk IDs; these do NOT directly compose into graph traversal.
       - To bridge chunk evidence -> graph traversal: extract candidate names from chunk text, then resolve via
-        `entity_link` or `entity_vdb_search` before calling `entity_onehop`/`relationship_onehop`.
+        `entity_select_candidate` / `entity_resolve_names_to_ids` (or `entity_link`) before calling
+        `entity_onehop`/`relationship_onehop`.
+      - `chunk_text_search` and `chunk_vdb_search` may return `entity_candidates`; treat them as uncertain
+        candidates until selected/converted.
       - `relationship_*` outputs (relationship IDs) compose into `chunk_from_relationships`.
       - If composition is invalid, stop and repair the plan instead of forcing the next call.
 
       ## Available retrieval/control tools
       - `semantic_plan`: typed atom decomposition + dependencies + composition rule.
       - `chunk_text_search`: lexical retrieval over raw chunk text.
-      - `chunk_get_text`: fetch chunk evidence linked to entities/chunk ids.
+      - `chunk_vdb_search`: semantic retrieval over raw chunk text.
+      - `search_then_expand_onehop`: composite search->candidate->onehop expansion (bounded).
+      - `chunk_get_text_by_chunk_ids`: fetch text for explicit chunk IDs.
+      - `chunk_get_text_by_entity_ids`: fetch text for explicit entity IDs.
       - `chunk_occurrence`: count/find chunk-level occurrences.
       - `entity_vdb_search`: semantic nearest-entity retrieval.
+      - `entity_select_candidate`: choose canonical entity IDs from candidate entity sets.
       - `entity_onehop`: graph one-hop neighbors for candidate expansion.
       - `entity_link`: normalize/free-text mentions to canonical entity ids.
+      - `entity_resolve_names_to_ids`: convert names/candidates to canonical graph IDs.
       - `entity_tfidf`: lexical rerank over candidate entities.
       - `entity_ppr`: graph-centrality/entity relevance scoring.
       - `relationship_onehop`: graph relation expansion around entities.
