@@ -722,20 +722,22 @@ def _todo_requires_bridge_alternatives(todo: dict[str, Any]) -> bool:
         if atom_op in {"relation", "compose", "intersection", "compare"}:
             return True
 
+        # Only treat planner uncertainty as bridge-specific when it explicitly points
+        # to this atom ID/output variable. Broad token overlap ("israel", "region", ...)
+        # causes false positives on simple lookup atoms and triggers unnecessary churn.
         uncertainty_points = _current_semantic_plan.get("uncertainty_points") or []
         if uncertainty_points:
-            atom_text = " ".join(
-                [
-                    atom_id,
-                    str(atom.get("output_var") or ""),
-                    str(atom.get("sub_question") or ""),
-                ]
-            ).lower()
-            atom_terms = [t for t in re.findall(r"[a-z0-9]+", atom_text) if len(t) >= 5][:12]
-            if atom_terms:
+            output_var = str(atom.get("output_var") or "").strip()
+            markers = {
+                atom_id.lower(),
+                output_var.lower(),
+                output_var.replace("$", "").lower(),
+            }
+            markers = {m for m in markers if m}
+            if markers:
                 for up in uncertainty_points:
                     up_l = (up or "").lower()
-                    if any(term in up_l for term in atom_terms):
+                    if any(marker in up_l for marker in markers):
                         return True
     return False
 
@@ -6551,7 +6553,11 @@ if BENCHMARK_MODE:
                         "Low-confidence TODO completion requires alternatives_tested. "
                         "Test at least one alternative branch before marking done."
                     )
-
+            if normalized == "done":
+                # Persist atom evidence for *all* completed TODOs.
+                # Bridge TODOs above add extra checks, but completion fields must
+                # always be recorded so downstream compose/intersection validation
+                # can consume parent answer_span/evidence_refs reliably.
                 target["answer_span"] = answer_span_text
                 target["evidence_refs"] = refs
                 target["alternatives_tested"] = alts
