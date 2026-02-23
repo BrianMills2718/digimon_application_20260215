@@ -1349,6 +1349,14 @@ async def run_agent(
         forced_final_circuit_breaker_opened = None
         retrieval_stagnation_triggered = None
         retrieval_stagnation_turn = None
+        retrieval_stagnation_streak_max = None
+        evidence_digest_change_count = None
+        evidence_turns_total = None
+        evidence_turns_with_new_evidence = None
+        evidence_turns_without_new_evidence = None
+        context_tool_result_clearings = None
+        context_tool_results_cleared = None
+        context_tool_result_cleared_chars = None
         requires_submit_answer = None
         submit_answer_call_count = None
         submit_answer_attempted = None
@@ -1407,6 +1415,28 @@ async def run_agent(
                 "retrieval_stagnation_triggered"
             )
             retrieval_stagnation_turn = result.raw_response.metadata.get("retrieval_stagnation_turn")
+            retrieval_stagnation_streak_max = result.raw_response.metadata.get(
+                "retrieval_stagnation_streak_max"
+            )
+            evidence_digest_change_count = result.raw_response.metadata.get(
+                "evidence_digest_change_count"
+            )
+            evidence_turns_total = result.raw_response.metadata.get("evidence_turns_total")
+            evidence_turns_with_new_evidence = result.raw_response.metadata.get(
+                "evidence_turns_with_new_evidence"
+            )
+            evidence_turns_without_new_evidence = result.raw_response.metadata.get(
+                "evidence_turns_without_new_evidence"
+            )
+            context_tool_result_clearings = result.raw_response.metadata.get(
+                "context_tool_result_clearings"
+            )
+            context_tool_results_cleared = result.raw_response.metadata.get(
+                "context_tool_results_cleared"
+            )
+            context_tool_result_cleared_chars = result.raw_response.metadata.get(
+                "context_tool_result_cleared_chars"
+            )
             requires_submit_answer = result.raw_response.metadata.get("requires_submit_answer")
             submit_answer_call_count = result.raw_response.metadata.get("submit_answer_call_count")
             submit_answer_attempted = result.raw_response.metadata.get("submit_answer_attempted")
@@ -1492,6 +1522,14 @@ async def run_agent(
             "forced_final_circuit_breaker_opened": forced_final_circuit_breaker_opened,
             "retrieval_stagnation_triggered": retrieval_stagnation_triggered,
             "retrieval_stagnation_turn": retrieval_stagnation_turn,
+            "retrieval_stagnation_streak_max": retrieval_stagnation_streak_max,
+            "evidence_digest_change_count": evidence_digest_change_count,
+            "evidence_turns_total": evidence_turns_total,
+            "evidence_turns_with_new_evidence": evidence_turns_with_new_evidence,
+            "evidence_turns_without_new_evidence": evidence_turns_without_new_evidence,
+            "context_tool_result_clearings": context_tool_result_clearings,
+            "context_tool_results_cleared": context_tool_results_cleared,
+            "context_tool_result_cleared_chars": context_tool_result_cleared_chars,
             "requires_submit_answer": requires_submit_answer,
             "submit_answer_call_count": submit_answer_call_count,
             "submit_answer_attempted": submit_answer_attempted,
@@ -2157,6 +2195,14 @@ async def main() -> None:
             "finalization_events": agent_result.get("finalization_events"),
             "retrieval_stagnation_triggered": agent_result.get("retrieval_stagnation_triggered"),
             "retrieval_stagnation_turn": agent_result.get("retrieval_stagnation_turn"),
+            "retrieval_stagnation_streak_max": agent_result.get("retrieval_stagnation_streak_max"),
+            "evidence_digest_change_count": agent_result.get("evidence_digest_change_count"),
+            "evidence_turns_total": agent_result.get("evidence_turns_total"),
+            "evidence_turns_with_new_evidence": agent_result.get("evidence_turns_with_new_evidence"),
+            "evidence_turns_without_new_evidence": agent_result.get("evidence_turns_without_new_evidence"),
+            "context_tool_result_clearings": agent_result.get("context_tool_result_clearings"),
+            "context_tool_results_cleared": agent_result.get("context_tool_results_cleared"),
+            "context_tool_result_cleared_chars": agent_result.get("context_tool_result_cleared_chars"),
             "requires_submit_answer": agent_result.get("requires_submit_answer"),
             "submit_answer_call_count": agent_result.get("submit_answer_call_count"),
             "submit_answer_attempted": agent_result.get("submit_answer_attempted"),
