@@ -1696,6 +1696,13 @@ async def main() -> None:
             "validation cannot be satisfied (default: true)."
         ),
     )
+    parser.add_argument(
+        "--fail-on-fallback-use",
+        action="store_true",
+        help=(
+            "Exit with code 2 if any model fallback (primary->fallback) or finalization fallback is used."
+        ),
+    )
     parser.add_argument("--temperature", type=float, default=0.0,
                         help="Sampling temperature for non-SDK tool-calling runs (default: 0.0).")
     parser.add_argument("--embed-model", type=str, default="",
@@ -1999,6 +2006,7 @@ async def main() -> None:
     run_provenance["suppress_control_loop_calls"] = bool(args.suppress_control_loop_calls)
     run_provenance["force_submit_retry_on_max_tool_calls"] = bool(args.force_submit_retry_on_max_tool_calls)
     run_provenance["accept_forced_answer_on_max_tool_calls"] = bool(args.accept_forced_answer_on_max_tool_calls)
+    run_provenance["fail_on_fallback_use"] = bool(args.fail_on_fallback_use)
     run_provenance["question_timeout"] = args.timeout
     run_provenance["question_timeout_enabled"] = bool(args.timeout > 0)
     run_provenance["turn_timeout"] = args.turn_timeout
@@ -2060,6 +2068,7 @@ async def main() -> None:
         f"retry={bool(args.force_submit_retry_on_max_tool_calls)}, "
         f"accept_forced_answer={bool(args.accept_forced_answer_on_max_tool_calls)}"
     )
+    print(f"Fail on fallback use: {bool(args.fail_on_fallback_use)}")
     if effective_embed_model:
         print(f"Embedding model override: {effective_embed_model}")
     print(f"Post-run deterministic checks: {args.post_det_checks}")
@@ -2124,6 +2133,7 @@ async def main() -> None:
             "suppress_control_loop_calls": bool(args.suppress_control_loop_calls),
             "force_submit_retry_on_max_tool_calls": bool(args.force_submit_retry_on_max_tool_calls),
             "accept_forced_answer_on_max_tool_calls": bool(args.accept_forced_answer_on_max_tool_calls),
+            "fail_on_fallback_use": bool(args.fail_on_fallback_use),
             "temperature": args.temperature,
             "heartbeat_secs": args.heartbeat_secs,
             "embed_model": (args.embed_model or "").strip() or None,
@@ -2193,6 +2203,12 @@ async def main() -> None:
             tool_contract_violation_events=agent_result.get("tool_contract_violation_events"),
             available_artifacts_final=agent_result.get("available_artifacts_final"),
         )
+        warnings_list = list(agent_result.get("warnings") or [])
+        model_fallback_used = any(
+            isinstance(w, str) and w.startswith("FALLBACK:")
+            for w in warnings_list
+        )
+        fallback_used_any = bool(agent_result.get("finalization_fallback_used")) or model_fallback_used
 
         return {
             "id": q_id,
@@ -2238,6 +2254,8 @@ async def main() -> None:
             "lane_closure_analysis": agent_result.get("lane_closure_analysis"),
             "lane_policy": agent_result.get("lane_policy"),
             "tool_disclosure_repair_suggestions": agent_result.get("tool_disclosure_repair_suggestions"),
+            "model_fallback_used": model_fallback_used,
+            "fallback_used_any": fallback_used_any,
             "finalization_fallback_used": agent_result.get("finalization_fallback_used"),
             "finalization_fallback_succeeded": agent_result.get("finalization_fallback_succeeded"),
             "forced_final_attempts": agent_result.get("forced_final_attempts"),
@@ -2274,7 +2292,7 @@ async def main() -> None:
             "overhead_ms": duration_ms - duration_api_ms if duration_ms and duration_api_ms else 0,
             "num_turns": num_turns,
             "error": error,
-            "warnings": agent_result.get("warnings", []),
+            "warnings": warnings_list,
             "models_used": agent_result.get("models_used", []),
             "conversation_trace": agent_result.get("conversation_trace"),
         }
@@ -2304,7 +2322,8 @@ async def main() -> None:
         contract_rejections = record.get("n_tool_contract_rejections")
         primary_failure_class = record.get("primary_failure_class")
         first_terminal = record.get("first_terminal_failure_event_code")
-        fallback_used = bool(record.get("finalization_fallback_used"))
+        fallback_used = bool(record.get("fallback_used_any"))
+        finalization_fallback_used = bool(record.get("finalization_fallback_used"))
         fallback_succeeded = bool(record.get("finalization_fallback_succeeded"))
         retrieval_stagnation = bool(record.get("retrieval_stagnation_triggered"))
         if budgeted_calls is None:
@@ -2320,10 +2339,13 @@ async def main() -> None:
             if isinstance(first_terminal, str) and first_terminal:
                 suffix_parts.append(f"first_terminal={first_terminal}")
             if fallback_used:
-                suffix_parts.append(
-                    "finalization_fallback="
-                    + ("success" if fallback_succeeded else "used")
-                )
+                if finalization_fallback_used:
+                    suffix_parts.append(
+                        "finalization_fallback="
+                        + ("success" if fallback_succeeded else "used")
+                    )
+                else:
+                    suffix_parts.append("model_fallback=used")
             if retrieval_stagnation:
                 suffix_parts.append("retrieval_stagnation")
             suffix = ""
@@ -2396,7 +2418,7 @@ async def main() -> None:
                 comp += f"/I{interface_errors}"
         if arg_validation_rejections > 0:
             comp += f" A{arg_validation_rejections}"
-        if record.get("finalization_fallback_used"):
+        if record.get("fallback_used_any"):
             comp += " Ff"
         if record.get("retrieval_stagnation_triggered"):
             comp += " Rs"
@@ -2620,8 +2642,10 @@ async def main() -> None:
         completion_rate = (100.0 * n_completed_success / n_done) if n_done else 0.0
         provider_failures = sum(1 for r in results if (r.get("primary_failure_class") or "") == "provider")
         provider_failure_rate = (100.0 * provider_failures / n_done) if n_done else 0.0
-        fallback_used_count = sum(1 for r in results if bool(r.get("finalization_fallback_used")))
+        fallback_used_count = sum(1 for r in results if bool(r.get("fallback_used_any")))
         fallback_used_rate = (100.0 * fallback_used_count / n_done) if n_done else 0.0
+        finalization_fallback_used_count = sum(1 for r in results if bool(r.get("finalization_fallback_used")))
+        finalization_fallback_used_rate = (100.0 * finalization_fallback_used_count / n_done) if n_done else 0.0
         retrieval_stagnation_count = sum(1 for r in results if bool(r.get("retrieval_stagnation_triggered")))
         retrieval_stagnation_rate = (100.0 * retrieval_stagnation_count / n_done) if n_done else 0.0
         em_completed = (
@@ -2684,7 +2708,11 @@ async def main() -> None:
             f"  Provider failures: {provider_failures}/{n_done} ({provider_failure_rate:.1f}%)"
         )
         print(
-            f"  Finalization fallback used: {fallback_used_count}/{n_done} ({fallback_used_rate:.1f}%)"
+            f"  Any fallback used: {fallback_used_count}/{n_done} ({fallback_used_rate:.1f}%)"
+        )
+        print(
+            f"  Finalization fallback used: {finalization_fallback_used_count}/{n_done} "
+            f"({finalization_fallback_used_rate:.1f}%)"
         )
         print(
             f"  Retrieval stagnation triggered: {retrieval_stagnation_count}/{n_done} ({retrieval_stagnation_rate:.1f}%)"
@@ -2799,6 +2827,21 @@ async def main() -> None:
             if args.post_gate_fail_exit_code:
                 exit_code = 2
 
+        if args.fail_on_fallback_use and fallback_used_count > 0:
+            post_run_eval["fallback_policy_failed"] = True
+            post_run_eval["fallback_policy"] = {
+                "fail_on_fallback_use": True,
+                "n_any_fallback_used": fallback_used_count,
+                "n_finalization_fallback_used": finalization_fallback_used_count,
+            }
+            print(
+                "  Fallback Policy: FAIL "
+                f"(any_fallback_used={fallback_used_count}/{n_done})"
+            )
+            run_status = "failed_fallback_policy"
+            run_record = llm_finish_run(run_id=_experiment_run_id, status=run_status)
+            exit_code = 2
+
         print(f"{'='*70}")
         print(f"Results saved to {output_path}")
 
@@ -2898,6 +2941,8 @@ def _save_results(
     completion_rate = (100.0 * n_completed_success / n_done) if n_done else 0.0
     provider_failures = sum(1 for r in results if (r.get("primary_failure_class") or "") == "provider")
     provider_failure_rate = (100.0 * provider_failures / n_done) if n_done else 0.0
+    fallback_used_any = sum(1 for r in results if bool(r.get("fallback_used_any")))
+    fallback_used_any_rate = (100.0 * fallback_used_any / n_done) if n_done else 0.0
     finalization_fallback_used = sum(1 for r in results if bool(r.get("finalization_fallback_used")))
     finalization_fallback_usage_rate = (100.0 * finalization_fallback_used / n_done) if n_done else 0.0
     retrieval_stagnation_count = sum(1 for r in results if bool(r.get("retrieval_stagnation_triggered")))
@@ -2939,6 +2984,8 @@ def _save_results(
             "avg_f1_completed": avg_f1_completed,
             "n_provider_failures": provider_failures,
             "provider_failure_rate": provider_failure_rate,
+            "n_fallback_used_any": fallback_used_any,
+            "fallback_usage_rate_any": fallback_used_any_rate,
             "n_finalization_fallback_used": finalization_fallback_used,
             "finalization_fallback_usage_rate": finalization_fallback_usage_rate,
             "n_retrieval_stagnation": retrieval_stagnation_count,
