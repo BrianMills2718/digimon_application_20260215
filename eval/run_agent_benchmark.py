@@ -1263,6 +1263,9 @@ async def run_agent(
                     model,
                     messages,
                     timeout=effective_turn_timeout,
+                    # Run each Codex turn in a worker process so timeout/cancel
+                    # behavior is bounded even when the SDK becomes unresponsive.
+                    codex_process_isolation=True,
                     working_directory=project_root,
                     approval_policy="never",
                     sandbox_mode="workspace-write",
