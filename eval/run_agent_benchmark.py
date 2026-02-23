@@ -849,7 +849,7 @@ async def _init_direct_tools(dataset_name: str, disable_embedding_tools: bool = 
 def _is_codex_model(model: str) -> bool:
     """Check if model routes through the Codex SDK."""
     lower = model.lower()
-    return lower == "codex" or lower.startswith("codex/")
+    return lower == "codex" or lower.startswith("codex/") or lower.startswith("codex-")
 
 
 def _is_claude_code_model(model: str) -> bool:
@@ -1139,6 +1139,8 @@ async def run_agent(
     retrieval_stagnation_turns: int = 4,
     retrieval_stagnation_action: str = "force_final",
     suppress_control_loop_calls: bool = True,
+    force_submit_retry_on_max_tool_calls: bool = True,
+    accept_forced_answer_on_max_tool_calls: bool = True,
     lane_policy: str = "pure",
     trace_id: str = "",
     max_message_chars: int = 180_000,
@@ -1163,6 +1165,8 @@ async def run_agent(
         trace_id: Trace ID for correlating LLM calls
         retrieval_stagnation_action: 'force_final' (default) or 'observe'
         suppress_control_loop_calls: Suppress repeated invalid submit/todo control loops.
+        force_submit_retry_on_max_tool_calls: Count forced submit retry attempt after budget exhaustion.
+        accept_forced_answer_on_max_tool_calls: Accept forced-final plain answer when submit validation cannot be satisfied at budget exhaustion.
 
     Returns dict with: answer, tool_calls, usage, cost, latency_s, error
     """
@@ -1220,9 +1224,13 @@ async def run_agent(
                     sandbox_mode="workspace-write",
                     model_reasoning_effort=reasoning_effort,
                     mcp_servers=DIGIMON_MCP_SERVERS,
+                    # Benchmark tool calls are read-only/idempotent; allow retries.
+                    agent_retry_safe=True,
+                    num_retries=num_retries,
                     task=task,
                     trace_id=trace_id,
                     max_budget=0,
+                    **({"fallback_models": fallback_models} if fallback_models else {}),
                 )
             if _is_claude_code_model(model):
                 # Claude Agent SDK path
@@ -1261,6 +1269,8 @@ async def run_agent(
                     retrieval_stagnation_turns=retrieval_stagnation_turns,
                     retrieval_stagnation_action=retrieval_stagnation_action,
                     suppress_control_loop_calls=suppress_control_loop_calls,
+                    force_submit_retry_on_max_tool_calls=force_submit_retry_on_max_tool_calls,
+                    accept_forced_answer_on_max_tool_calls=accept_forced_answer_on_max_tool_calls,
                     **({"temperature": temperature} if temperature is not None else {}),
                     **({"fallback_models": fallback_models} if fallback_models else {}),
                     **({"finalization_fallback_models": finalization_fallback_models} if finalization_fallback_models else {}),
@@ -1287,6 +1297,8 @@ async def run_agent(
                 retrieval_stagnation_turns=retrieval_stagnation_turns,
                 retrieval_stagnation_action=retrieval_stagnation_action,
                 suppress_control_loop_calls=suppress_control_loop_calls,
+                force_submit_retry_on_max_tool_calls=force_submit_retry_on_max_tool_calls,
+                accept_forced_answer_on_max_tool_calls=accept_forced_answer_on_max_tool_calls,
                 **({"temperature": temperature} if temperature is not None else {}),
                 **({"fallback_models": fallback_models} if fallback_models else {}),
                 **({"finalization_fallback_models": finalization_fallback_models} if finalization_fallback_models else {}),
@@ -1362,6 +1374,8 @@ async def run_agent(
         submit_answer_attempted = None
         submit_answer_succeeded = None
         required_submit_missing = None
+        submit_forced_retry_on_budget_exhaustion = None
+        submit_forced_accept_on_budget_exhaustion = None
         if isinstance(result.raw_response, dict):
             conversation_trace = result.raw_response.get("conversation_trace")
         elif isinstance(result.raw_response, MCPAgentResult):
@@ -1442,6 +1456,12 @@ async def run_agent(
             submit_answer_attempted = result.raw_response.metadata.get("submit_answer_attempted")
             submit_answer_succeeded = result.raw_response.metadata.get("submit_answer_succeeded")
             required_submit_missing = result.raw_response.metadata.get("required_submit_missing")
+            submit_forced_retry_on_budget_exhaustion = result.raw_response.metadata.get(
+                "submit_forced_retry_on_budget_exhaustion"
+            )
+            submit_forced_accept_on_budget_exhaustion = result.raw_response.metadata.get(
+                "submit_forced_accept_on_budget_exhaustion"
+            )
 
         # Extract answer from the most recent successful submit_answer call.
         # Ignore rejected/errored submits so the agent can keep searching.
@@ -1535,6 +1555,8 @@ async def run_agent(
             "submit_answer_attempted": submit_answer_attempted,
             "submit_answer_succeeded": submit_answer_succeeded,
             "required_submit_missing": required_submit_missing,
+            "submit_forced_retry_on_budget_exhaustion": submit_forced_retry_on_budget_exhaustion,
+            "submit_forced_accept_on_budget_exhaustion": submit_forced_accept_on_budget_exhaustion,
             "tool_arg_coercions": tool_arg_coercions,
             "tool_arg_coercion_calls": tool_arg_coercion_calls,
             "tool_arg_validation_rejections": tool_arg_validation_rejections,
@@ -1653,6 +1675,24 @@ async def main() -> None:
         help=(
             "Suppress repeated invalid submit/todo control calls until evidence or TODO state changes "
             "(default: true)."
+        ),
+    )
+    parser.add_argument(
+        "--force-submit-retry-on-max-tool-calls",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "When tool budget is exhausted, count a forced submit retry attempt for observability "
+            "(default: true)."
+        ),
+    )
+    parser.add_argument(
+        "--accept-forced-answer-on-max-tool-calls",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "When tool budget is exhausted, accept forced-final plain answer even if submit "
+            "validation cannot be satisfied (default: true)."
         ),
     )
     parser.add_argument("--temperature", type=float, default=0.0,
@@ -1956,6 +1996,8 @@ async def main() -> None:
     run_provenance["retrieval_stagnation_turns"] = retrieval_stagnation_turns
     run_provenance["retrieval_stagnation_action"] = retrieval_stagnation_action
     run_provenance["suppress_control_loop_calls"] = bool(args.suppress_control_loop_calls)
+    run_provenance["force_submit_retry_on_max_tool_calls"] = bool(args.force_submit_retry_on_max_tool_calls)
+    run_provenance["accept_forced_answer_on_max_tool_calls"] = bool(args.accept_forced_answer_on_max_tool_calls)
     run_provenance["question_timeout"] = args.timeout
     run_provenance["question_timeout_enabled"] = bool(args.timeout > 0)
     run_provenance["turn_timeout"] = args.turn_timeout
@@ -2012,6 +2054,11 @@ async def main() -> None:
         f"{retrieval_stagnation_turns} consecutive evidence turns -> {retrieval_stagnation_action}"
     )
     print(f"Suppress control-loop calls: {bool(args.suppress_control_loop_calls)}")
+    print(
+        "Budget-exhaustion submit policy: "
+        f"retry={bool(args.force_submit_retry_on_max_tool_calls)}, "
+        f"accept_forced_answer={bool(args.accept_forced_answer_on_max_tool_calls)}"
+    )
     if effective_embed_model:
         print(f"Embedding model override: {effective_embed_model}")
     print(f"Post-run deterministic checks: {args.post_det_checks}")
@@ -2074,6 +2121,8 @@ async def main() -> None:
             "retrieval_stagnation_turns": retrieval_stagnation_turns,
             "retrieval_stagnation_action": retrieval_stagnation_action,
             "suppress_control_loop_calls": bool(args.suppress_control_loop_calls),
+            "force_submit_retry_on_max_tool_calls": bool(args.force_submit_retry_on_max_tool_calls),
+            "accept_forced_answer_on_max_tool_calls": bool(args.accept_forced_answer_on_max_tool_calls),
             "temperature": args.temperature,
             "heartbeat_secs": args.heartbeat_secs,
             "embed_model": (args.embed_model or "").strip() or None,
@@ -2208,6 +2257,8 @@ async def main() -> None:
             "submit_answer_attempted": agent_result.get("submit_answer_attempted"),
             "submit_answer_succeeded": agent_result.get("submit_answer_succeeded"),
             "required_submit_missing": agent_result.get("required_submit_missing"),
+            "submit_forced_retry_on_budget_exhaustion": agent_result.get("submit_forced_retry_on_budget_exhaustion"),
+            "submit_forced_accept_on_budget_exhaustion": agent_result.get("submit_forced_accept_on_budget_exhaustion"),
             "composability": composability,
             "tool_calls": tool_names,
             "tool_details": tool_calls,
@@ -2404,6 +2455,8 @@ async def main() -> None:
                     retrieval_stagnation_turns=retrieval_stagnation_turns,
                     retrieval_stagnation_action=retrieval_stagnation_action,
                     suppress_control_loop_calls=bool(args.suppress_control_loop_calls),
+                    force_submit_retry_on_max_tool_calls=bool(args.force_submit_retry_on_max_tool_calls),
+                    accept_forced_answer_on_max_tool_calls=bool(args.accept_forced_answer_on_max_tool_calls),
                     lane_policy=args.lane_policy,
                     trace_id=trace_id,
                 )
