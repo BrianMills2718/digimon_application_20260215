@@ -178,10 +178,6 @@ _BENCHMARK_TOOL_NAME_CANDIDATES = [
     "subgraph_steiner_tree",
     "meta_pcst_optimize",
     "semantic_plan",
-    "todo_create",
-    "todo_update",
-    "todo_list",
-    "todo_reset",
     "bridge_disambiguate",
     "submit_answer",
 ]
@@ -299,10 +295,6 @@ _BENCHMARK_TOOL_CONTRACTS: dict[str, dict[str, object]] = {
     # Control/planning tools intentionally bypass artifact requirements.
     "list_available_resources": {"is_control": True},
     "semantic_plan": {"is_control": True},
-    "todo_create": {"is_control": True},
-    "todo_update": {"is_control": True},
-    "todo_list": {"is_control": True},
-    "todo_reset": {"is_control": True},
     "submit_answer": {"is_control": True},
 }
 _CONTROL_TOOL_NAMES: set[str] = {
@@ -769,10 +761,6 @@ async def _init_direct_tools(dataset_name: str, disable_embedding_tools: bool = 
     # Benchmark planning/disambiguation controls (if available in server mode)
     for maybe_tool in (
         "semantic_plan",
-        "todo_create",
-        "todo_update",
-        "todo_list",
-        "todo_reset",
         "bridge_disambiguate",
     ):
         if hasattr(dms, maybe_tool):
@@ -1325,6 +1313,8 @@ async def run_agent(
         run_config_hash = None
         lane_closure_analysis = None
         tool_disclosure_repair_suggestions = None
+        deficit_no_progress_streak_max = None
+        deficit_no_progress_nudges = None
         finalization_fallback_used = None
         finalization_fallback_succeeded = None
         finalization_events = None
@@ -1365,6 +1355,12 @@ async def run_agent(
             lane_closure_analysis = result.raw_response.metadata.get("lane_closure_analysis")
             tool_disclosure_repair_suggestions = result.raw_response.metadata.get(
                 "tool_disclosure_repair_suggestions"
+            )
+            deficit_no_progress_streak_max = result.raw_response.metadata.get(
+                "deficit_no_progress_streak_max"
+            )
+            deficit_no_progress_nudges = result.raw_response.metadata.get(
+                "deficit_no_progress_nudges"
             )
             finalization_fallback_used = result.raw_response.metadata.get("finalization_fallback_used")
             finalization_fallback_succeeded = result.raw_response.metadata.get(
@@ -1450,6 +1446,8 @@ async def run_agent(
             "lane_closure_analysis": lane_closure_analysis,
             "lane_policy": lane_policy,
             "tool_disclosure_repair_suggestions": tool_disclosure_repair_suggestions,
+            "deficit_no_progress_streak_max": deficit_no_progress_streak_max,
+            "deficit_no_progress_nudges": deficit_no_progress_nudges,
             "finalization_fallback_used": finalization_fallback_used,
             "finalization_fallback_succeeded": finalization_fallback_succeeded,
             "finalization_events": finalization_events,
@@ -1957,7 +1955,7 @@ async def main() -> None:
             f" ({gate_policy_label})"
         )
     if not _is_agent_sdk_model(args.model):
-        print(f"Tool-call budget (retrieval only; todo_* + submit_answer exempt): {args.max_tool_calls}")
+        print(f"Tool-call budget (retrieval only; submit_answer exempt): {args.max_tool_calls}")
     print(f"Progress heartbeat: {'off' if args.heartbeat_secs <= 0 else f'every {args.heartbeat_secs}s'}")
 
     parallel = max(1, args.parallel)
