@@ -1349,6 +1349,11 @@ async def run_agent(
         forced_final_circuit_breaker_opened = None
         retrieval_stagnation_triggered = None
         retrieval_stagnation_turn = None
+        requires_submit_answer = None
+        submit_answer_call_count = None
+        submit_answer_attempted = None
+        submit_answer_succeeded = None
+        required_submit_missing = None
         if isinstance(result.raw_response, dict):
             conversation_trace = result.raw_response.get("conversation_trace")
         elif isinstance(result.raw_response, MCPAgentResult):
@@ -1402,6 +1407,11 @@ async def run_agent(
                 "retrieval_stagnation_triggered"
             )
             retrieval_stagnation_turn = result.raw_response.metadata.get("retrieval_stagnation_turn")
+            requires_submit_answer = result.raw_response.metadata.get("requires_submit_answer")
+            submit_answer_call_count = result.raw_response.metadata.get("submit_answer_call_count")
+            submit_answer_attempted = result.raw_response.metadata.get("submit_answer_attempted")
+            submit_answer_succeeded = result.raw_response.metadata.get("submit_answer_succeeded")
+            required_submit_missing = result.raw_response.metadata.get("required_submit_missing")
 
         # Extract answer from the most recent successful submit_answer call.
         # Ignore rejected/errored submits so the agent can keep searching.
@@ -1482,6 +1492,11 @@ async def run_agent(
             "forced_final_circuit_breaker_opened": forced_final_circuit_breaker_opened,
             "retrieval_stagnation_triggered": retrieval_stagnation_triggered,
             "retrieval_stagnation_turn": retrieval_stagnation_turn,
+            "requires_submit_answer": requires_submit_answer,
+            "submit_answer_call_count": submit_answer_call_count,
+            "submit_answer_attempted": submit_answer_attempted,
+            "submit_answer_succeeded": submit_answer_succeeded,
+            "required_submit_missing": required_submit_missing,
             "tool_arg_coercions": tool_arg_coercions,
             "tool_arg_coercion_calls": tool_arg_coercion_calls,
             "tool_arg_validation_rejections": tool_arg_validation_rejections,
@@ -2142,6 +2157,11 @@ async def main() -> None:
             "finalization_events": agent_result.get("finalization_events"),
             "retrieval_stagnation_triggered": agent_result.get("retrieval_stagnation_triggered"),
             "retrieval_stagnation_turn": agent_result.get("retrieval_stagnation_turn"),
+            "requires_submit_answer": agent_result.get("requires_submit_answer"),
+            "submit_answer_call_count": agent_result.get("submit_answer_call_count"),
+            "submit_answer_attempted": agent_result.get("submit_answer_attempted"),
+            "submit_answer_succeeded": agent_result.get("submit_answer_succeeded"),
+            "required_submit_missing": agent_result.get("required_submit_missing"),
             "composability": composability,
             "tool_calls": tool_names,
             "tool_details": tool_calls,

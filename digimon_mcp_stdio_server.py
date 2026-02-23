@@ -568,6 +568,8 @@ def _normalize_todo_operation(operation: str, task: str = "") -> str:
         "intersection": "intersection",
         "compare": "compare",
         "temporal": "temporal",
+        "disambiguation": "compare",
+        "disambiguate": "compare",
         "rank": "compare",
         "ranking": "compare",
     }
@@ -586,6 +588,31 @@ def _normalize_todo_operation(operation: str, task: str = "") -> str:
     if any(x in task_l for x in ("north of", "south of", "east of", "west of", "headquarters of", "located in")):
         return "relation"
     return "lookup"
+
+
+def _is_auxiliary_todo_task(task: str, operation: str = "", atom_id: str = "") -> bool:
+    """Heuristic: identify disambiguation/branch helper TODOs not tied to plan atoms."""
+    task_l = (task or "").strip().lower()
+    op_l = (operation or "").strip().lower()
+    atom_l = (atom_id or "").strip().lower()
+    if atom_l and re.fullmatch(r"a\d+", atom_l) is None:
+        return True
+    if any(x in op_l for x in ("disambigu", "branch", "verify")):
+        return True
+    if any(x in atom_l for x in ("_disamb", "disamb", "amb")):
+        return True
+    return any(
+        kw in task_l
+        for kw in (
+            "resolve ambiguity",
+            "ambiguity",
+            "disambigu",
+            "alternative parse",
+            "alternative hypothesis",
+            "verify pivot",
+            "candidate",
+        )
+    )
 
 
 def _semantic_plan_atoms() -> list[dict[str, Any]]:
@@ -2945,14 +2972,15 @@ async def relationship_onehop(entity_ids: list[str], graph_reference_id: str) ->
 
 @mcp.tool()
 async def relationship_score_aggregator(
-    entity_scores: dict, graph_reference_id: str,
+    graph_reference_id: str,
+    entity_scores: dict | None = None,
     top_k: int = 10, aggregation_method: str = "sum"
 ) -> str:
     """Aggregate entity scores (e.g. from PPR) onto relationships and return top-k.
 
     Args:
-        entity_scores: Dict mapping entity_id to score
         graph_reference_id: ID of the graph
+        entity_scores: Optional dict mapping entity_id to score (defaults to empty dict)
         top_k: Number of top relationships to return
         aggregation_method: How to combine scores: 'sum', 'average', or 'max'
 
@@ -2964,7 +2992,7 @@ async def relationship_score_aggregator(
     from Core.AgentSchema.tool_contracts import RelationshipScoreAggregatorInputs
 
     inputs = RelationshipScoreAggregatorInputs(
-        entity_scores=entity_scores,
+        entity_scores=entity_scores or {},
         graph_reference_id=graph_reference_id,
         top_k_relationships=top_k,
         aggregation_method=aggregation_method,
@@ -6226,39 +6254,57 @@ if BENCHMARK_MODE:
         atom_id_norm = (atom_id or "").strip()
         semantic_atoms = _semantic_plan_atoms()
         selected_atom: dict[str, Any] | None = None
+        is_auxiliary = _is_auxiliary_todo_task(
+            task=task_text,
+            operation=operation,
+            atom_id=atom_id_norm,
+        )
         if semantic_atoms:
             if atom_id_norm:
                 selected_atom = _semantic_plan_atom_by_id(atom_id_norm)
                 if selected_atom is None:
-                    known_atoms = [a.get("atom_id") for a in semantic_atoms if a.get("atom_id")]
-                    raise ValueError(
-                        f"Unknown atom_id: {atom_id_norm!r}. Known atom_ids: {known_atoms}."
-                    )
+                    if is_auxiliary:
+                        logger.info(
+                            "todo_create: treating unknown atom_id=%r as auxiliary task (semantic plan atom IDs=%s)",
+                            atom_id_norm,
+                            [a.get("atom_id") for a in semantic_atoms if a.get("atom_id")][:12],
+                        )
+                        atom_id_norm = ""
+                    else:
+                        known_atoms = [a.get("atom_id") for a in semantic_atoms if a.get("atom_id")]
+                        raise ValueError(
+                            f"Unknown atom_id: {atom_id_norm!r}. Known atom_ids: {known_atoms}."
+                        )
                 if atom_id_norm in _atom_todo_map:
                     raise ValueError(
                         f"atom_id {atom_id_norm!r} already mapped to {_atom_todo_map[atom_id_norm]!r}. "
                         "Reuse that TODO instead of creating a duplicate."
                     )
             else:
-                auto_atom, auto_score = _auto_match_semantic_atom(
-                    task_text=task_text,
-                    operation_norm=operation_norm,
-                    answer_kind_norm=answer_kind_norm,
-                    blocked_todo_ids=blocked_norm,
-                )
-                if auto_atom is None or auto_score < 0.55:
-                    unmapped = [
-                        {"atom_id": a.get("atom_id"), "sub_question": a.get("sub_question")}
-                        for a in semantic_atoms
-                        if (a.get("atom_id") or "").strip() not in _atom_todo_map
-                    ]
-                    raise ValueError(
-                        "todo_create could not reliably map this task to semantic_plan atoms. "
-                        "Provide atom_id explicitly from semantic_plan. "
-                        f"Unmapped atoms: {unmapped[:6]}"
+                if is_auxiliary:
+                    # Auxiliary/disambiguation helper TODOs are intentionally not
+                    # forced onto semantic-plan atoms.
+                    selected_atom = None
+                else:
+                    auto_atom, auto_score = _auto_match_semantic_atom(
+                        task_text=task_text,
+                        operation_norm=operation_norm,
+                        answer_kind_norm=answer_kind_norm,
+                        blocked_todo_ids=blocked_norm,
                     )
-                selected_atom = auto_atom
-                atom_id_norm = (selected_atom.get("atom_id") or "").strip()
+                    if auto_atom is None or auto_score < 0.55:
+                        unmapped = [
+                            {"atom_id": a.get("atom_id"), "sub_question": a.get("sub_question")}
+                            for a in semantic_atoms
+                            if (a.get("atom_id") or "").strip() not in _atom_todo_map
+                        ]
+                        raise ValueError(
+                            "todo_create could not reliably map this task to semantic_plan atoms. "
+                            "Provide atom_id explicitly from semantic_plan. "
+                            f"Unmapped atoms: {unmapped[:6]}"
+                        )
+                    selected_atom = auto_atom
+                    atom_id_norm = (selected_atom.get("atom_id") or "").strip()
 
         if selected_atom is not None:
             expected_op = _normalize_todo_operation(
