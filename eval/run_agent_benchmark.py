@@ -236,11 +236,11 @@ _BENCHMARK_TOOL_CONTRACTS: dict[str, dict[str, object]] = {
     },
     "chunk_from_relationships": {
         "requires_all": ["RELATIONSHIP_SET"],
-        "produces": ["CHUNK_SET"],
+        "produces": [{"kind": "CHUNK_SET", "ref_type": "id"}],
     },
     "chunk_occurrence": {
         "requires_all": [{"kind": "ENTITY_SET", "ref_type": "id"}],
-        "produces": ["CHUNK_SET"],
+        "produces": [{"kind": "CHUNK_SET", "ref_type": "id"}],
     },
     # Explicit wrappers only in benchmark mode (no multi-mode ambiguity).
     "chunk_get_text_by_chunk_ids": {
@@ -264,15 +264,21 @@ _BENCHMARK_TOOL_CONTRACTS: dict[str, dict[str, object]] = {
     },
     "chunk_text_search": {
         "requires_all": ["QUERY_TEXT"],
-        "produces": ["CHUNK_SET"],
+        "produces": [
+            {"kind": "CHUNK_SET", "ref_type": "id"},
+            {"kind": "CHUNK_SET", "ref_type": "fulltext"},
+        ],
     },
     "chunk_vdb_search": {
         "requires_any": ["QUERY_TEXT", "ENTITY_SET", "CHUNK_SET"],
-        "produces": ["CHUNK_SET"],
+        "produces": [
+            {"kind": "CHUNK_SET", "ref_type": "id"},
+            {"kind": "CHUNK_SET", "ref_type": "fulltext"},
+        ],
     },
     "chunk_aggregator": {
         "requires_any": ["ENTITY_SET", "RELATIONSHIP_SET"],
-        "produces": ["CHUNK_SET"],
+        "produces": [{"kind": "CHUNK_SET", "ref_type": "id"}],
     },
     "subgraph_khop_paths": {
         "requires_all": [{"kind": "ENTITY_SET", "ref_type": "id"}],
@@ -494,6 +500,31 @@ def _classify_tool_error(error_text: str) -> str:
     if "timeout" in msg:
         return "tool_timeout"
     return "tool_runtime_error"
+
+
+def _classify_run_error(error_text: str) -> tuple[str | None, str | None, dict[str, int]]:
+    """Classify top-level run failures for summary attribution."""
+    msg = (error_text or "").lower()
+    if not msg:
+        return None, None, {}
+
+    if (
+        "insufficient credits" in msg
+        or "\"code\":402" in msg
+        or "openrouterexception" in msg and "402" in msg
+    ):
+        code = "PROVIDER_CREDITS_EXHAUSTED"
+        return "provider", code, {code: 1}
+
+    if "provider_empty_candidates" in msg or "empty content from llm" in msg:
+        code = "PROVIDER_EMPTY_CANDIDATES"
+        return "provider", code, {code: 1}
+
+    if ("429" in msg) and ("rate limit" in msg or "too many requests" in msg):
+        code = "PROVIDER_RATE_LIMIT"
+        return "provider", code, {code: 1}
+
+    return None, None, {}
 
 
 def _build_composability_diagnostics(
@@ -1015,12 +1046,66 @@ def _resolve_finalization_fallback_models_for_benchmark(
     return deduped or None
 
 
+def _extract_answer_from_freeform_content(content: str) -> str | None:
+    """Extract an answer span from freeform final text when submit_answer was not accepted."""
+    text = (content or "").strip()
+    if not text:
+        return None
+
+    def _extract_from_json_blob(blob: str) -> str | None:
+        try:
+            payload = json.loads(blob)
+        except Exception:
+            return None
+        if isinstance(payload, dict):
+            answer = payload.get("answer")
+            if isinstance(answer, str) and answer.strip():
+                return answer.strip()
+        return None
+
+    # Try full text and fenced JSON blocks first.
+    direct = _extract_from_json_blob(text)
+    if direct:
+        return direct
+
+    for fenced in re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.IGNORECASE | re.DOTALL):
+        extracted = _extract_from_json_blob(fenced.strip())
+        if extracted:
+            return extracted
+
+    # Try submit_answer(...) plaintext patterns.
+    patterns = [
+        r'answer\s*=\s*"([^"\n]{1,300})"',
+        r"answer\s*=\s*'([^'\n]{1,300})'",
+        r'"answer"\s*:\s*"([^"\n]{1,300})"',
+        r"'answer'\s*:\s*'([^'\n]{1,300})'",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            candidate = match.group(1).strip()
+            if candidate:
+                return candidate
+
+    # If the model answered in a sentence but contains a single explicit full date,
+    # extract the span to avoid formatting-only score misses.
+    month_date_matches = re.findall(
+        r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if len(month_date_matches) == 1:
+        return month_date_matches[0].strip()
+
+    return None
+
+
 # --- Run agent ---
 
 async def run_agent(
     question: str,
     dataset_name: str,
-    timeout: int = 120,
+    timeout: int = 0,
     turn_timeout: int | None = None,
     model: str = "codex",
     reasoning_effort: str = "high",
@@ -1037,6 +1122,8 @@ async def run_agent(
     forced_final_max_attempts: int = 1,
     forced_final_circuit_breaker_threshold: int = 2,
     retrieval_stagnation_turns: int = 4,
+    retrieval_stagnation_action: str = "force_final",
+    suppress_control_loop_calls: bool = True,
     lane_policy: str = "pure",
     trace_id: str = "",
     max_message_chars: int = 180_000,
@@ -1050,15 +1137,17 @@ async def run_agent(
     Args:
         mcp_session_pool: Optional MCPSessionPool for reusing MCP connections
             across questions (non-Codex models only).
-        timeout: Hard timeout per question (seconds).
+        timeout: Hard timeout per question (seconds). <=0 disables this watchdog.
         turn_timeout: Per-LLM-call timeout (seconds). If omitted, defaults to
-            min(timeout, 60).
+            60 when hard timeout is disabled, otherwise min(timeout, 60).
         max_tool_calls: Tool-call budget per question for non-agent tool loops.
         mode: Prompt mode (canonical hybrid; legacy aliases are mapped).
         backend: 'mcp' (default) or 'direct' (in-process Python tools)
         python_tools: List of Python callables for direct backend
         lane_policy: 'pure' (strict attribution) or 'reliability' (finalization rescue allowed)
         trace_id: Trace ID for correlating LLM calls
+        retrieval_stagnation_action: 'force_final' (default) or 'observe'
+        suppress_control_loop_calls: Suppress repeated invalid submit/todo control loops.
 
     Returns dict with: answer, tool_calls, usage, cost, latency_s, error
     """
@@ -1068,7 +1157,9 @@ async def run_agent(
     project_root = str(Path(__file__).parent.parent)
     messages = build_messages(question, dataset_name, mode=mode)
 
-    effective_turn_timeout = max(1, int(turn_timeout if turn_timeout is not None else min(timeout, 60)))
+    question_timeout = max(0, int(timeout))
+    default_turn_timeout = 60 if question_timeout <= 0 else min(question_timeout, 60)
+    effective_turn_timeout = max(1, int(turn_timeout if turn_timeout is not None else default_turn_timeout))
     t0 = time.monotonic()
     try:
         async def _invoke_agent() -> object:
@@ -1097,6 +1188,8 @@ async def run_agent(
                     forced_final_max_attempts=forced_final_max_attempts,
                     forced_final_circuit_breaker_threshold=forced_final_circuit_breaker_threshold,
                     retrieval_stagnation_turns=retrieval_stagnation_turns,
+                    retrieval_stagnation_action=retrieval_stagnation_action,
+                    suppress_control_loop_calls=suppress_control_loop_calls,
                     **({"temperature": temperature} if temperature is not None else {}),
                     **({"fallback_models": fallback_models} if fallback_models else {}),
                     **({"finalization_fallback_models": finalization_fallback_models} if finalization_fallback_models else {}),
@@ -1151,6 +1244,8 @@ async def run_agent(
                     forced_final_max_attempts=forced_final_max_attempts,
                     forced_final_circuit_breaker_threshold=forced_final_circuit_breaker_threshold,
                     retrieval_stagnation_turns=retrieval_stagnation_turns,
+                    retrieval_stagnation_action=retrieval_stagnation_action,
+                    suppress_control_loop_calls=suppress_control_loop_calls,
                     **({"temperature": temperature} if temperature is not None else {}),
                     **({"fallback_models": fallback_models} if fallback_models else {}),
                     **({"finalization_fallback_models": finalization_fallback_models} if finalization_fallback_models else {}),
@@ -1175,13 +1270,18 @@ async def run_agent(
                 forced_final_max_attempts=forced_final_max_attempts,
                 forced_final_circuit_breaker_threshold=forced_final_circuit_breaker_threshold,
                 retrieval_stagnation_turns=retrieval_stagnation_turns,
+                retrieval_stagnation_action=retrieval_stagnation_action,
+                suppress_control_loop_calls=suppress_control_loop_calls,
                 **({"temperature": temperature} if temperature is not None else {}),
                 **({"fallback_models": fallback_models} if fallback_models else {}),
                 **({"finalization_fallback_models": finalization_fallback_models} if finalization_fallback_models else {}),
             )
 
-        # Enforce hard per-question watchdog; this prevents long silent churn.
-        result = await asyncio.wait_for(_invoke_agent(), timeout=timeout)
+        # Optional hard per-question watchdog.
+        if question_timeout > 0:
+            result = await asyncio.wait_for(_invoke_agent(), timeout=question_timeout)
+        else:
+            result = await _invoke_agent()
 
         elapsed = time.monotonic() - t0
 
@@ -1219,6 +1319,7 @@ async def run_agent(
         failure_event_code_counts = None
         no_legal_noncontrol_turns = None
         retrieval_no_hits_count = None
+        submit_validation_reason_counts = None
         hard_bindings_hash = None
         full_bindings_hash = None
         run_config_hash = None
@@ -1255,6 +1356,9 @@ async def run_agent(
             failure_event_code_counts = result.raw_response.metadata.get("failure_event_code_counts")
             no_legal_noncontrol_turns = result.raw_response.metadata.get("no_legal_noncontrol_turns")
             retrieval_no_hits_count = result.raw_response.metadata.get("retrieval_no_hits_count")
+            submit_validation_reason_counts = result.raw_response.metadata.get(
+                "submit_validation_reason_counts"
+            )
             hard_bindings_hash = result.raw_response.metadata.get("hard_bindings_hash")
             full_bindings_hash = result.raw_response.metadata.get("full_bindings_hash")
             run_config_hash = result.raw_response.metadata.get("run_config_hash")
@@ -1306,7 +1410,9 @@ async def run_agent(
 
         # Fallback: extract from text if no submit_answer call
         if not answer:
-            answer = result.content.strip()
+            raw_fallback = result.content.strip()
+            extracted = _extract_answer_from_freeform_content(raw_fallback)
+            answer = extracted or raw_fallback
             if _is_agent_sdk_model(model) and "\n" in answer:
                 lines = [l.strip() for l in answer.split("\n") if l.strip()]
                 answer = lines[-1] if lines else answer
@@ -1337,6 +1443,7 @@ async def run_agent(
             "failure_event_code_counts": failure_event_code_counts,
             "no_legal_noncontrol_turns": no_legal_noncontrol_turns,
             "retrieval_no_hits_count": retrieval_no_hits_count,
+            "submit_validation_reason_counts": submit_validation_reason_counts,
             "hard_bindings_hash": hard_bindings_hash,
             "full_bindings_hash": full_bindings_hash,
             "run_config_hash": run_config_hash,
@@ -1372,18 +1479,27 @@ async def run_agent(
             "latency_s": round(elapsed, 2),
             "error": (
                 f"TIMEOUT after {round(elapsed, 2)}s "
-                f"(question_timeout={timeout}s, turn_timeout={effective_turn_timeout}s)"
+                f"(question_timeout={'off' if question_timeout <= 0 else f'{question_timeout}s'}, "
+                f"turn_timeout={effective_turn_timeout}s)"
             ),
         }
     except Exception as e:
         elapsed = time.monotonic() - t0
+        error_text = str(e)
+        primary_failure_class, terminal_event_code, event_counts = _classify_run_error(error_text)
+        failure_event_codes = [terminal_event_code] if terminal_event_code else []
         return {
             "answer": "",
             "tool_calls": [],
             "usage": {},
             "cost": 0.0,
             "latency_s": round(elapsed, 2),
-            "error": str(e),
+            "error": error_text,
+            "primary_failure_class": primary_failure_class or "none",
+            "secondary_failure_classes": [],
+            "first_terminal_failure_event_code": terminal_event_code,
+            "failure_event_codes": failure_event_codes,
+            "failure_event_code_counts": event_counts,
         }
 
 
@@ -1392,7 +1508,12 @@ async def main() -> None:
     parser.add_argument("--dataset", required=True, help="Dataset name (e.g. HotpotQAsmallest)")
     parser.add_argument("--start", type=int, default=0, help="Start from question index (0-based)")
     parser.add_argument("--num", type=int, default=None, help="Number of questions to run")
-    parser.add_argument("--timeout", type=int, default=120, help="Hard timeout per question in seconds")
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=0,
+        help="Hard timeout per question in seconds (0 disables; default: 0).",
+    )
     parser.add_argument("--turn-timeout", type=int, default=60,
                         help="Per-LLM-call timeout in seconds within a question (default: 60).")
     parser.add_argument("--resume", action="store_true", help="Resume from previous run")
@@ -1437,9 +1558,25 @@ async def main() -> None:
     parser.add_argument("--forced-final-circuit-breaker-threshold", type=int, default=2,
                         help="Open forced-final circuit breaker after this many consecutive forced-final failures.")
     parser.add_argument("--retrieval-stagnation-turns", type=int, default=4,
-                        help="Consecutive evidence turns with no new evidence before forcing final answer.")
+                        help="Consecutive evidence turns with no new evidence before stagnation action triggers.")
+    parser.add_argument(
+        "--stagnation-action",
+        type=str,
+        default="force_final",
+        choices=["force_final", "observe"],
+        help="When retrieval stagnates: force final answer or only log/continue (default: force_final).",
+    )
     parser.add_argument("--num-retries", type=int, default=2,
                         help="Number of retries per LLM call with exponential backoff (default: 2). Set higher for flaky models.")
+    parser.add_argument(
+        "--suppress-control-loop-calls",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Suppress repeated invalid submit/todo control calls until evidence or TODO state changes "
+            "(default: true)."
+        ),
+    )
     parser.add_argument("--temperature", type=float, default=0.0,
                         help="Sampling temperature for non-SDK tool-calling runs (default: 0.0).")
     parser.add_argument("--embed-model", type=str, default="",
@@ -1713,14 +1850,37 @@ async def main() -> None:
             forced_final_max_attempts = 1 + len(finalization_fallback_models)
         else:
             forced_final_max_attempts = 1
-    forced_final_circuit_breaker_threshold = max(1, int(args.forced_final_circuit_breaker_threshold))
+    forced_final_circuit_breaker_threshold_requested = max(
+        1,
+        int(args.forced_final_circuit_breaker_threshold),
+    )
+    forced_final_circuit_breaker_threshold = min(
+        forced_final_circuit_breaker_threshold_requested,
+        forced_final_max_attempts,
+    )
+    if forced_final_circuit_breaker_threshold != forced_final_circuit_breaker_threshold_requested:
+        print(
+            "Adjusting forced-final circuit breaker threshold "
+            f"{forced_final_circuit_breaker_threshold_requested} -> "
+            f"{forced_final_circuit_breaker_threshold} to keep breaker effective.",
+            file=sys.stderr,
+        )
     retrieval_stagnation_turns = max(2, int(args.retrieval_stagnation_turns))
+    retrieval_stagnation_action = str(args.stagnation_action).strip().lower()
     run_provenance["lane_policy"] = args.lane_policy
     run_provenance["fallback_models"] = fallback_models
     run_provenance["finalization_fallback_models"] = finalization_fallback_models
     run_provenance["forced_final_max_attempts"] = forced_final_max_attempts
+    run_provenance["forced_final_circuit_breaker_threshold_requested"] = (
+        forced_final_circuit_breaker_threshold_requested
+    )
     run_provenance["forced_final_circuit_breaker_threshold"] = forced_final_circuit_breaker_threshold
     run_provenance["retrieval_stagnation_turns"] = retrieval_stagnation_turns
+    run_provenance["retrieval_stagnation_action"] = retrieval_stagnation_action
+    run_provenance["suppress_control_loop_calls"] = bool(args.suppress_control_loop_calls)
+    run_provenance["question_timeout"] = args.timeout
+    run_provenance["question_timeout_enabled"] = bool(args.timeout > 0)
+    run_provenance["turn_timeout"] = args.turn_timeout
     total_llm_em: int | None = None
     n_done = len(results)
     feature_profile = {
@@ -1752,9 +1912,10 @@ async def main() -> None:
         backend = "Claude Agent SDK"
     else:
         backend = "MCP agent loop"
+    question_timeout_label = "off" if args.timeout <= 0 else f"{args.timeout}s"
     print(
         f"Model: {args.model} ({backend}, "
-        f"question_timeout={args.timeout}s, turn_timeout={args.turn_timeout}s)"
+        f"question_timeout={question_timeout_label}, turn_timeout={args.turn_timeout}s)"
     )
     if requested_model and requested_model != args.model:
         print(f"Requested model: {requested_model}")
@@ -1768,7 +1929,11 @@ async def main() -> None:
         f"{finalization_fallback_models if finalization_fallback_models else 'none'} "
         f"(max_attempts={forced_final_max_attempts}, breaker={forced_final_circuit_breaker_threshold})"
     )
-    print(f"Retrieval stagnation fuse: {retrieval_stagnation_turns} consecutive evidence turns")
+    print(
+        "Retrieval stagnation policy: "
+        f"{retrieval_stagnation_turns} consecutive evidence turns -> {retrieval_stagnation_action}"
+    )
+    print(f"Suppress control-loop calls: {bool(args.suppress_control_loop_calls)}")
     if effective_embed_model:
         print(f"Embedding model override: {effective_embed_model}")
     print(f"Post-run deterministic checks: {args.post_det_checks}")
@@ -1816,6 +1981,7 @@ async def main() -> None:
             "tool_mode_boundaries": _TOOL_MODE_BOUNDARIES,
             "timeout": args.timeout,
             "question_timeout": args.timeout,
+            "question_timeout_enabled": bool(args.timeout > 0),
             "turn_timeout": args.turn_timeout,
             "max_tool_calls": args.max_tool_calls,
             "require_tool_reasoning": True,
@@ -1828,6 +1994,8 @@ async def main() -> None:
             "forced_final_max_attempts": forced_final_max_attempts,
             "forced_final_circuit_breaker_threshold": forced_final_circuit_breaker_threshold,
             "retrieval_stagnation_turns": retrieval_stagnation_turns,
+            "retrieval_stagnation_action": retrieval_stagnation_action,
+            "suppress_control_loop_calls": bool(args.suppress_control_loop_calls),
             "temperature": args.temperature,
             "heartbeat_secs": args.heartbeat_secs,
             "embed_model": (args.embed_model or "").strip() or None,
@@ -1935,6 +2103,7 @@ async def main() -> None:
             "failure_event_code_counts": agent_result.get("failure_event_code_counts"),
             "no_legal_noncontrol_turns": agent_result.get("no_legal_noncontrol_turns"),
             "retrieval_no_hits_count": agent_result.get("retrieval_no_hits_count"),
+            "submit_validation_reason_counts": agent_result.get("submit_validation_reason_counts"),
             "hard_bindings_hash": agent_result.get("hard_bindings_hash"),
             "full_bindings_hash": agent_result.get("full_bindings_hash"),
             "run_config_hash": agent_result.get("run_config_hash"),
@@ -2115,7 +2284,7 @@ async def main() -> None:
                     elapsed = time.monotonic() - started_at
                     print(
                         f"HEARTBEAT [{q_id}] running {elapsed:.1f}s "
-                        f"(question_timeout={args.timeout}s, turn_timeout={args.turn_timeout}s)",
+                        f"(question_timeout={question_timeout_label}, turn_timeout={args.turn_timeout}s)",
                         flush=True,
                     )
 
@@ -2142,6 +2311,8 @@ async def main() -> None:
                     forced_final_max_attempts=forced_final_max_attempts,
                     forced_final_circuit_breaker_threshold=forced_final_circuit_breaker_threshold,
                     retrieval_stagnation_turns=retrieval_stagnation_turns,
+                    retrieval_stagnation_action=retrieval_stagnation_action,
+                    suppress_control_loop_calls=bool(args.suppress_control_loop_calls),
                     lane_policy=args.lane_policy,
                     trace_id=trace_id,
                 )

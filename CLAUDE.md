@@ -313,7 +313,7 @@ All enrichment config lives in `Config/GraphConfig.py`. Post-hoc methods live on
    - Agent SDK answer extraction: takes last non-empty line of full response (agent SDKs concatenate all text blocks)
    - CLI: `python eval/run_agent_benchmark.py --dataset HotpotQAsmallest --num 10 --model claude-code --mode adaptive`
    - CLI: `python eval/run_agent_benchmark.py --dataset HotpotQA --num 50 --model gemini/gemini-3-flash --backend direct`
-   - Options: `--model codex` `--effort high` `--timeout 120` `--mode adaptive` `--resume` `--backend direct`
+   - Options: `--model codex` `--effort high` `--timeout 0` (default; disables hard per-question timeout) `--turn-timeout 60` `--stagnation-action observe|force_final` `--[no-]suppress-control-loop-calls` `--mode adaptive` `--resume` `--backend direct`
    - Output: `results/{dataset}_{model}_{timestamp}.json` + `.log`
 
 2. **Fixed pipeline benchmark** (`eval/run_benchmark.py`) — runs named methods via OperatorComposer

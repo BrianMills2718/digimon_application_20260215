@@ -6194,20 +6194,33 @@ if BENCHMARK_MODE:
                 )
 
             spans = [(t.get("answer_span") or "").strip() for t in _todos]
-            if spans and not any(
+            done_todo_refs: list[str] = []
+            for todo in _todos:
+                if todo.get("status") != "done":
+                    continue
+                done_todo_refs.extend(_normalize_evidence_refs(todo.get("evidence_refs")))
+
+            grounded_in_spans = any(
                 normalized_answer.lower() in span.lower() or span.lower() in normalized_answer.lower()
                 for span in spans if span
-            ):
+            )
+            grounded_in_chunk_refs = _answer_span_supported_by_chunk_refs(normalized_answer, done_todo_refs)
+
+            if spans and not grounded_in_spans and not grounded_in_chunk_refs:
                 raise ValueError(
                     "Answer not grounded in TODO answer_span fields. "
-                    "Use a final span directly supported by completed TODO evidence."
+                    "Use a final span directly supported by completed TODO evidence "
+                    "(answer_span text or cited chunk evidence)."
                 )
 
             if expected_kind == "date":
-                if not any(_answer_matches_kind(span, "date") for span in spans if span):
+                has_date_span = any(_answer_matches_kind(span, "date") for span in spans if span)
+                has_date_chunk_support = grounded_in_chunk_refs and _answer_matches_kind(normalized_answer, "date")
+                if not has_date_span and not has_date_chunk_support:
                     raise ValueError(
                         "No date-like atom evidence found in TODO spans. "
-                        "Resolve a date span in TODOs before submitting."
+                        "Resolve a date span in TODOs before submitting "
+                        "(or cite chunk evidence containing the submitted date)."
                     )
 
             if not normalized_reasoning:
