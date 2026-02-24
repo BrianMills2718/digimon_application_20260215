@@ -1649,8 +1649,12 @@ async def run_agent(
                 if has_error:
                     continue
                 result_preview = tc.get("result_preview")
-                if isinstance(result_preview, str) and '"status": "submitted"' not in result_preview:
-                    continue
+                if isinstance(result_preview, str):
+                    lowered_preview = result_preview.lower()
+                    # Treat explicit reject statuses as unsuccessful; otherwise
+                    # consider non-error submit calls successful.
+                    if "status" in lowered_preview and "rejected" in lowered_preview:
+                        continue
                 successful_submit = True
 
             if requires_submit_answer is None:
@@ -1664,7 +1668,8 @@ async def run_agent(
             if required_submit_missing is None and requires_submit_answer:
                 required_submit_missing = not bool(submit_answer_succeeded)
 
-            if required_submit_missing and not error:
+            sdk_result_error = getattr(result, "error", None)
+            if required_submit_missing and not sdk_result_error:
                 if primary_failure_class is None:
                     primary_failure_class = "required_submit_missing"
                 elif primary_failure_class != "required_submit_missing":
