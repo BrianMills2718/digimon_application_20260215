@@ -581,6 +581,14 @@ def _classify_run_error(error_text: str) -> tuple[str | None, str | None, dict[s
         code = "PROVIDER_RATE_LIMIT"
         return "provider", code, {code: 1}
 
+    if "code_timeout[" in msg or "codex_timeout[" in msg:
+        code = "AGENT_TURN_TIMEOUT"
+        return "runtime", code, {code: 1}
+
+    if "timeout after" in msg and "question_timeout" in msg:
+        code = "QUESTION_TIMEOUT"
+        return "runtime", code, {code: 1}
+
     return None, None, {}
 
 
@@ -1014,6 +1022,7 @@ def _resolve_fallback_models_for_benchmark(
     *,
     model: str,
     fallback_models_arg: str,
+    lane_policy: str = "pure",
 ) -> list[str] | None:
     """Resolve fallback chain, removing blanks/duplicates/primary model."""
     raw = (fallback_models_arg or "").strip()
@@ -1023,6 +1032,8 @@ def _resolve_fallback_models_for_benchmark(
     if raw:
         candidates = [_normalize_primary_model_for_benchmark(m.strip()) for m in raw.split(",") if m.strip()]
     else:
+        if lane_policy == "pure" and _is_codex_model(model):
+            return None
         prefer_openrouter = bool(os.environ.get("OPENROUTER_API_KEY"))
         lower = model.lower()
         if prefer_openrouter:
@@ -1266,6 +1277,9 @@ async def run_agent(
                     # Run each Codex turn in a worker process so timeout/cancel
                     # behavior is bounded even when the SDK becomes unresponsive.
                     codex_process_isolation=True,
+                    # Keep Codex on MCP tools only for benchmark determinism and
+                    # lower first-turn latency variance.
+                    web_search_enabled=False,
                     working_directory=project_root,
                     approval_policy="never",
                     sandbox_mode="workspace-write",
@@ -1619,17 +1633,25 @@ async def run_agent(
 
     except asyncio.TimeoutError:
         elapsed = time.monotonic() - t0
+        timeout_error = (
+            f"TIMEOUT after {round(elapsed, 2)}s "
+            f"(question_timeout={'off' if question_timeout <= 0 else f'{question_timeout}s'}, "
+            f"turn_timeout={effective_turn_timeout}s)"
+        )
+        primary_failure_class, terminal_event_code, event_counts = _classify_run_error(timeout_error)
+        failure_event_codes = [terminal_event_code] if terminal_event_code else ["QUESTION_TIMEOUT"]
         return {
             "answer": "",
             "tool_calls": [],
             "usage": {},
             "cost": 0.0,
             "latency_s": round(elapsed, 2),
-            "error": (
-                f"TIMEOUT after {round(elapsed, 2)}s "
-                f"(question_timeout={'off' if question_timeout <= 0 else f'{question_timeout}s'}, "
-                f"turn_timeout={effective_turn_timeout}s)"
-            ),
+            "error": timeout_error,
+            "primary_failure_class": primary_failure_class or "runtime",
+            "secondary_failure_classes": [],
+            "first_terminal_failure_event_code": terminal_event_code or "QUESTION_TIMEOUT",
+            "failure_event_codes": failure_event_codes,
+            "failure_event_code_counts": event_counts or {"QUESTION_TIMEOUT": 1},
         }
     except Exception as e:
         elapsed = time.monotonic() - t0
@@ -1666,7 +1688,7 @@ async def main() -> None:
                         help="Per-LLM-call timeout in seconds within a question (default: 60).")
     parser.add_argument("--resume", action="store_true", help="Resume from previous run")
     parser.add_argument("--model", default="codex", help="Agent model (default: codex). Any litellm model string works.")
-    parser.add_argument("--effort", default="high", help="Reasoning effort (Codex only): minimal/low/medium/high")
+    parser.add_argument("--effort", default="medium", help="Reasoning effort (Codex only): minimal/low/medium/high")
     parser.add_argument("--max-tool-calls", type=int, default=20,
                         help="Tool-call budget per question (non-agent models only).")
     parser.add_argument("--max-turns", type=int, default=80, help=argparse.SUPPRESS)
@@ -2012,6 +2034,7 @@ async def main() -> None:
     fallback_models = _resolve_fallback_models_for_benchmark(
         model=args.model,
         fallback_models_arg=(args.fallback_models or ""),
+        lane_policy=args.lane_policy,
     )
     finalization_fallback_models = _resolve_finalization_fallback_models_for_benchmark(
         model=args.model,
@@ -2293,6 +2316,7 @@ async def main() -> None:
             "primary_failure_class": agent_result.get("primary_failure_class"),
             "secondary_failure_classes": agent_result.get("secondary_failure_classes"),
             "first_terminal_failure_event_code": agent_result.get("first_terminal_failure_event_code"),
+            "failure_event_codes": agent_result.get("failure_event_codes"),
             "failure_event_code_counts": agent_result.get("failure_event_code_counts"),
             "no_legal_noncontrol_turns": agent_result.get("no_legal_noncontrol_turns"),
             "retrieval_no_hits_count": agent_result.get("retrieval_no_hits_count"),
