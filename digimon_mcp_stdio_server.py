@@ -1422,6 +1422,47 @@ def _normalize_evidence_refs(evidence_refs: list[str] | None) -> list[str]:
     return refs
 
 
+def _normalize_string_list(values: Any, *, split_commas: bool = False) -> list[str]:
+    """Normalize scalar/list-like input into a de-duplicated string list."""
+    if values is None:
+        return []
+
+    raw_items: list[Any]
+    if isinstance(values, str):
+        text = values.strip()
+        if not text:
+            return []
+        parsed: Any = None
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+        if isinstance(parsed, list):
+            raw_items = list(parsed)
+        elif split_commas:
+            raw_items = [p.strip() for p in re.split(r"[,\n;]", text) if p.strip()]
+        else:
+            raw_items = [text]
+    elif isinstance(values, (list, tuple, set)):
+        raw_items = list(values)
+    else:
+        raw_items = [values]
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_items:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
+
+
 def _normalize_alternatives_tested(alternatives_tested: Any) -> list[str]:
     """Normalize alternatives_tested into a clean list of meaningful candidate labels."""
     if alternatives_tested is None:
@@ -2659,9 +2700,12 @@ async def entity_agent(query_text: str, text_context: str,
 
 
 @mcp.tool()
-async def entity_link(source_entities: list[str], vdb_reference_id: str,
+async def entity_link(
+                      source_entities: list[str] | str | None = None,
+                      vdb_reference_id: str = "",
                       similarity_threshold: float = 0.5,
-                      dataset_name: str = "") -> str:
+                      dataset_name: str = "",
+                      entity_names: list[str] | str | None = None) -> str:
     """Link entity mentions to canonical entities in a VDB.
 
     Args:
@@ -2675,6 +2719,11 @@ async def entity_link(source_entities: list[str], vdb_reference_id: str,
     await _ensure_initialized()
     from Core.AgentTools.entity_tools import entity_link_tool
     from Core.AgentSchema.tool_contracts import EntityLinkInputs
+    normalized_source_entities = _normalize_string_list(source_entities)
+    if not normalized_source_entities and entity_names is not None:
+        normalized_source_entities = _normalize_string_list(entity_names)
+    if not normalized_source_entities:
+        return json.dumps({"error": "source_entities (or entity_names) is required"}, indent=2)
 
     resolved_vdb = _resolve_vdb_reference_id(
         vdb_reference_id=vdb_reference_id,
@@ -2696,7 +2745,7 @@ async def entity_link(source_entities: list[str], vdb_reference_id: str,
         )
 
     inputs = EntityLinkInputs(
-        source_entities=source_entities,
+        source_entities=normalized_source_entities,
         knowledge_base_reference_id=resolved_vdb,
         similarity_threshold=similarity_threshold,
     )
@@ -2714,12 +2763,12 @@ async def entity_link(source_entities: list[str], vdb_reference_id: str,
 
 @mcp.tool()
 async def entity_resolve_names_to_ids(
-    entity_names: list[str],
+    entity_names: list[str] | str | None,
     vdb_reference_id: str = "",
     dataset_name: str = "",
     top_k_per_name: int = 3,
     similarity_threshold: float = 0.0,
-    expected_coarse_types: list[str] | None = None,
+    expected_coarse_types: list[str] | str | None = None,
 ) -> str:
     """Resolve free-form entity names into canonical entity IDs via entity VDB search.
 
@@ -2728,17 +2777,7 @@ async def entity_resolve_names_to_ids(
     - output: canonical IDs for downstream graph tools
     """
     await _ensure_initialized()
-    normalized_names: list[str] = []
-    seen: set[str] = set()
-    for raw in entity_names or []:
-        name = (raw or "").strip()
-        if not name:
-            continue
-        key = name.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        normalized_names.append(name)
+    normalized_names = _normalize_string_list(entity_names)
 
     if not normalized_names:
         return json.dumps({"error": "entity_names is required"}, indent=2)
@@ -2762,9 +2801,9 @@ async def entity_resolve_names_to_ids(
     resolved_entities: list[dict[str, Any]] = []
     unresolved_entity_names: list[str] = []
     expected_types_norm = {
-        _normalize_coarse_type(str(v))
-        for v in (expected_coarse_types or [])
-        if str(v).strip()
+        _normalize_coarse_type(v)
+        for v in _normalize_string_list(expected_coarse_types, split_commas=True)
+        if v
     }
 
     for entity_name in normalized_names:
@@ -3040,10 +3079,10 @@ async def entity_profile(
 @mcp.tool()
 async def entity_select_candidate(
     candidate_entities: list[Any] | None = None,
-    chunk_ids: list[str] | None = None,
+    chunk_ids: list[str] | str | None = None,
     chunk_id: str = "",
     entity_name: str = "",
-    expected_coarse_types: list[str] | None = None,
+    expected_coarse_types: list[str] | str | None = None,
     dataset_name: str = "",
     top_k: int = 3,
     min_candidate_score: float = 0.0,
@@ -3064,7 +3103,7 @@ async def entity_select_candidate(
                     name_candidates_from_args.append(name)
         explicit_candidate_input = bool(pool or name_candidates_from_args)
 
-    normalized_chunk_ids = [(c or "").strip() for c in (chunk_ids or []) if (c or "").strip()]
+    normalized_chunk_ids = _normalize_string_list(chunk_ids)
     if (chunk_id or "").strip():
         normalized_chunk_ids.append((chunk_id or "").strip())
 
@@ -3099,9 +3138,9 @@ async def entity_select_candidate(
     by_entity: dict[str, dict[str, Any]] = {}
     unresolved_names: list[str] = list(name_candidates_from_args)
     expected_types_norm = {
-        _normalize_coarse_type(str(v))
-        for v in (expected_coarse_types or [])
-        if str(v).strip()
+        _normalize_coarse_type(v)
+        for v in _normalize_string_list(expected_coarse_types, split_commas=True)
+        if v
     }
     expected_types_source = "args" if expected_types_norm else ""
     if not expected_types_norm:
@@ -3520,11 +3559,11 @@ async def chunk_occurrence(
 @mcp.tool()
 async def chunk_get_text(
     graph_reference_id: str = "",
-    entity_ids: list[str] | None = None,
-    chunk_ids: list[str] | None = None,
+    entity_ids: list[str] | str | None = None,
+    chunk_ids: list[str] | str | None = None,
     chunk_id: str = "",
     max_chunks_per_entity: int = 5,
-    entity_names: list[str] | None = None,
+    entity_names: list[str] | str | None = None,
     dataset_name: str = "",
     mode: str = _CHUNK_GET_TEXT_MODE_AUTO,
 ) -> str:
@@ -3559,7 +3598,7 @@ async def chunk_get_text(
         )
 
     # Robust alias handling for explicit chunk-ID retrieval attempts.
-    normalized_chunk_ids = [(c or "").strip() for c in (chunk_ids or []) if (c or "").strip()]
+    normalized_chunk_ids = _normalize_string_list(chunk_ids)
     single_chunk_id = (chunk_id or "").strip()
     if single_chunk_id:
         normalized_chunk_ids.append(single_chunk_id)
@@ -3571,9 +3610,9 @@ async def chunk_get_text(
         seen_ids.add(cid)
         ordered_chunk_ids.append(cid)
 
-    normalized_entity_ids = list(entity_ids or [])
+    normalized_entity_ids = _normalize_string_list(entity_ids)
     if not normalized_entity_ids and entity_names:
-        normalized_entity_ids = list(entity_names)
+        normalized_entity_ids = _normalize_string_list(entity_names)
 
     has_chunk_refs = bool(ordered_chunk_ids)
     has_entity_refs = bool(normalized_entity_ids)
@@ -3752,7 +3791,7 @@ async def chunk_get_text(
 
 @mcp.tool()
 async def chunk_get_text_by_chunk_ids(
-    chunk_ids: list[str] | None = None,
+    chunk_ids: list[str] | str | None = None,
     chunk_id: str = "",
     dataset_name: str = "",
 ) -> str:
@@ -3768,8 +3807,8 @@ async def chunk_get_text_by_chunk_ids(
 @mcp.tool()
 async def chunk_get_text_by_entity_ids(
     graph_reference_id: str = "",
-    entity_ids: list[str] | None = None,
-    entity_names: list[str] | None = None,
+    entity_ids: list[str] | str | None = None,
+    entity_names: list[str] | str | None = None,
     max_chunks_per_entity: int = 5,
     dataset_name: str = "",
 ) -> str:
