@@ -1815,8 +1815,8 @@ async def main() -> None:
         default=0,
         help="Hard timeout per question in seconds (0 disables; default: 0).",
     )
-    parser.add_argument("--turn-timeout", type=int, default=60,
-                        help="Per-LLM-call timeout in seconds within a question (default: 60).")
+    parser.add_argument("--turn-timeout", type=int, default=300,
+                        help="Per-LLM-call timeout in seconds within a question (default: 300).")
     parser.add_argument("--resume", action="store_true", help="Resume from previous run")
     parser.add_argument("--model", default="codex", help="Agent model (default: codex). Any litellm model string works.")
     parser.add_argument("--effort", default="medium", help="Reasoning effort (Codex only): minimal/low/medium/high")
