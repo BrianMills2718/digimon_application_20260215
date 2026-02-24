@@ -785,9 +785,6 @@ def _build_mcp_servers(
         env["DIGIMON_EMBED_DIMENSIONS"] = str(embed_dimensions)
     if disable_embedding_tools:
         env["DIGIMON_SKIP_VDB_PRELOAD"] = "1"
-    elif benchmark_mode >= 2:
-        # Codex compact benchmark profile: avoid VDB preload latency on startup.
-        env["DIGIMON_SKIP_VDB_PRELOAD"] = "1"
     return {
         "digimon-kgrag": {
             "command": "/home/brian/miniconda3/envs/digimon/bin/python",

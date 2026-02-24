@@ -94,10 +94,8 @@ _BENCHMARK_HIDDEN_TOOLS: set[str] = {
 # Additional aggressive pruning used by Codex compact benchmark profile.
 # Keep only core retrieval/traversal + submit_answer path in this mode.
 _BENCHMARK_HIDDEN_TOOLS_LEVEL2: set[str] = {
-    "entity_vdb_search",
     "chunk_vdb_search",
     "relationship_vdb_search",
-    "search_then_expand_onehop",
     "semantic_plan",
     "todo_create",
     "todo_update",
@@ -1689,8 +1687,22 @@ def _resolve_vdb_reference_id(
     """Resolve VDB id from exact id or dataset aliases."""
     ctx = _state.get("context")
     vdbs = ctx.list_vdbs() if ctx is not None and hasattr(ctx, "list_vdbs") else []
+    base = _resolve_dataset_name(dataset_name or vdb_reference_id)
+
+    def _preferred_from_base() -> str:
+        if not base:
+            return ""
+        if kind == "entity":
+            return f"{base}_entities"
+        if kind == "relation":
+            return f"{base}_relations"
+        if kind == "chunk":
+            return f"{base}_chunks"
+        return base
+
     if not vdbs:
-        return vdb_reference_id or dataset_name
+        preferred = _preferred_from_base()
+        return preferred or vdb_reference_id or dataset_name
 
     def _kind_match(vdb_id: str) -> bool:
         lower = vdb_id.lower()
@@ -1711,7 +1723,6 @@ def _resolve_vdb_reference_id(
             if vid.lower() == p.lower():
                 return vid
 
-    base = _resolve_dataset_name(dataset_name or vdb_reference_id)
     if base:
         preferred = []
         if kind == "entity":
@@ -1745,7 +1756,8 @@ def _resolve_vdb_reference_id(
 
     if best_score > 0:
         return best_vid
-    return vdb_reference_id or (vdbs[0] if len(vdbs) == 1 else "")
+    preferred = _preferred_from_base()
+    return preferred or vdb_reference_id or (vdbs[0] if len(vdbs) == 1 else "")
 
 
 def _looks_like_date_entity(name: str) -> bool:
@@ -3312,8 +3324,8 @@ async def entity_select_candidate(
 
 
 @mcp.tool()
-async def entity_tfidf(candidate_entity_ids: list[str], query_text: str,
-                       graph_reference_id: str, top_k: int = 10) -> str:
+async def entity_tfidf(candidate_entity_ids: list[str] | str | None = None, query_text: str = "",
+                       graph_reference_id: str = "", top_k: int = 10) -> str:
     """Rank candidate entities by TF-IDF similarity to a query.
 
     Args:
@@ -3328,11 +3340,41 @@ async def entity_tfidf(candidate_entity_ids: list[str], query_text: str,
     await _ensure_initialized()
     from Core.AgentTools.entity_tools import entity_tfidf_tool
     from Core.AgentSchema.tool_contracts import EntityTFIDFInputs
+    normalized_candidates = _normalize_string_list(candidate_entity_ids)
+    if not normalized_candidates and _latest_entity_candidates_flat:
+        seen: set[str] = set()
+        for item in _latest_entity_candidates_flat:
+            if not isinstance(item, dict):
+                continue
+            entity_id = str(item.get("entity_id") or item.get("resolved_entity_id") or "").strip()
+            if not entity_id:
+                continue
+            key = entity_id.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized_candidates.append(entity_id)
+
+    if not normalized_candidates:
+        return json.dumps(
+            {"error": "candidate_entity_ids is required (or run candidate-producing retrieval first)"},
+            indent=2,
+        )
+
+    resolved_graph_id = _resolve_graph_reference_id(
+        graph_reference_id=graph_reference_id,
+        dataset_name="",
+    )
+    if not resolved_graph_id:
+        return json.dumps(
+            {"error": f"Could not resolve graph_reference_id from {graph_reference_id!r}"},
+            indent=2,
+        )
 
     inputs = EntityTFIDFInputs(
-        candidate_entity_ids=candidate_entity_ids,
+        candidate_entity_ids=normalized_candidates,
         query_text=query_text,
-        graph_reference_id=graph_reference_id,
+        graph_reference_id=resolved_graph_id,
         top_k=top_k,
     )
     result = await entity_tfidf_tool(inputs, _state["context"])
@@ -3344,7 +3386,7 @@ async def entity_tfidf(candidate_entity_ids: list[str], query_text: str,
 # =============================================================================
 
 @mcp.tool()
-async def relationship_onehop(entity_ids: list[str], graph_reference_id: str) -> str:
+async def relationship_onehop(entity_ids: list[str] | str | None, graph_reference_id: str) -> str:
     """Get one-hop relationships for given entities.
 
     Args:
@@ -3357,9 +3399,12 @@ async def relationship_onehop(entity_ids: list[str], graph_reference_id: str) ->
     await _ensure_initialized()
     from Core.AgentTools.relationship_tools import relationship_one_hop_neighbors_tool
     from Core.AgentSchema.tool_contracts import RelationshipOneHopNeighborsInputs
+    normalized_entity_ids = _normalize_string_list(entity_ids)
+    if not normalized_entity_ids:
+        return json.dumps({"error": "entity_ids is required"}, indent=2)
 
     inputs = RelationshipOneHopNeighborsInputs(
-        entity_ids=entity_ids,
+        entity_ids=normalized_entity_ids,
         graph_reference_id=graph_reference_id,
     )
     result = await relationship_one_hop_neighbors_tool(inputs, _state["context"])
@@ -3994,7 +4039,7 @@ async def extract_date_mentions(
 @mcp.tool()
 async def chunk_text_search(query_text: str, dataset_name: str,
                              top_k: int = 10,
-                             entity_names: list[str] = None,
+                             entity_names: list[str] | str | None = None,
                              max_candidates_per_chunk: int = 4,
                              max_text_chars: int = 1200) -> str:
     """Keyword/TF-IDF search over raw chunk text. Bypasses entity-based retrieval.
@@ -4018,11 +4063,7 @@ async def chunk_text_search(query_text: str, dataset_name: str,
 
     resolved_dataset_name = _resolve_dataset_name(dataset_name)
     query_text_norm = (query_text or "").strip()
-    normalized_entities = [
-        (name or "").strip()
-        for name in (entity_names or [])
-        if (name or "").strip()
-    ]
+    normalized_entities = _normalize_string_list(entity_names)
     if not query_text_norm and normalized_entities:
         query_text_norm = " ".join(normalized_entities)
     elif normalized_entities:
@@ -4151,7 +4192,7 @@ if not BENCHMARK_MODE:
 @mcp.tool()
 async def chunk_vdb_search(query_text: str, dataset_name: str,
                             top_k: int = 10,
-                            entity_names: list[str] = None,
+                            entity_names: list[str] | str | None = None,
                             max_candidates_per_chunk: int = 4,
                             max_text_chars: int = 1200) -> str:
     """Semantic embedding search over document chunks. Finds passages similar in meaning to the query.
@@ -4174,11 +4215,7 @@ async def chunk_vdb_search(query_text: str, dataset_name: str,
 
     resolved_dataset_name = _resolve_dataset_name(dataset_name)
     query_text_norm = (query_text or "").strip()
-    normalized_entities = [
-        (name or "").strip()
-        for name in (entity_names or [])
-        if (name or "").strip()
-    ]
+    normalized_entities = _normalize_string_list(entity_names)
     if not query_text_norm and normalized_entities:
         query_text_norm = " ".join(normalized_entities)
     elif normalized_entities:

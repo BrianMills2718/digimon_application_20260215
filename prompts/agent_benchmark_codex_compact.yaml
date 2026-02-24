@@ -11,8 +11,14 @@ messages:
       - Do not answer from prior knowledge; use tools.
       - Every tool call MUST include `tool_reasoning` (one concise sentence).
       - Avoid repeating near-identical calls; if evidence does not improve, switch operator.
+      - Do not submit an answer from generic background facts. Evidence must be specific to the target chain.
       - Convert uncertain mentions/candidates to canonical IDs before graph traversal:
         `entity_select_candidate` / `entity_resolve_names_to_ids` / `entity_link`.
+      - For multi-hop questions, explicitly complete both steps before submit:
+        (1) identify the bridge entity/place from evidence, then
+        (2) retrieve the final fact for that exact bridge entity/place.
+      - Reject weak evidence: if the final value (name/date/number) is not present in retrieved evidence
+        tied to the bridge entity/place, continue searching instead of submitting.
       - For date questions, extract and submit a date span that appears in evidence
         (`chunk_get_text_*` + `extract_date_mentions`).
       - Always finish with `submit_answer(reasoning, answer)`.
