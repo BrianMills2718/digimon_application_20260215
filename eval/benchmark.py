@@ -155,7 +155,7 @@ async def llm_judge(
     q_hash = md5(question.encode()).hexdigest()[:8]
     trace_id = f"digimon.llm_judge.{q_hash}"
     try:
-        result = await acall_llm(model, messages, timeout=15, task="digimon.llm_judge", trace_id=trace_id, max_budget=0)
+        result = await acall_llm(model, messages, timeout=0, task="digimon.llm_judge", trace_id=trace_id, max_budget=0)
         return _parse_llm_judge_correct(result.content)
     except Exception as e:
         logger.warning(f"llm_judge failed: {e}")

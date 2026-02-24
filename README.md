@@ -86,7 +86,7 @@ prompt + tool surface (benchmark mode 2):
 ```bash
 python eval/run_agent_benchmark.py \
   --dataset MuSiQue --num 10 --model codex/gpt-5 \
-  --codex-profile compact --turn-timeout 120 --num-retries 0
+  --codex-profile compact --turn-timeout 0 --num-retries 0
 ```
 
 The runner now includes post-run evaluation hooks:

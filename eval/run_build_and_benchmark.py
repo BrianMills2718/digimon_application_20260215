@@ -71,7 +71,7 @@ def run_benchmark(dataset: str, n: int, model: str) -> None:
         "--dataset", dataset,
         "--n", str(n),
         "--model", model,
-        "--timeout", "300",
+        "--timeout", "0",
     ]
     print(f"\n{'='*60}")
     print(f"Starting benchmark: {' '.join(cmd)}")

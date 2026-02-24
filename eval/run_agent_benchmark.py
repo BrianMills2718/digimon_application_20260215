@@ -1241,8 +1241,9 @@ async def run_agent(
         mcp_session_pool: Optional MCPSessionPool for reusing MCP connections
             across questions (non-Codex models only).
         timeout: Hard timeout per question (seconds). <=0 disables this watchdog.
-        turn_timeout: Per-LLM-call timeout (seconds). If omitted, defaults to
-            60 when hard timeout is disabled, otherwise min(timeout, 60).
+        turn_timeout: Per-LLM-call timeout (seconds). <=0 disables per-call
+            timeout. If omitted, defaults to 0 when hard timeout is disabled,
+            otherwise min(timeout, 60).
         max_tool_calls: Tool-call budget per question for non-agent tool loops.
         mode: Prompt mode (canonical hybrid; legacy aliases are mapped).
         backend: 'mcp' (default) or 'direct' (in-process Python tools)
@@ -1270,8 +1271,8 @@ async def run_agent(
     )
 
     question_timeout = max(0, int(timeout))
-    default_turn_timeout = 60 if question_timeout <= 0 else min(question_timeout, 60)
-    effective_turn_timeout = max(1, int(turn_timeout if turn_timeout is not None else default_turn_timeout))
+    default_turn_timeout = 0 if question_timeout <= 0 else min(question_timeout, 60)
+    effective_turn_timeout = max(0, int(turn_timeout if turn_timeout is not None else default_turn_timeout))
     t0 = time.monotonic()
     try:
         async def _invoke_agent() -> object:
@@ -1764,10 +1765,11 @@ async def run_agent(
 
     except asyncio.TimeoutError:
         elapsed = time.monotonic() - t0
+        turn_timeout_label = "off" if effective_turn_timeout <= 0 else f"{effective_turn_timeout}s"
         timeout_error = (
             f"TIMEOUT after {round(elapsed, 2)}s "
             f"(question_timeout={'off' if question_timeout <= 0 else f'{question_timeout}s'}, "
-            f"turn_timeout={effective_turn_timeout}s)"
+            f"turn_timeout={turn_timeout_label})"
         )
         primary_failure_class, terminal_event_code, event_counts = _classify_run_error(timeout_error)
         failure_event_codes = [terminal_event_code] if terminal_event_code else ["QUESTION_TIMEOUT"]
@@ -1815,8 +1817,8 @@ async def main() -> None:
         default=0,
         help="Hard timeout per question in seconds (0 disables; default: 0).",
     )
-    parser.add_argument("--turn-timeout", type=int, default=300,
-                        help="Per-LLM-call timeout in seconds within a question (default: 300).")
+    parser.add_argument("--turn-timeout", type=int, default=0,
+                        help="Per-LLM-call timeout in seconds within a question (0 disables; default: 0).")
     parser.add_argument("--resume", action="store_true", help="Resume from previous run")
     parser.add_argument("--model", default="codex", help="Agent model (default: codex). Any litellm model string works.")
     parser.add_argument("--effort", default="medium", help="Reasoning effort (Codex only): minimal/low/medium/high")
@@ -2004,20 +2006,14 @@ async def main() -> None:
             file=sys.stderr,
         )
     if _is_codex_model(args.model) and effective_codex_profile == "compact":
-        # Profile-level defaults tuned for Codex SDK tool latency.
-        if args.turn_timeout == 60:
-            args.turn_timeout = 120
-            print(
-                "Codex compact profile: auto-adjusting --turn-timeout 60 -> 120s.",
-                file=sys.stderr,
-            )
+        # Profile-level defaults tuned for Codex SDK benchmark stability.
         if args.num_retries == 2:
             args.num_retries = 0
             print(
                 "Codex compact profile: auto-adjusting --num-retries 2 -> 0 to avoid timeout multiplication.",
                 file=sys.stderr,
             )
-        if args.timeout > 0 and args.timeout <= args.turn_timeout:
+        if args.timeout > 0 and args.turn_timeout > 0 and args.timeout <= args.turn_timeout:
             print(
                 "WARNING: question timeout is <= turn timeout in codex compact profile; "
                 "question may terminate before meaningful progress.",
@@ -2253,6 +2249,7 @@ async def main() -> None:
     run_provenance["question_timeout"] = args.timeout
     run_provenance["question_timeout_enabled"] = bool(args.timeout > 0)
     run_provenance["turn_timeout"] = args.turn_timeout
+    run_provenance["turn_timeout_enabled"] = bool(args.turn_timeout > 0)
     total_llm_em: int | None = None
     n_done = len(results)
     feature_profile = {
@@ -2285,9 +2282,10 @@ async def main() -> None:
     else:
         backend = "MCP agent loop"
     question_timeout_label = "off" if args.timeout <= 0 else f"{args.timeout}s"
+    turn_timeout_label = "off" if args.turn_timeout <= 0 else f"{args.turn_timeout}s"
     print(
         f"Model: {args.model} ({backend}, "
-        f"question_timeout={question_timeout_label}, turn_timeout={args.turn_timeout}s)"
+        f"question_timeout={question_timeout_label}, turn_timeout={turn_timeout_label})"
     )
     if _is_codex_model(args.model):
         print(f"Codex profile: {effective_codex_profile} (benchmark_mode={benchmark_mode})")
@@ -2363,6 +2361,7 @@ async def main() -> None:
             "question_timeout": args.timeout,
             "question_timeout_enabled": bool(args.timeout > 0),
             "turn_timeout": args.turn_timeout,
+            "turn_timeout_enabled": bool(args.turn_timeout > 0),
             "max_tool_calls": args.max_tool_calls,
             "require_tool_reasoning": True,
             "max_turns_fuse": args.max_turns,
@@ -2695,7 +2694,7 @@ async def main() -> None:
                     elapsed = time.monotonic() - started_at
                     print(
                         f"HEARTBEAT [{q_id}] running {elapsed:.1f}s "
-                        f"(question_timeout={question_timeout_label}, turn_timeout={args.turn_timeout}s)",
+                        f"(question_timeout={question_timeout_label}, turn_timeout={turn_timeout_label})",
                         flush=True,
                     )
 

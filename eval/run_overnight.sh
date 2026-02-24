@@ -27,7 +27,7 @@ $PYTHON eval/run_agent_benchmark.py \
     --dataset $DATASET \
     --n 200 \
     --model "gemini/gemini-3-flash-preview" \
-    --timeout 180 \
+    --timeout 0 \
     --max-turns 25
 
 echo ""
