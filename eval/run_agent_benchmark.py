@@ -1635,6 +1635,59 @@ async def run_agent(
                 lines = [l.strip() for l in answer.split("\n") if l.strip()]
                 answer = lines[-1] if lines else answer
 
+        # SDK-backed runs do not always populate MCPAgent metadata fields.
+        # Synthesize submit-answer observability so missing submit is explicit.
+        if _is_agent_sdk_model(model):
+            submit_events: list[dict[str, Any]] = []
+            successful_submit = False
+            for tc in tool_calls:
+                tool_name = str(tc.get("tool", "")).strip()
+                if not tool_name.endswith("submit_answer"):
+                    continue
+                submit_events.append(tc)
+                has_error = bool(tc.get("has_error") or tc.get("is_error") or tc.get("error"))
+                if has_error:
+                    continue
+                result_preview = tc.get("result_preview")
+                if isinstance(result_preview, str) and '"status": "submitted"' not in result_preview:
+                    continue
+                successful_submit = True
+
+            if requires_submit_answer is None:
+                requires_submit_answer = True
+            if submit_answer_call_count is None:
+                submit_answer_call_count = len(submit_events)
+            if submit_answer_attempted is None:
+                submit_answer_attempted = bool(submit_answer_call_count)
+            if submit_answer_succeeded is None:
+                submit_answer_succeeded = successful_submit
+            if required_submit_missing is None and requires_submit_answer:
+                required_submit_missing = not bool(submit_answer_succeeded)
+
+            if required_submit_missing and not error:
+                if primary_failure_class is None:
+                    primary_failure_class = "required_submit_missing"
+                elif primary_failure_class != "required_submit_missing":
+                    if not isinstance(secondary_failure_classes, list):
+                        secondary_failure_classes = []
+                    if "required_submit_missing" not in secondary_failure_classes:
+                        secondary_failure_classes.append("required_submit_missing")
+
+                if not isinstance(failure_event_codes, list):
+                    failure_event_codes = []
+                if "REQUIRED_SUBMIT_MISSING" not in failure_event_codes:
+                    failure_event_codes.append("REQUIRED_SUBMIT_MISSING")
+
+                if not isinstance(failure_event_code_counts, dict):
+                    failure_event_code_counts = {}
+                failure_event_code_counts["REQUIRED_SUBMIT_MISSING"] = max(
+                    1,
+                    int(failure_event_code_counts.get("REQUIRED_SUBMIT_MISSING", 0)),
+                )
+
+                if not first_terminal_failure_event_code:
+                    first_terminal_failure_event_code = "REQUIRED_SUBMIT_MISSING"
+
         # Extract diagnostic warnings and models_used from result
         warnings = getattr(result, "warnings", []) or []
         models_used: list[str] = []
