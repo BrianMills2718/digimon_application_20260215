@@ -80,6 +80,15 @@ For agentic QA benchmarking (MuSiQue/HotpotQA), use:
 python eval/run_agent_benchmark.py --dataset MuSiQue --num 10 --model gemini/gemini-2.5-flash --backend direct
 ```
 
+For Codex SDK runs, the default `--codex-profile compact` enables a lighter
+prompt + tool surface (benchmark mode 2):
+
+```bash
+python eval/run_agent_benchmark.py \
+  --dataset MuSiQue --num 10 --model codex/gpt-5 \
+  --codex-profile compact --turn-timeout 120 --num-retries 0
+```
+
 The runner now includes post-run evaluation hooks:
 - deterministic checks (`--post-det-checks`, default `default`),
 - optional rubric review (`--post-review-rubric`, `--post-review-model`),

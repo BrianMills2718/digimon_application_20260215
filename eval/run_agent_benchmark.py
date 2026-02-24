@@ -167,6 +167,7 @@ def _install_asyncio_log_filter() -> None:
 CANONICAL_MODE = "hybrid"
 PROMPT_TEMPLATES = {
     "hybrid": Path(__file__).parent.parent / "prompts" / "agent_benchmark_hybrid.yaml",
+    "codex_compact": Path(__file__).parent.parent / "prompts" / "agent_benchmark_codex_compact.yaml",
 }
 LEGACY_MODE_ALIASES = {
     "fixed": CANONICAL_MODE,
@@ -381,6 +382,11 @@ def _resolve_mode(mode: str) -> tuple[str, bool]:
     return effective, requested != effective
 
 
+def _is_disabled_token(value: str | None) -> bool:
+    token = (value or "").strip().lower()
+    return token in {"", "none", "off", "0", "false", "null"}
+
+
 def _sha256_json(obj: object) -> str:
     payload = json.dumps(
         obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str
@@ -420,9 +426,12 @@ def _build_run_provenance(
     dataset_path: Path,
     questions: list[dict],
     mode: str,
+    prompt_variant: str = "default",
 ) -> dict[str, object]:
     effective_mode, _ = _resolve_mode(mode)
-    template_path = PROMPT_TEMPLATES[effective_mode]
+    variant = (prompt_variant or "default").strip().lower()
+    template_key = "codex_compact" if variant == "codex_compact" else effective_mode
+    template_path = PROMPT_TEMPLATES[template_key]
     tool_surface, tool_schema_sha = _tool_surface()
     dataset_projection = [
         {
@@ -436,6 +445,8 @@ def _build_run_provenance(
         "dataset_path": str(dataset_path.resolve()),
         "dataset_hash_sha256": _sha256_json(dataset_projection),
         "dataset_question_count": len(questions),
+        "prompt_variant": variant,
+        "prompt_template_key": template_key,
         "prompt_template_path": str(template_path.resolve()),
         "prompt_template_sha256": _sha256_file(template_path),
         "tool_schema_sha256": tool_schema_sha,
@@ -449,11 +460,20 @@ def _build_run_provenance(
     }
 
 
-def build_messages(question: str, dataset_name: str, mode: str = CANONICAL_MODE) -> list[dict]:
+def build_messages(
+    question: str,
+    dataset_name: str,
+    mode: str = CANONICAL_MODE,
+    prompt_variant: str = "default",
+) -> list[dict]:
     """Render the agent benchmark prompt from YAML template."""
     from llm_client import render_prompt
-    effective_mode, _ = _resolve_mode(mode)
-    template = PROMPT_TEMPLATES[effective_mode]
+    variant = (prompt_variant or "default").strip().lower()
+    if variant == "codex_compact":
+        template = PROMPT_TEMPLATES["codex_compact"]
+    else:
+        effective_mode, _ = _resolve_mode(mode)
+        template = PROMPT_TEMPLATES[effective_mode]
     return render_prompt(template, question=question, dataset_name=dataset_name)
 
 
@@ -736,7 +756,7 @@ def _build_mcp_servers(
     """Build MCP server config with API keys forwarded from current env.
 
     Args:
-        benchmark_mode: 0=all tools, 1=prune build/pipeline shortcuts (benchmark mode)
+        benchmark_mode: 0=all tools, 1=benchmark prune, 2=aggressive benchmark prune
         dataset_name: Pre-load this dataset's graph+VDB on MCP server startup
     """
     import llm_client  # triggers auto-load of ~/.secrets/api_keys.env
@@ -764,6 +784,9 @@ def _build_mcp_servers(
     if isinstance(embed_dimensions, int) and embed_dimensions > 0:
         env["DIGIMON_EMBED_DIMENSIONS"] = str(embed_dimensions)
     if disable_embedding_tools:
+        env["DIGIMON_SKIP_VDB_PRELOAD"] = "1"
+    elif benchmark_mode >= 2:
+        # Codex compact benchmark profile: avoid VDB preload latency on startup.
         env["DIGIMON_SKIP_VDB_PRELOAD"] = "1"
     return {
         "digimon-kgrag": {
@@ -913,6 +936,16 @@ def _is_claude_code_model(model: str) -> bool:
 def _is_agent_sdk_model(model: str) -> bool:
     """Check if model uses any agent SDK (codex or claude-code)."""
     return _is_codex_model(model) or _is_claude_code_model(model)
+
+
+def _resolve_codex_profile(model: str, profile: str) -> str:
+    """Resolve codex profile. Non-codex models always use 'default'."""
+    if not _is_codex_model(model):
+        return "default"
+    normalized = (profile or "").strip().lower()
+    if normalized in {"compact", "default"}:
+        return normalized
+    return "compact"
 
 
 def _model_slug(model: str) -> str:
@@ -1199,6 +1232,7 @@ async def run_agent(
     lane_policy: str = "pure",
     trace_id: str = "",
     max_message_chars: int = 180_000,
+    codex_profile: str = "default",
 ) -> dict:
     """Run an agent on a single question via llm_client.
 
@@ -1218,6 +1252,7 @@ async def run_agent(
         python_tools: List of Python callables for direct backend
         lane_policy: 'pure' (strict attribution) or 'reliability' (finalization rescue allowed)
         trace_id: Trace ID for correlating LLM calls
+        codex_profile: 'default' or 'compact' for Codex-specific benchmark tuning.
         retrieval_stagnation_action: 'force_final' (default) or 'observe'
         suppress_control_loop_calls: Suppress repeated invalid submit/todo control loops.
         force_submit_retry_on_max_tool_calls: Count forced submit retry attempt after budget exhaustion.
@@ -1229,7 +1264,13 @@ async def run_agent(
 
     task = "digimon.benchmark"
     project_root = str(Path(__file__).parent.parent)
-    messages = build_messages(question, dataset_name, mode=mode)
+    prompt_variant = "codex_compact" if (_is_codex_model(model) and codex_profile == "compact") else "default"
+    messages = build_messages(
+        question,
+        dataset_name,
+        mode=mode,
+        prompt_variant=prompt_variant,
+    )
 
     question_timeout = max(0, int(timeout))
     default_turn_timeout = 60 if question_timeout <= 0 else min(question_timeout, 60)
@@ -1270,16 +1311,22 @@ async def run_agent(
                 )
             if _is_codex_model(model):
                 # Codex SDK path — agent-specific kwargs
+                codex_network_access = False if codex_profile == "compact" else True
+                codex_turn_timeout = effective_turn_timeout
+                if question_timeout > 0:
+                    # Prevent worker waits from outliving the question watchdog.
+                    codex_turn_timeout = min(codex_turn_timeout, question_timeout)
                 return await acall_llm(
                     model,
                     messages,
-                    timeout=effective_turn_timeout,
+                    timeout=codex_turn_timeout,
                     # Run each Codex turn in a worker process so timeout/cancel
                     # behavior is bounded even when the SDK becomes unresponsive.
                     codex_process_isolation=True,
                     # Keep Codex on MCP tools only for benchmark determinism and
                     # lower first-turn latency variance.
                     web_search_enabled=False,
+                    network_access_enabled=codex_network_access,
                     working_directory=project_root,
                     approval_policy="never",
                     sandbox_mode="workspace-write",
@@ -1366,9 +1413,38 @@ async def run_agent(
                 **({"finalization_fallback_models": finalization_fallback_models} if finalization_fallback_models else {}),
             )
 
+        async def _invoke_agent_with_hard_timeout() -> object:
+            """Enforce hard question timeout even if inner cancellation is slow."""
+            agent_task = asyncio.create_task(_invoke_agent())
+            try:
+                done, _ = await asyncio.wait({agent_task}, timeout=question_timeout)
+                if agent_task in done:
+                    return await agent_task
+
+                # Timeout hit: request cancellation, then bound how long we wait.
+                agent_task.cancel()
+                cancel_grace_s = 1.0
+                try:
+                    await asyncio.wait_for(asyncio.shield(agent_task), timeout=cancel_grace_s)
+                except asyncio.CancelledError:
+                    pass
+                except asyncio.TimeoutError:
+                    # Ignore slow/uncooperative cancellation; timeout should still surface.
+                    pass
+                raise asyncio.TimeoutError
+            finally:
+                # Drain task exceptions when it does finish to avoid unhandled warnings.
+                if not agent_task.done():
+                    def _drain_unhandled(t: asyncio.Task) -> None:
+                        try:
+                            t.exception()
+                        except BaseException:
+                            pass
+                    agent_task.add_done_callback(_drain_unhandled)
+
         # Optional hard per-question watchdog.
         if question_timeout > 0:
-            result = await asyncio.wait_for(_invoke_agent(), timeout=question_timeout)
+            result = await _invoke_agent_with_hard_timeout()
         else:
             result = await _invoke_agent()
 
@@ -1689,6 +1765,12 @@ async def main() -> None:
     parser.add_argument("--resume", action="store_true", help="Resume from previous run")
     parser.add_argument("--model", default="codex", help="Agent model (default: codex). Any litellm model string works.")
     parser.add_argument("--effort", default="medium", help="Reasoning effort (Codex only): minimal/low/medium/high")
+    parser.add_argument(
+        "--codex-profile",
+        default="compact",
+        choices=["default", "compact"],
+        help="Codex benchmark profile. 'compact' uses lighter prompt + MCP tool surface (benchmark mode 2).",
+    )
     parser.add_argument("--max-tool-calls", type=int, default=20,
                         help="Tool-call budget per question (non-agent models only).")
     parser.add_argument("--max-turns", type=int, default=80, help=argparse.SUPPRESS)
@@ -1850,11 +1932,42 @@ async def main() -> None:
     effective_mode, was_aliased = _resolve_mode(requested_mode)
     args.mode = effective_mode
     args.model = _normalize_primary_model_for_benchmark(requested_model)
+    effective_codex_profile = _resolve_codex_profile(args.model, args.codex_profile)
     if args.model != requested_model:
         print(
             f"Routing primary model via OpenRouter: {requested_model} -> {args.model}",
             file=sys.stderr,
         )
+    if _is_codex_model(args.model) and effective_codex_profile != (args.codex_profile or "").strip().lower():
+        print(
+            f"WARNING: --codex-profile {args.codex_profile!r} unsupported; using {effective_codex_profile!r}.",
+            file=sys.stderr,
+        )
+    if (not _is_codex_model(args.model)) and (args.codex_profile != "default"):
+        print(
+            "INFO: --codex-profile is ignored for non-codex models.",
+            file=sys.stderr,
+        )
+    if _is_codex_model(args.model) and effective_codex_profile == "compact":
+        # Profile-level defaults tuned for Codex SDK tool latency.
+        if args.turn_timeout == 60:
+            args.turn_timeout = 120
+            print(
+                "Codex compact profile: auto-adjusting --turn-timeout 60 -> 120s.",
+                file=sys.stderr,
+            )
+        if args.num_retries == 2:
+            args.num_retries = 0
+            print(
+                "Codex compact profile: auto-adjusting --num-retries 2 -> 0 to avoid timeout multiplication.",
+                file=sys.stderr,
+            )
+        if args.timeout > 0 and args.timeout <= args.turn_timeout:
+            print(
+                "WARNING: question timeout is <= turn timeout in codex compact profile; "
+                "question may terminate before meaningful progress.",
+                file=sys.stderr,
+            )
     if requested_judge_model and requested_judge_model.lower() != "none":
         args.judge_model = _normalize_primary_model_for_benchmark(requested_judge_model)
         if args.judge_model != requested_judge_model:
@@ -1862,7 +1975,7 @@ async def main() -> None:
                 f"Routing judge model via OpenRouter: {requested_judge_model} -> {args.judge_model}",
                 file=sys.stderr,
             )
-    if (args.post_review_model or "").strip():
+    if not _is_disabled_token(args.post_review_model):
         requested_post_review_model = (args.post_review_model or "").strip()
         normalized_post_review_model = _normalize_primary_model_for_benchmark(requested_post_review_model)
         if normalized_post_review_model != requested_post_review_model:
@@ -1903,7 +2016,7 @@ async def main() -> None:
 
     # Rebuild MCP servers with correct benchmark mode + dataset pre-loading
     global DIGIMON_MCP_SERVERS, DIRECT_TOOLS
-    benchmark_mode = 1  # benchmark mode hides build/pipeline shortcuts
+    benchmark_mode = 2 if (_is_codex_model(args.model) and effective_codex_profile == "compact") else 1
     DIGIMON_MCP_SERVERS = _build_mcp_servers(
         benchmark_mode,
         dataset_name=args.dataset,
@@ -1985,11 +2098,14 @@ async def main() -> None:
         dataset_path=dataset_path,
         questions=questions,
         mode=args.mode,
+        prompt_variant=("codex_compact" if (_is_codex_model(args.model) and effective_codex_profile == "compact") else "default"),
     )
+    run_provenance["codex_profile"] = effective_codex_profile if _is_codex_model(args.model) else None
+    run_provenance["digimon_benchmark_mode"] = benchmark_mode
     run_provenance["post_run_eval_config"] = {
         "det_checks": args.post_det_checks,
-        "review_rubric": (args.post_review_rubric or "").strip() or None,
-        "review_model": (args.post_review_model or "").strip() or None,
+        "review_rubric": None if _is_disabled_token(args.post_review_rubric) else (args.post_review_rubric or "").strip(),
+        "review_model": None if _is_disabled_token(args.post_review_model) else (args.post_review_model or "").strip(),
         "review_max_items": args.post_review_max_items,
         "gate_policy": post_gate_policy_effective or None,
         "gate_policy_source": post_gate_policy_source,
@@ -2118,6 +2234,8 @@ async def main() -> None:
         f"Model: {args.model} ({backend}, "
         f"question_timeout={question_timeout_label}, turn_timeout={args.turn_timeout}s)"
     )
+    if _is_codex_model(args.model):
+        print(f"Codex profile: {effective_codex_profile} (benchmark_mode={benchmark_mode})")
     if requested_model and requested_model != args.model:
         print(f"Requested model: {requested_model}")
     print(f"Mode: {args.mode}" + (f" (requested: {requested_mode})" if requested_mode != args.mode else ""))
@@ -2144,7 +2262,7 @@ async def main() -> None:
     if effective_embed_model:
         print(f"Embedding model override: {effective_embed_model}")
     print(f"Post-run deterministic checks: {args.post_det_checks}")
-    if args.post_review_rubric:
+    if not _is_disabled_token(args.post_review_rubric):
         print(
             "Post-run review: "
             f"rubric={args.post_review_rubric} "
@@ -2213,8 +2331,8 @@ async def main() -> None:
             "embed_dimensions": args.embed_dimensions,
             "disable_embedding_tools": bool(args.disable_embedding_tools),
             "post_det_checks": args.post_det_checks,
-            "post_review_rubric": (args.post_review_rubric or "").strip() or None,
-            "post_review_model": (args.post_review_model or "").strip() or None,
+            "post_review_rubric": None if _is_disabled_token(args.post_review_rubric) else (args.post_review_rubric or "").strip(),
+            "post_review_model": None if _is_disabled_token(args.post_review_model) else (args.post_review_model or "").strip(),
             "post_review_max_items": args.post_review_max_items,
             "post_gate_policy": post_gate_policy_effective or None,
             "post_gate_policy_source": post_gate_policy_source,
@@ -2555,6 +2673,7 @@ async def main() -> None:
                     accept_forced_answer_on_max_tool_calls=bool(args.accept_forced_answer_on_max_tool_calls),
                     lane_policy=args.lane_policy,
                     trace_id=trace_id,
+                    codex_profile=effective_codex_profile,
                 )
 
                 # LLM judge (runs before lock — it's an independent LLM call)
@@ -2854,11 +2973,11 @@ async def main() -> None:
 
         review_report = None
         review_rubric = (args.post_review_rubric or "").strip()
-        if review_rubric:
+        if not _is_disabled_token(review_rubric):
             review_report = review_items_with_rubric(
                 run_items,
                 rubric=review_rubric,
-                judge_model=(args.post_review_model or "").strip() or None,
+                judge_model=None if _is_disabled_token(args.post_review_model) else (args.post_review_model or "").strip() or None,
                 task_prefix=f"digimon.benchmark.post_review.{_experiment_run_id}",
                 max_items=args.post_review_max_items if args.post_review_max_items > 0 else None,
             )

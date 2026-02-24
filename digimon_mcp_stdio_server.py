@@ -64,7 +64,9 @@ logger = logging.getLogger(__name__)
 #        auto_compose, execute_method, list_methods, build_sparse_matrices, etc.)
 #        — agent must compose operators individually
 _bm_raw = os.environ.get("DIGIMON_BENCHMARK_MODE", "").strip().lower()
-if _bm_raw in ("1", "2", "true", "yes"):
+if _bm_raw in ("2",):
+    BENCHMARK_MODE = 2
+elif _bm_raw in ("1", "true", "yes"):
     BENCHMARK_MODE = 1
 else:
     BENCHMARK_MODE = 0
@@ -87,6 +89,28 @@ _BENCHMARK_HIDDEN_TOOLS: set[str] = {
     "list_modality_conversions",
     # Explicit wrappers are used in benchmark mode to avoid multi-mode ambiguity.
     "chunk_get_text",
+}
+
+# Additional aggressive pruning used by Codex compact benchmark profile.
+# Keep only core retrieval/traversal + submit_answer path in this mode.
+_BENCHMARK_HIDDEN_TOOLS_LEVEL2: set[str] = {
+    "entity_vdb_search",
+    "chunk_vdb_search",
+    "relationship_vdb_search",
+    "search_then_expand_onehop",
+    "semantic_plan",
+    "todo_create",
+    "todo_update",
+    "todo_list",
+    "todo_reset",
+    "bridge_disambiguate",
+    "entity_ppr",
+    "relationship_score_aggregator",
+    "chunk_occurrence",
+    "chunk_aggregator",
+    "subgraph_khop_paths",
+    "subgraph_steiner_tree",
+    "meta_pcst_optimize",
 }
 
 # Short descriptions for benchmark mode — the system prompt already explains
@@ -7470,7 +7494,16 @@ if __name__ == "__main__":
                 mcp.remove_tool(tool_name)
             except Exception:
                 pass  # tool wasn't registered (already hidden by other guards)
+        if BENCHMARK_MODE >= 2:
+            for tool_name in _BENCHMARK_HIDDEN_TOOLS_LEVEL2:
+                try:
+                    mcp.remove_tool(tool_name)
+                except Exception:
+                    pass
         _compact_tool_schemas()
         n_remaining = len(mcp._tool_manager._tools)
-        print(f"Benchmark mode: {n_remaining} tools (compact schemas)", file=sys.stderr)
+        print(
+            f"Benchmark mode level {BENCHMARK_MODE}: {n_remaining} tools (compact schemas)",
+            file=sys.stderr,
+        )
     mcp.run(transport="stdio")
