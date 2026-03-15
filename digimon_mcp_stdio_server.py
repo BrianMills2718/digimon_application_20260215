@@ -436,6 +436,118 @@ def _format_result(result: Any) -> str:
     return json.dumps(d, indent=2, default=str)
 
 
+_COOCCURRENCE_CAP_PER_ENTITY = 8
+"""Max cooccurrence edges shown per entity in compact relationship output."""
+
+_DATE_NUMBER_TARGET_RE = re.compile(
+    r"^(?:\d{3,4}|(?:january|february|march|april|may|june|july|august|"
+    r"september|october|november|december)\b.*|\d+(?:st|nd|rd|th)\b.*)$",
+    flags=re.IGNORECASE,
+)
+
+
+def _cooc_snippet(chunk_ref: str, src: str, tgt: str) -> str:
+    """Extract a short context snippet around a cooccurrence target from cached chunk text.
+
+    For date/number cooccurrence targets, shows the sentence containing the target
+    so the model can understand what the date/number means in context.
+    """
+    text = _seen_chunk_text.get(chunk_ref, "")
+    if not text:
+        return ""
+    tgt_lower = tgt.lower()
+    text_lower = text.lower()
+    idx = text_lower.find(tgt_lower)
+    if idx < 0:
+        return ""
+    # Find sentence boundaries around the target mention
+    start = max(0, text.rfind(".", 0, idx) + 1)
+    end = text.find(".", idx + len(tgt))
+    if end < 0:
+        end = min(len(text), idx + 120)
+    else:
+        end = min(end + 1, len(text))
+    snippet = text[start:end].strip()
+    if len(snippet) > 150:
+        snippet = snippet[:147] + "..."
+    return snippet
+
+
+def _format_relationship_onehop(result: Any) -> str:
+    """Compact formatter for relationship_onehop results.
+
+    Groups edges by source entity, sorts extracted relations (high weight,
+    with descriptions) before cooccurrence edges, and caps low-signal
+    cooccurrence at _COOCCURRENCE_CAP_PER_ENTITY per entity.
+
+    For cooccurrence edges to date/number targets, includes a context snippet
+    from the source chunk so the model can interpret the relationship.
+
+    Typical reduction: 20-50K chars → 1-3K chars (10-20x).
+    """
+    if hasattr(result, "model_dump"):
+        d = result.model_dump(exclude_none=True, exclude={"graph_instance"})
+    elif isinstance(result, dict):
+        d = result
+    else:
+        return str(result)
+
+    edges = d.get("one_hop_relationships")
+    if not isinstance(edges, list) or not edges:
+        return json.dumps(d, indent=2, default=str)
+
+    # Group by source entity
+    by_src: Dict[str, list[dict[str, Any]]] = {}
+    for e in edges:
+        src = str(e.get("src_id", "?"))
+        by_src.setdefault(src, []).append(e)
+
+    lines: list[str] = []
+    for src, group in by_src.items():
+        # Extracted relations first (high weight), then cooccurrence
+        group.sort(key=lambda e: (-e.get("weight", 0), e.get("tgt_id", "")))
+        lines.append(f"[{src}]")
+        cooc_count = 0
+        cooc_total = sum(
+            1 for e in group
+            if e.get("relation_name") == "chunk_cooccurrence"
+        )
+        for e in group:
+            tgt = str(e.get("tgt_id", "?"))
+            desc = (e.get("description") or "").strip()
+            weight = e.get("weight", 0)
+            is_cooc = e.get("relation_name") == "chunk_cooccurrence"
+            chunk_ref = ""
+            attrs = e.get("attributes")
+            if isinstance(attrs, dict):
+                chunk_ref = str(attrs.get("source_id", ""))
+            if is_cooc:
+                cooc_count += 1
+                if cooc_count > _COOCCURRENCE_CAP_PER_ENTITY:
+                    continue
+            ref_part = f" [{chunk_ref}]" if chunk_ref else ""
+            # For cooccurrence edges to date/number targets, add context snippet
+            # or flag so the model knows to investigate
+            snippet_part = ""
+            if is_cooc and _DATE_NUMBER_TARGET_RE.match(tgt) and chunk_ref:
+                snippet = _cooc_snippet(chunk_ref, src, tgt)
+                if snippet:
+                    snippet_part = f" ctx=\"{snippet}\""
+                else:
+                    snippet_part = f" ⚑date/number — check {chunk_ref}"
+            if desc:
+                lines.append(f"  → {tgt} (w={weight}) \"{desc}\"{ref_part}")
+            elif weight > 0.5:
+                lines.append(f"  → {tgt} (w={weight}){ref_part}")
+            else:
+                lines.append(f"  → {tgt}{ref_part}{snippet_part}")
+        omitted = cooc_total - min(cooc_total, _COOCCURRENCE_CAP_PER_ENTITY)
+        if omitted > 0:
+            lines.append(f"  ... +{omitted} more cooccurrence edges")
+
+    return "\n".join(lines)
+
+
 def _dedup_chunks_in_dict(d: dict) -> None:
     """In-place dedup of chunk text in a result dict.
 
@@ -2857,6 +2969,8 @@ async def relationship_onehop(entity_ids: list[str] | str | None, graph_referenc
         graph_reference_id=graph_reference_id,
     )
     result = await relationship_one_hop_neighbors_tool(inputs, _state["context"])
+    if BENCHMARK_MODE:
+        return _format_relationship_onehop(result)
     return _format_result(result)
 
 
