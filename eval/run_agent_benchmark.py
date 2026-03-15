@@ -1716,7 +1716,15 @@ async def run_agent(
                     reasoning = args.get("reasoning", "")
                 break
 
-        # Fallback: extract from text if no submit_answer call
+        # Fallback: check submitted_answer_value from agent metadata (set by
+        # forced-final acceptance path when the agent submitted an answer that
+        # was rejected by the validator but later accepted on budget exhaustion).
+        if not answer and isinstance(raw_metadata, dict):
+            meta_answer = raw_metadata.get("submitted_answer_value")
+            if isinstance(meta_answer, str) and meta_answer.strip():
+                answer = meta_answer.strip()
+
+        # Fallback: extract from text if no submit_answer call and no metadata
         if not answer:
             raw_fallback = result.content.strip()
             extracted = _extract_answer_from_freeform_content(raw_fallback)
