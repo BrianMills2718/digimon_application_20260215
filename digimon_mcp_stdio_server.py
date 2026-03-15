@@ -771,23 +771,27 @@ def _todo_requires_bridge_alternatives(todo: dict[str, Any]) -> bool:
         if atom_op in {"relation", "compose", "intersection", "compare"}:
             return True
 
-        # Only treat planner uncertainty as bridge-specific when it explicitly points
-        # to this atom ID/output variable. Broad token overlap ("israel", "region", ...)
-        # causes false positives on simple lookup atoms and triggers unnecessary churn.
-        uncertainty_points = _current_semantic_plan.get("uncertainty_points") or []
-        if uncertainty_points:
-            output_var = str(atom.get("output_var") or "").strip()
-            markers = {
-                atom_id.lower(),
-                output_var.lower(),
-                output_var.replace("$", "").lower(),
-            }
-            markers = {m for m in markers if m}
-            if markers:
-                for up in uncertainty_points:
-                    up_l = (up or "").lower()
-                    if any(marker in up_l for marker in markers):
-                        return True
+        # Only check planner uncertainty_points for non-lookup atoms.
+        # The LLM planner routinely lists ALL output_vars as uncertainty_points
+        # (they're "uncertain" in the trivial sense of being unresolved), which
+        # causes every lookup atom to be false-positively classified as a bridge.
+        # Lookup atoms should only require alternatives when their operation or
+        # task text explicitly signals ambiguity (checked above).
+        if atom_op not in {"lookup", "temporal"}:
+            uncertainty_points = _current_semantic_plan.get("uncertainty_points") or []
+            if uncertainty_points:
+                output_var = str(atom.get("output_var") or "").strip()
+                markers = {
+                    atom_id.lower(),
+                    output_var.lower(),
+                    output_var.replace("$", "").lower(),
+                }
+                markers = {m for m in markers if m}
+                if markers:
+                    for up in uncertainty_points:
+                        up_l = (up or "").lower()
+                        if any(marker in up_l for marker in markers):
+                            return True
     return False
 
 
@@ -1193,7 +1197,7 @@ def _normalize_answer_kind(answer_kind: str) -> str:
 
 
 _ENTITY_HINT_RE = re.compile(
-    r"(^\s*(who|whom|whose)\b)|"
+    r"(^\s*(who|whom|whose|where)\b)|"
     r"(\b(what(?:'s| is)?\s+(?:the\s+)?name of|which\s+(person|individual|player|actor|singer|author|city|country|region|company|river|state))\b)"
 )
 _DATE_HINT_RE = re.compile(
@@ -1271,7 +1275,10 @@ def _infer_expected_coarse_types(text: str) -> set[str]:
     expected: set[str] = set()
     if re.search(r"\b(birthplace|headquarter|headquarters|city|country|province|state|region|where|located)\b", probe):
         expected.add("place")
-    if re.search(r"\b(founder|author|actor|player|person|individual|who)\b", probe):
+    if re.search(
+        r"\b(founder|author|actor|player|person|individual|who|performer|singer|musician|artist|designer|architect|explorer)\b",
+        probe,
+    ):
         expected.add("person")
     if re.search(r"\b(company|organization|organisation|group|label|team|university|agency|government)\b", probe):
         expected.add("organization")
@@ -1299,6 +1306,30 @@ def _extract_context_entity_mentions(text: str, *, limit: int = 8) -> list[str]:
         if len(mentions) >= max(1, int(limit)):
             break
     return mentions
+
+
+_GENERIC_ENTITY_CANDIDATE_NAMES = {
+    "performer",
+    "artist",
+    "musician",
+    "singer",
+    "actor",
+    "author",
+    "designer",
+    "architect",
+    "founder",
+    "player",
+    "person",
+    "individual",
+    "the musical",
+    "musical",
+    "group",
+    "company",
+    "organization",
+    "city",
+    "country",
+    "region",
+}
 
 
 def _extract_anchor_phrases(text: str, *, limit: int = 4) -> list[str]:
@@ -2817,8 +2848,72 @@ async def entity_resolve_names_to_ids(
         for v in _normalize_string_list(expected_coarse_types, split_commas=True)
         if v
     }
+    resolved_graph_id = _resolve_graph_reference_id(
+        graph_reference_id="",
+        dataset_name=dataset_name,
+    )
+    graph_instance = None
+    nx_graph = None
+    if resolved_graph_id:
+        ctx = _state.get("context")
+        graph_instance = (
+            ctx.get_graph_instance(resolved_graph_id)
+            if ctx is not None and hasattr(ctx, "get_graph_instance")
+            else None
+        )
+        if (
+            graph_instance is not None
+            and hasattr(graph_instance, "_graph")
+            and hasattr(graph_instance._graph, "graph")
+        ):
+            nx_graph = graph_instance._graph.graph
 
     for entity_name in normalized_names:
+        exact_entity_id: str | None = None
+        if nx_graph is not None:
+            try:
+                from Core.Common.Utils import clean_str
+            except Exception:
+                clean_str = lambda x: x  # type: ignore[assignment]
+            for candidate in (entity_name, clean_str(entity_name)):
+                candidate_norm = str(candidate or "").strip()
+                if not candidate_norm or candidate_norm not in nx_graph:
+                    continue
+                candidate_type = _lookup_entity_coarse_type(
+                    entity_id=candidate_norm,
+                    dataset_name=dataset_name,
+                )
+                if expected_types_norm and not _coarse_type_matches(candidate_type, expected_types_norm):
+                    continue
+                exact_entity_id = candidate_norm
+                break
+        if exact_entity_id is not None:
+            resolved_entities.append(
+                {
+                    "source_entity_name": entity_name,
+                    "resolved_entity_id": exact_entity_id,
+                    "resolved_entity_name": exact_entity_id,
+                    "coarse_type": _lookup_entity_coarse_type(
+                        entity_id=exact_entity_id,
+                        dataset_name=dataset_name,
+                    ),
+                    "score": 1.0,
+                    "resolution_mode": "graph_exact_match",
+                    "top_candidates": [
+                        {
+                            "entity_id": exact_entity_id,
+                            "entity_name": exact_entity_id,
+                            "coarse_type": _lookup_entity_coarse_type(
+                                entity_id=exact_entity_id,
+                                dataset_name=dataset_name,
+                            ),
+                            "score": 1.0,
+                        }
+                    ],
+                }
+            )
+            continue
+
         raw_payload = await entity_vdb_search(
             vdb_reference_id=resolved_vdb,
             query_text=entity_name,
@@ -2879,6 +2974,7 @@ async def entity_resolve_names_to_ids(
                     dataset_name=dataset_name,
                 ),
                 "score": best.get("score"),
+                "resolution_mode": "entity_vdb_search",
                 "top_candidates": [
                     {
                         "entity_id": str(c.get("node_id") or c.get("entity_name") or "").strip(),
@@ -3094,6 +3190,9 @@ async def entity_select_candidate(
     chunk_ids: list[str] | str | None = None,
     chunk_id: str = "",
     entity_name: str = "",
+    atom_id: str = "",
+    task_text: str = "",
+    operation: str = "",
     expected_coarse_types: list[str] | str | None = None,
     dataset_name: str = "",
     top_k: int = 3,
@@ -3149,6 +3248,32 @@ async def entity_select_candidate(
 
     by_entity: dict[str, dict[str, Any]] = {}
     unresolved_names: list[str] = list(name_candidates_from_args)
+    atom_context_text = ""
+    atom_id_norm = (atom_id or "").strip()
+    if atom_id_norm:
+        atom = _semantic_plan_atom_by_id(atom_id_norm)
+        if atom is not None:
+            atom_context_text = " ".join(
+                part.strip()
+                for part in (
+                    str(atom.get("sub_question") or ""),
+                    str(atom.get("done_criteria") or ""),
+                )
+                if part and part.strip()
+            )
+
+    semantic_context = " ".join(
+        part.strip()
+        for part in (
+            str(task_text or ""),
+            str(operation or ""),
+            atom_context_text,
+            str(entity_name or ""),
+            str(_current_question or ""),
+        )
+        if part and part.strip()
+    )
+
     expected_types_norm = {
         _normalize_coarse_type(v)
         for v in _normalize_string_list(expected_coarse_types, split_commas=True)
@@ -3156,7 +3281,7 @@ async def entity_select_candidate(
     }
     expected_types_source = "args" if expected_types_norm else ""
     if not expected_types_norm:
-        inferred_types = _infer_expected_coarse_types(entity_name or _current_question)
+        inferred_types = _infer_expected_coarse_types(semantic_context)
         if inferred_types:
             expected_types_norm = {t for t in inferred_types if t}
             expected_types_source = "inferred"
@@ -3165,7 +3290,7 @@ async def entity_select_candidate(
         # If caller hints conflict with a clear inferred expectation, prefer the
         # inferred set to avoid committing to obviously wrong pivot types.
         inferred_from_question = {
-            t for t in _infer_expected_coarse_types(_current_question) if t
+            t for t in _infer_expected_coarse_types(semantic_context) if t
         }
         if inferred_from_question:
             overlap = expected_types_norm.intersection(inferred_from_question)
@@ -3271,7 +3396,13 @@ async def entity_select_candidate(
         if _coarse_type_matches(str(item.get("coarse_type") or ""), expected_types_norm)
     ]
     strict_type_filter = strict_type_filter_requested
-    if strict_type_filter and not type_matched:
+    # When ALL candidates have unknown/empty type, the type filter is uninformative —
+    # fall back to the full ordered list with a warning instead of rejecting everything.
+    all_unknown = all(
+        _normalize_coarse_type(str(item.get("coarse_type") or "")) == "unknown"
+        for item in ordered
+    ) if ordered else False
+    if strict_type_filter and not type_matched and not all_unknown:
         return json.dumps(
             {
                 "status": "needs_revision",
@@ -3298,7 +3429,15 @@ async def entity_select_candidate(
             indent=2,
             default=str,
         )
-    candidates_for_selection = type_matched if (expected_types_norm and type_matched) else ordered
+    type_filter_applied = bool(expected_types_norm and type_matched and not all_unknown)
+    candidates_for_selection = type_matched if type_filter_applied else ordered
+    filtered_generic = [
+        item for item in candidates_for_selection
+        if str(item.get("entity_name") or item.get("entity_id") or "").strip().lower()
+        not in _GENERIC_ENTITY_CANDIDATE_NAMES
+    ]
+    if filtered_generic:
+        candidates_for_selection = filtered_generic
     threshold = float(min_candidate_score or 0.0)
     selected = [
         item for item in candidates_for_selection
@@ -3315,7 +3454,7 @@ async def entity_select_candidate(
             "expected_coarse_types": sorted(expected_types_norm) if expected_types_norm else [],
             "expected_coarse_types_source": expected_types_source or None,
             "n_type_matches": len(type_matched),
-            "type_filter_applied": bool(expected_types_norm and type_matched),
+            "type_filter_applied": type_filter_applied,
             "status_message": f"Selected {len(selected)} canonical entity IDs from candidate set",
         },
         indent=2,
@@ -3753,7 +3892,13 @@ async def chunk_get_text(
                         content = chunk_map.get(cid)
                         if content:
                             _is_new, text_out = _dedup_chunk(cid, content)
-                            retrieved_chunks.append({"chunk_id": cid, "text_content": text_out})
+                            retrieved_chunks.append(
+                                {
+                                    "chunk_id": cid,
+                                    "text_content": text_out,
+                                    "evidence_ref": cid,
+                                }
+                            )
                         else:
                             unresolved.append(cid)
                     missing_chunk_ids = unresolved
@@ -3767,6 +3912,11 @@ async def chunk_get_text(
         return json.dumps(
             {
                 "retrieved_chunks": retrieved_chunks,
+                "evidence_refs": [
+                    str(item.get("evidence_ref") or "")
+                    for item in retrieved_chunks
+                    if isinstance(item, dict) and str(item.get("evidence_ref") or "").strip()
+                ],
                 "missing_chunk_ids": missing_chunk_ids,
                 "resolved_mode": resolved_mode,
                 "resolved_dataset_name": resolved_dataset_name or None,
@@ -3821,11 +3971,17 @@ async def chunk_get_text(
                 is_new, text = _dedup_chunk(chunk_id, text)
                 d = chunk.model_dump(exclude_none=True) if hasattr(chunk, "model_dump") else {}
                 d["text_content"] = text
+                d["evidence_ref"] = chunk_id
                 deduped.append(d)
             else:
                 deduped.append(chunk.model_dump(exclude_none=True) if hasattr(chunk, "model_dump") else {})
         return json.dumps({
             "retrieved_chunks": deduped,
+            "evidence_refs": [
+                str(item.get("evidence_ref") or "")
+                for item in deduped
+                if isinstance(item, dict) and str(item.get("evidence_ref") or "").strip()
+            ],
             "resolved_mode": resolved_mode,
             "resolved_graph_reference_id": resolved_graph_id,
             "status_message": f"Retrieved {len(deduped)} chunks for {len(normalized_entity_ids)} entities",
@@ -4025,6 +4181,11 @@ async def extract_date_mentions(
     return json.dumps(
         {
             "date_mentions": limited_mentions,
+            "evidence_refs": [
+                str(item.get("evidence_ref") or "")
+                for item in limited_mentions
+                if isinstance(item, dict) and str(item.get("evidence_ref") or "").strip()
+            ],
             "n_date_mentions": len(limited_mentions),
             "n_sources": len(sources),
             "status_message": (
@@ -4115,6 +4276,7 @@ async def chunk_text_search(query_text: str, dataset_name: str,
             deduped.append(
                 {
                     "chunk_id": c.chunk_id,
+                    "evidence_ref": c.chunk_id,
                     "text": compact_text,
                     "score": c.score,
                     "text_truncated": bool(was_truncated),
@@ -4139,6 +4301,11 @@ async def chunk_text_search(query_text: str, dataset_name: str,
         return json.dumps({
             "resolved_dataset_name": resolved_dataset_name,
             "chunks": [entry for entry in deduped],
+            "evidence_refs": [
+                str(entry.get("evidence_ref") or "")
+                for entry in deduped
+                if isinstance(entry, dict) and str(entry.get("evidence_ref") or "").strip()
+            ],
             "resolved_graph_reference_id": enriched.get("resolved_graph_reference_id"),
             "entity_candidates": enriched.get("entity_candidates", []),
             "entity_candidates_by_chunk": compact_candidates_by_chunk,
@@ -4243,6 +4410,7 @@ async def chunk_vdb_search(query_text: str, dataset_name: str,
             deduped.append(
                 {
                     "chunk_id": c.chunk_id,
+                    "evidence_ref": c.chunk_id,
                     "text": compact_text,
                     "score": c.score,
                     "text_truncated": bool(was_truncated),
@@ -4268,6 +4436,11 @@ async def chunk_vdb_search(query_text: str, dataset_name: str,
             {
                 "resolved_dataset_name": resolved_dataset_name,
                 "chunks": deduped,
+                "evidence_refs": [
+                    str(entry.get("evidence_ref") or "")
+                    for entry in deduped
+                    if isinstance(entry, dict) and str(entry.get("evidence_ref") or "").strip()
+                ],
                 "resolved_graph_reference_id": enriched.get("resolved_graph_reference_id"),
                 "entity_candidates": enriched.get("entity_candidates", []),
                 "entity_candidates_by_chunk": compact_candidates_by_chunk,
@@ -4402,16 +4575,32 @@ async def search_then_expand_onehop(
         compact_chunks.append(
             {
                 "chunk_id": item.get("chunk_id"),
+                "evidence_ref": item.get("evidence_ref") or item.get("chunk_id"),
                 "score": item.get("score"),
                 "text": item.get("text"),
             }
         )
+
+    composite_evidence_refs: list[str] = []
+    for item in compact_chunks:
+        if not isinstance(item, dict):
+            continue
+        ref = str(item.get("evidence_ref") or "").strip()
+        if ref and ref not in composite_evidence_refs:
+            composite_evidence_refs.append(ref)
+    for item in selected_entities:
+        if not isinstance(item, dict):
+            continue
+        ref = str(item.get("evidence_ref") or "").strip()
+        if ref and ref not in composite_evidence_refs:
+            composite_evidence_refs.append(ref)
 
     return json.dumps(
         {
             "resolved_dataset_name": chunk_payload.get("resolved_dataset_name") if isinstance(chunk_payload, dict) else _resolve_dataset_name(dataset_name),
             "resolved_graph_reference_id": onehop_payload.get("resolved_graph_reference_id") if isinstance(onehop_payload, dict) else None,
             "chunks": compact_chunks,
+            "evidence_refs": composite_evidence_refs,
             "entity_candidates": candidates,
             "selected_entities": selected_entities,
             "neighbors": neighbors,
@@ -4997,9 +5186,10 @@ if not BENCHMARK_MODE:
     relationship_vdb_build = mcp.tool()(relationship_vdb_build)
 
 @mcp.tool()
-async def relationship_vdb_search(vdb_reference_id: str, query_text: str,
+async def relationship_vdb_search(vdb_reference_id: str, query_text: str = "",
                                    top_k: int = 10,
-                                   score_threshold: float = None) -> str:
+                                   score_threshold: float = None,
+                                   entity_names: list[str] | str | None = None) -> str:
     """Search for relationships similar to a query using vector similarity.
 
     Args:
@@ -5007,6 +5197,7 @@ async def relationship_vdb_search(vdb_reference_id: str, query_text: str,
         query_text: Natural language search query
         top_k: Number of results to return
         score_threshold: Minimum similarity score (optional)
+        entity_names: Optional entity names to inject into the relationship query context
 
     Returns:
         similar_relationships: list of [relationship_id: str, description: str, score: float]
@@ -5015,9 +5206,15 @@ async def relationship_vdb_search(vdb_reference_id: str, query_text: str,
     from Core.AgentTools.relationship_tools import relationship_vdb_search_tool
     from Core.AgentSchema.tool_contracts import RelationshipVDBSearchInputs
 
+    query_parts = [str(query_text or "").strip()]
+    query_parts.extend(_normalize_string_list(entity_names))
+    effective_query = " ".join(part for part in query_parts if part)
+    if not effective_query:
+        return json.dumps({"error": "query_text or entity_names is required"}, indent=2)
+
     inputs = RelationshipVDBSearchInputs(
         vdb_reference_id=vdb_reference_id,
-        query_text=query_text,
+        query_text=effective_query,
         top_k=top_k,
         score_threshold=score_threshold,
     )
@@ -6447,7 +6644,11 @@ if BENCHMARK_MODE:
             "intersection/compose atom. For comparatives/uniqueness ('only', 'largest', "
             "'larger than', ordinals), create an explicit compare/rank atom before downstream lookups. "
             "Do not shortcut relation targets (e.g., avoid replacing 'north of region where Israel is located' "
-            "with 'north of Israel')."
+            "with 'north of Israel'). "
+            "In sub_question text, use entity/title names exactly as they appear in the original question. "
+            "Do not add assumed type qualifiers (song, movie, book, album, etc.) that the question "
+            "does not explicitly state — the retrieval system is literal and added qualifiers can "
+            "cause false mismatches."
         )
         user_prompt = (
             f"Question: {question}\n\n"
@@ -6944,10 +7145,16 @@ if BENCHMARK_MODE:
                 prior_fp = guard.get("attempt_fingerprint", "")
                 prior_refs = set(_normalize_evidence_refs(guard.get("attempt_refs") or []))
                 has_new_refs = any(r not in prior_refs for r in candidate_refs)
+                prior_alts = set(_normalize_alternatives_tested(guard.get("attempt_alts") or []))
+                has_new_alts = any(a not in prior_alts for a in candidate_alts)
                 todo_sig_changed = _todo_evidence_signature() != guard.get("todo_signature", "")
                 requires_new_evidence = bool(guard.get("requires_new_evidence", False))
                 repeated_attempt = attempt_fp == prior_fp
-                if (requires_new_evidence and not has_new_refs and not todo_sig_changed) or (
+                # Treat newly-added alternatives_tested as progress (not just new evidence_refs).
+                # When the prior failure was "missing bridge alternatives", providing alternatives
+                # is the correct fix and should not be blocked by the evidence-only gate.
+                has_progress = has_new_refs or has_new_alts or todo_sig_changed
+                if (requires_new_evidence and not has_progress) or (
                     (not requires_new_evidence) and repeated_attempt and not todo_sig_changed
                 ):
                     details = {
@@ -7202,6 +7409,7 @@ if BENCHMARK_MODE:
                     "requires_new_evidence": bool(details.get("requires_new_evidence", True)),
                     "attempt_fingerprint": _attempt_fingerprint(candidate_span, candidate_refs, candidate_alts),
                     "attempt_refs": candidate_refs,
+                    "attempt_alts": candidate_alts,
                     "todo_signature": _todo_evidence_signature(),
                 }
                 return _todo_needs_revision_response(

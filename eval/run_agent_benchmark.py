@@ -87,7 +87,7 @@ def extract_tool_calls(raw_response: object) -> list[dict]:
                 "has_result": r.result is not None,
                 "has_error": r.error is not None,
                 "error": r.error[:500] if r.error else None,
-                "result_preview": r.result[:200] if r.result else None,
+                "result_preview": r.result[:500] if r.result else None,
             }
             for r in raw_response.tool_calls
         ]
@@ -114,7 +114,7 @@ def extract_tool_calls(raw_response: object) -> list[dict]:
                 "has_result": result_text is not None,
                 "has_error": error_text is not None,
                 "error": str(error_text)[:500] if error_text else None,
-                "result_preview": str(result_text)[:200] if result_text else None,
+                "result_preview": str(result_text)[:500] if result_text else None,
             })
     return calls
 
@@ -1187,6 +1187,22 @@ def _extract_answer_from_freeform_content(content: str) -> str | None:
             if candidate:
                 return candidate
 
+    labeled_match = re.search(
+        r"(?:final answer|answer)\s*:\s*([^\n]{1,300})",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if labeled_match:
+        candidate = labeled_match.group(1).strip(" `*\"'")
+        if candidate:
+            return candidate
+
+    lines = [line.strip(" `*\"'") for line in text.splitlines() if line.strip()]
+    if lines:
+        last_line = lines[-1]
+        if last_line and len(last_line.split()) <= 12:
+            return last_line
+
     # If the model answered in a sentence but contains a single explicit full date,
     # extract the span to avoid formatting-only score misses.
     month_date_matches = re.findall(
@@ -1198,6 +1214,89 @@ def _extract_answer_from_freeform_content(content: str) -> str | None:
         return month_date_matches[0].strip()
 
     return None
+
+
+_WARNING_EVIDENCE_METRIC_RE = re.compile(
+    r"METRIC:\s+evidence_turns=(?P<total>\d+),\s+new_evidence_turns=(?P<new>\d+),\s+"
+    r"stagnant_evidence_turns=(?P<stagnant>\d+),\s+retrieval_stagnation_streak_max=(?P<streak>\d+),\s+"
+    r"evidence_pointer_count=(?P<pointers>\d+)"
+)
+
+
+def _populate_warning_derived_fields(
+    *,
+    warnings: list[str],
+    evidence_turns_total: Any,
+    evidence_turns_with_new_evidence: Any,
+    evidence_turns_without_new_evidence: Any,
+    retrieval_stagnation_streak_max: Any,
+    evidence_pointer_count: Any,
+    evidence_digest_basis: Any,
+    submit_completion_mode: Any,
+    submit_validator_accepted: Any,
+    submit_forced_accept_on_budget_exhaustion: Any,
+    first_terminal_failure_event_code: Any,
+    tool_arg_validation_rejections: Any,
+    required_submit_missing: Any = None,
+) -> dict[str, Any]:
+    """Backfill observability fields from warning strings when metadata is missing."""
+    for warning in warnings:
+        if (
+            evidence_turns_total is None
+            or evidence_turns_with_new_evidence is None
+            or evidence_turns_without_new_evidence is None
+            or retrieval_stagnation_streak_max is None
+            or evidence_pointer_count is None
+        ):
+            metric_match = _WARNING_EVIDENCE_METRIC_RE.search(warning)
+            if metric_match:
+                evidence_turns_total = int(metric_match.group("total"))
+                evidence_turns_with_new_evidence = int(metric_match.group("new"))
+                evidence_turns_without_new_evidence = int(metric_match.group("stagnant"))
+                retrieval_stagnation_streak_max = int(metric_match.group("streak"))
+                evidence_pointer_count = int(metric_match.group("pointers"))
+                if evidence_digest_basis is None:
+                    evidence_digest_basis = "canonical_evidence_pointers"
+
+        if tool_arg_validation_rejections is None and warning.startswith("TOOL_ARG_VALIDATION:"):
+            match = re.search(r"rejected\s+(\d+)\s+tool call", warning)
+            if match:
+                tool_arg_validation_rejections = int(match.group(1))
+
+        if first_terminal_failure_event_code is None:
+            if warning.startswith("SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION:"):
+                first_terminal_failure_event_code = "SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION"
+            elif warning.startswith("SUBMIT_FORCED_ACCEPT_TURN_EXHAUSTION:"):
+                first_terminal_failure_event_code = "SUBMIT_FORCED_ACCEPT_TURN_EXHAUSTION"
+            elif warning.startswith("SUBMIT_FORCED_ACCEPT_FORCED_FINAL:"):
+                first_terminal_failure_event_code = "SUBMIT_FORCED_ACCEPT_FORCED_FINAL"
+
+    if submit_completion_mode is None:
+        if submit_validator_accepted:
+            submit_completion_mode = "grounded_submit"
+        elif required_submit_missing:
+            submit_completion_mode = "missing_required_submit"
+        elif submit_forced_accept_on_budget_exhaustion:
+            submit_completion_mode = "forced_terminal_accept"
+        elif isinstance(first_terminal_failure_event_code, str) and first_terminal_failure_event_code.startswith(
+            "SUBMIT_FORCED_ACCEPT_"
+        ):
+            submit_completion_mode = "forced_terminal_accept"
+
+    if first_terminal_failure_event_code is None and required_submit_missing:
+        first_terminal_failure_event_code = "REQUIRED_SUBMIT_MISSING"
+
+    return {
+        "evidence_turns_total": evidence_turns_total,
+        "evidence_turns_with_new_evidence": evidence_turns_with_new_evidence,
+        "evidence_turns_without_new_evidence": evidence_turns_without_new_evidence,
+        "retrieval_stagnation_streak_max": retrieval_stagnation_streak_max,
+        "evidence_pointer_count": evidence_pointer_count,
+        "evidence_digest_basis": evidence_digest_basis,
+        "submit_completion_mode": submit_completion_mode,
+        "first_terminal_failure_event_code": first_terminal_failure_event_code,
+        "tool_arg_validation_rejections": tool_arg_validation_rejections,
+    }
 
 
 # --- Run agent ---
@@ -1502,6 +1601,8 @@ async def run_agent(
         evidence_turns_total = None
         evidence_turns_with_new_evidence = None
         evidence_turns_without_new_evidence = None
+        evidence_pointer_count = None
+        evidence_digest_basis = None
         context_tool_result_clearings = None
         context_tool_results_cleared = None
         context_tool_result_cleared_chars = None
@@ -1509,95 +1610,83 @@ async def run_agent(
         submit_answer_call_count = None
         submit_answer_attempted = None
         submit_answer_succeeded = None
+        submit_validator_accepted = None
         required_submit_missing = None
         submit_forced_retry_on_budget_exhaustion = None
         submit_forced_accept_on_budget_exhaustion = None
-        if isinstance(result.raw_response, dict):
-            conversation_trace = result.raw_response.get("conversation_trace")
-        elif isinstance(result.raw_response, MCPAgentResult):
-            conversation_trace = result.raw_response.conversation_trace or None
-            budgeted_tool_calls_used = result.raw_response.metadata.get("budgeted_tool_calls_used")
-            rejected_missing_reasoning_calls = result.raw_response.metadata.get("rejected_missing_reasoning_calls")
-            control_loop_suppressed_calls = result.raw_response.metadata.get("control_loop_suppressed_calls")
-            tool_contract_rejections = result.raw_response.metadata.get("tool_contract_rejections")
-            available_artifacts_final = result.raw_response.metadata.get("available_artifacts_final")
-            tool_contract_violation_events = result.raw_response.metadata.get("tool_contract_violation_events")
-            artifact_timeline = result.raw_response.metadata.get("artifact_timeline")
-            tool_arg_coercions = result.raw_response.metadata.get("tool_arg_coercions")
-            tool_arg_coercion_calls = result.raw_response.metadata.get("tool_arg_coercion_calls")
-            tool_arg_validation_rejections = result.raw_response.metadata.get("tool_arg_validation_rejections")
-            available_capabilities_final = result.raw_response.metadata.get("available_capabilities_final")
-            primary_failure_class = result.raw_response.metadata.get("primary_failure_class")
-            secondary_failure_classes = result.raw_response.metadata.get("secondary_failure_classes")
-            first_terminal_failure_event_code = result.raw_response.metadata.get(
-                "first_terminal_failure_event_code"
-            )
-            failure_event_codes = result.raw_response.metadata.get("failure_event_codes")
-            failure_event_code_counts = result.raw_response.metadata.get("failure_event_code_counts")
-            no_legal_noncontrol_turns = result.raw_response.metadata.get("no_legal_noncontrol_turns")
-            retrieval_no_hits_count = result.raw_response.metadata.get("retrieval_no_hits_count")
-            submit_validation_reason_counts = result.raw_response.metadata.get(
-                "submit_validation_reason_counts"
-            )
-            hard_bindings_hash = result.raw_response.metadata.get("hard_bindings_hash")
-            full_bindings_hash = result.raw_response.metadata.get("full_bindings_hash")
-            run_config_hash = result.raw_response.metadata.get("run_config_hash")
-            lane_closure_analysis = result.raw_response.metadata.get("lane_closure_analysis")
-            tool_disclosure_repair_suggestions = result.raw_response.metadata.get(
-                "tool_disclosure_repair_suggestions"
-            )
-            deficit_no_progress_streak_max = result.raw_response.metadata.get(
-                "deficit_no_progress_streak_max"
-            )
-            deficit_no_progress_nudges = result.raw_response.metadata.get(
-                "deficit_no_progress_nudges"
-            )
-            finalization_fallback_used = result.raw_response.metadata.get("finalization_fallback_used")
-            finalization_fallback_succeeded = result.raw_response.metadata.get(
-                "finalization_fallback_succeeded"
-            )
-            finalization_events = result.raw_response.metadata.get("finalization_events")
-            forced_final_attempts = result.raw_response.metadata.get("forced_final_attempts")
-            forced_final_circuit_breaker_opened = result.raw_response.metadata.get(
+        submit_completion_mode = None
+        raw_response = result.raw_response
+        raw_metadata = None
+        if isinstance(raw_response, dict):
+            conversation_trace = raw_response.get("conversation_trace")
+            candidate_metadata = raw_response.get("metadata")
+            if isinstance(candidate_metadata, dict):
+                raw_metadata = candidate_metadata
+        else:
+            conversation_trace = getattr(raw_response, "conversation_trace", None) or None
+            candidate_metadata = getattr(raw_response, "metadata", None)
+            if isinstance(candidate_metadata, dict):
+                raw_metadata = candidate_metadata
+
+        if isinstance(raw_metadata, dict):
+            budgeted_tool_calls_used = raw_metadata.get("budgeted_tool_calls_used")
+            rejected_missing_reasoning_calls = raw_metadata.get("rejected_missing_reasoning_calls")
+            control_loop_suppressed_calls = raw_metadata.get("control_loop_suppressed_calls")
+            tool_contract_rejections = raw_metadata.get("tool_contract_rejections")
+            available_artifacts_final = raw_metadata.get("available_artifacts_final")
+            tool_contract_violation_events = raw_metadata.get("tool_contract_violation_events")
+            artifact_timeline = raw_metadata.get("artifact_timeline")
+            tool_arg_coercions = raw_metadata.get("tool_arg_coercions")
+            tool_arg_coercion_calls = raw_metadata.get("tool_arg_coercion_calls")
+            tool_arg_validation_rejections = raw_metadata.get("tool_arg_validation_rejections")
+            available_capabilities_final = raw_metadata.get("available_capabilities_final")
+            primary_failure_class = raw_metadata.get("primary_failure_class")
+            secondary_failure_classes = raw_metadata.get("secondary_failure_classes")
+            first_terminal_failure_event_code = raw_metadata.get("first_terminal_failure_event_code")
+            failure_event_codes = raw_metadata.get("failure_event_codes")
+            failure_event_code_counts = raw_metadata.get("failure_event_code_counts")
+            no_legal_noncontrol_turns = raw_metadata.get("no_legal_noncontrol_turns")
+            retrieval_no_hits_count = raw_metadata.get("retrieval_no_hits_count")
+            submit_validation_reason_counts = raw_metadata.get("submit_validation_reason_counts")
+            hard_bindings_hash = raw_metadata.get("hard_bindings_hash")
+            full_bindings_hash = raw_metadata.get("full_bindings_hash")
+            run_config_hash = raw_metadata.get("run_config_hash")
+            lane_closure_analysis = raw_metadata.get("lane_closure_analysis")
+            tool_disclosure_repair_suggestions = raw_metadata.get("tool_disclosure_repair_suggestions")
+            deficit_no_progress_streak_max = raw_metadata.get("deficit_no_progress_streak_max")
+            deficit_no_progress_nudges = raw_metadata.get("deficit_no_progress_nudges")
+            finalization_fallback_used = raw_metadata.get("finalization_fallback_used")
+            finalization_fallback_succeeded = raw_metadata.get("finalization_fallback_succeeded")
+            finalization_events = raw_metadata.get("finalization_events")
+            forced_final_attempts = raw_metadata.get("forced_final_attempts")
+            forced_final_circuit_breaker_opened = raw_metadata.get(
                 "forced_final_circuit_breaker_opened"
             )
-            retrieval_stagnation_triggered = result.raw_response.metadata.get(
-                "retrieval_stagnation_triggered"
-            )
-            retrieval_stagnation_turn = result.raw_response.metadata.get("retrieval_stagnation_turn")
-            retrieval_stagnation_streak_max = result.raw_response.metadata.get(
-                "retrieval_stagnation_streak_max"
-            )
-            evidence_digest_change_count = result.raw_response.metadata.get(
-                "evidence_digest_change_count"
-            )
-            evidence_turns_total = result.raw_response.metadata.get("evidence_turns_total")
-            evidence_turns_with_new_evidence = result.raw_response.metadata.get(
-                "evidence_turns_with_new_evidence"
-            )
-            evidence_turns_without_new_evidence = result.raw_response.metadata.get(
-                "evidence_turns_without_new_evidence"
-            )
-            context_tool_result_clearings = result.raw_response.metadata.get(
-                "context_tool_result_clearings"
-            )
-            context_tool_results_cleared = result.raw_response.metadata.get(
-                "context_tool_results_cleared"
-            )
-            context_tool_result_cleared_chars = result.raw_response.metadata.get(
-                "context_tool_result_cleared_chars"
-            )
-            requires_submit_answer = result.raw_response.metadata.get("requires_submit_answer")
-            submit_answer_call_count = result.raw_response.metadata.get("submit_answer_call_count")
-            submit_answer_attempted = result.raw_response.metadata.get("submit_answer_attempted")
-            submit_answer_succeeded = result.raw_response.metadata.get("submit_answer_succeeded")
-            required_submit_missing = result.raw_response.metadata.get("required_submit_missing")
-            submit_forced_retry_on_budget_exhaustion = result.raw_response.metadata.get(
+            retrieval_stagnation_triggered = raw_metadata.get("retrieval_stagnation_triggered")
+            retrieval_stagnation_turn = raw_metadata.get("retrieval_stagnation_turn")
+            retrieval_stagnation_streak_max = raw_metadata.get("retrieval_stagnation_streak_max")
+            evidence_digest_change_count = raw_metadata.get("evidence_digest_change_count")
+            evidence_turns_total = raw_metadata.get("evidence_turns_total")
+            evidence_turns_with_new_evidence = raw_metadata.get("evidence_turns_with_new_evidence")
+            evidence_turns_without_new_evidence = raw_metadata.get("evidence_turns_without_new_evidence")
+            evidence_pointer_count = raw_metadata.get("evidence_pointer_count")
+            evidence_digest_basis = raw_metadata.get("evidence_digest_basis")
+            context_tool_result_clearings = raw_metadata.get("context_tool_result_clearings")
+            context_tool_results_cleared = raw_metadata.get("context_tool_results_cleared")
+            context_tool_result_cleared_chars = raw_metadata.get("context_tool_result_cleared_chars")
+            requires_submit_answer = raw_metadata.get("requires_submit_answer")
+            submit_answer_call_count = raw_metadata.get("submit_answer_call_count")
+            submit_answer_attempted = raw_metadata.get("submit_answer_attempted")
+            submit_answer_succeeded = raw_metadata.get("submit_answer_succeeded")
+            submit_validator_accepted = raw_metadata.get("submit_validator_accepted")
+            required_submit_missing = raw_metadata.get("required_submit_missing")
+            submit_forced_retry_on_budget_exhaustion = raw_metadata.get(
                 "submit_forced_retry_on_budget_exhaustion"
             )
-            submit_forced_accept_on_budget_exhaustion = result.raw_response.metadata.get(
+            submit_forced_accept_on_budget_exhaustion = raw_metadata.get(
                 "submit_forced_accept_on_budget_exhaustion"
             )
+            submit_completion_mode = raw_metadata.get("submit_completion_mode")
 
         # Extract answer from the most recent successful submit_answer call.
         # Ignore rejected/errored submits so the agent can keep searching.
@@ -1696,9 +1785,41 @@ async def run_agent(
 
         # Extract diagnostic warnings and models_used from result
         warnings = getattr(result, "warnings", []) or []
+        warning_derived = _populate_warning_derived_fields(
+            warnings=warnings,
+            evidence_turns_total=evidence_turns_total,
+            evidence_turns_with_new_evidence=evidence_turns_with_new_evidence,
+            evidence_turns_without_new_evidence=evidence_turns_without_new_evidence,
+            retrieval_stagnation_streak_max=retrieval_stagnation_streak_max,
+            evidence_pointer_count=evidence_pointer_count,
+            evidence_digest_basis=evidence_digest_basis,
+            submit_completion_mode=submit_completion_mode,
+            submit_validator_accepted=submit_validator_accepted,
+            submit_forced_accept_on_budget_exhaustion=submit_forced_accept_on_budget_exhaustion,
+            first_terminal_failure_event_code=first_terminal_failure_event_code,
+            tool_arg_validation_rejections=tool_arg_validation_rejections,
+            required_submit_missing=required_submit_missing,
+        )
+        evidence_turns_total = warning_derived["evidence_turns_total"]
+        evidence_turns_with_new_evidence = warning_derived["evidence_turns_with_new_evidence"]
+        evidence_turns_without_new_evidence = warning_derived["evidence_turns_without_new_evidence"]
+        retrieval_stagnation_streak_max = warning_derived["retrieval_stagnation_streak_max"]
+        evidence_pointer_count = warning_derived["evidence_pointer_count"]
+        evidence_digest_basis = warning_derived["evidence_digest_basis"]
+        submit_completion_mode = warning_derived["submit_completion_mode"]
+        first_terminal_failure_event_code = warning_derived["first_terminal_failure_event_code"]
+        tool_arg_validation_rejections = warning_derived["tool_arg_validation_rejections"]
         models_used: list[str] = []
-        if isinstance(result.raw_response, MCPAgentResult):
-            models_used = sorted(result.raw_response.models_used)
+        if isinstance(raw_response, dict):
+            raw_models_used = raw_response.get("models_used")
+            if isinstance(raw_models_used, list):
+                models_used = sorted(str(m) for m in raw_models_used if isinstance(m, str))
+        else:
+            raw_models_used = getattr(raw_response, "models_used", None)
+            if isinstance(raw_models_used, set):
+                models_used = sorted(str(m) for m in raw_models_used if isinstance(m, str))
+            elif isinstance(raw_models_used, list):
+                models_used = sorted(str(m) for m in raw_models_used if isinstance(m, str))
 
         return {
             "answer": answer,
@@ -1741,6 +1862,8 @@ async def run_agent(
             "evidence_turns_total": evidence_turns_total,
             "evidence_turns_with_new_evidence": evidence_turns_with_new_evidence,
             "evidence_turns_without_new_evidence": evidence_turns_without_new_evidence,
+            "evidence_pointer_count": evidence_pointer_count,
+            "evidence_digest_basis": evidence_digest_basis,
             "context_tool_result_clearings": context_tool_result_clearings,
             "context_tool_results_cleared": context_tool_results_cleared,
             "context_tool_result_cleared_chars": context_tool_result_cleared_chars,
@@ -1748,9 +1871,11 @@ async def run_agent(
             "submit_answer_call_count": submit_answer_call_count,
             "submit_answer_attempted": submit_answer_attempted,
             "submit_answer_succeeded": submit_answer_succeeded,
+            "submit_validator_accepted": submit_validator_accepted,
             "required_submit_missing": required_submit_missing,
             "submit_forced_retry_on_budget_exhaustion": submit_forced_retry_on_budget_exhaustion,
             "submit_forced_accept_on_budget_exhaustion": submit_forced_accept_on_budget_exhaustion,
+            "submit_completion_mode": submit_completion_mode,
             "tool_arg_coercions": tool_arg_coercions,
             "tool_arg_coercion_calls": tool_arg_coercion_calls,
             "tool_arg_validation_rejections": tool_arg_validation_rejections,
@@ -2513,6 +2638,8 @@ async def main() -> None:
             "evidence_turns_total": agent_result.get("evidence_turns_total"),
             "evidence_turns_with_new_evidence": agent_result.get("evidence_turns_with_new_evidence"),
             "evidence_turns_without_new_evidence": agent_result.get("evidence_turns_without_new_evidence"),
+            "evidence_pointer_count": agent_result.get("evidence_pointer_count"),
+            "evidence_digest_basis": agent_result.get("evidence_digest_basis"),
             "context_tool_result_clearings": agent_result.get("context_tool_result_clearings"),
             "context_tool_results_cleared": agent_result.get("context_tool_results_cleared"),
             "context_tool_result_cleared_chars": agent_result.get("context_tool_result_cleared_chars"),
@@ -2520,9 +2647,11 @@ async def main() -> None:
             "submit_answer_call_count": agent_result.get("submit_answer_call_count"),
             "submit_answer_attempted": agent_result.get("submit_answer_attempted"),
             "submit_answer_succeeded": agent_result.get("submit_answer_succeeded"),
+            "submit_validator_accepted": agent_result.get("submit_validator_accepted"),
             "required_submit_missing": agent_result.get("required_submit_missing"),
             "submit_forced_retry_on_budget_exhaustion": agent_result.get("submit_forced_retry_on_budget_exhaustion"),
             "submit_forced_accept_on_budget_exhaustion": agent_result.get("submit_forced_accept_on_budget_exhaustion"),
+            "submit_completion_mode": agent_result.get("submit_completion_mode"),
             "composability": composability,
             "tool_calls": tool_names,
             "tool_details": tool_calls,
@@ -2567,6 +2696,7 @@ async def main() -> None:
         contract_rejections = record.get("n_tool_contract_rejections")
         primary_failure_class = record.get("primary_failure_class")
         first_terminal = record.get("first_terminal_failure_event_code")
+        submit_completion_mode = record.get("submit_completion_mode")
         fallback_used = bool(record.get("fallback_used_any"))
         finalization_fallback_used = bool(record.get("finalization_fallback_used"))
         fallback_succeeded = bool(record.get("finalization_fallback_succeeded"))
@@ -2583,6 +2713,12 @@ async def main() -> None:
                 suffix_parts.append(f"primary_failure={primary_failure_class}")
             if isinstance(first_terminal, str) and first_terminal:
                 suffix_parts.append(f"first_terminal={first_terminal}")
+            if (
+                isinstance(submit_completion_mode, str)
+                and submit_completion_mode
+                and submit_completion_mode != "grounded_submit"
+            ):
+                suffix_parts.append(f"submit_mode={submit_completion_mode}")
             if fallback_used:
                 if finalization_fallback_used:
                     suffix_parts.append(
@@ -2888,6 +3024,10 @@ async def main() -> None:
         completion_rate = (100.0 * n_completed_success / n_done) if n_done else 0.0
         provider_failures = sum(1 for r in results if (r.get("primary_failure_class") or "") == "provider")
         provider_failure_rate = (100.0 * provider_failures / n_done) if n_done else 0.0
+        grounded_submit_count = sum(1 for r in results if bool(r.get("submit_validator_accepted")))
+        forced_terminal_accept_count = sum(
+            1 for r in results if bool(r.get("submit_forced_accept_on_budget_exhaustion"))
+        )
         fallback_used_count = sum(1 for r in results if bool(r.get("fallback_used_any")))
         fallback_used_rate = (100.0 * fallback_used_count / n_done) if n_done else 0.0
         finalization_fallback_used_count = sum(1 for r in results if bool(r.get("finalization_fallback_used")))
@@ -3194,6 +3334,10 @@ def _save_results(
     completion_rate = (100.0 * n_completed_success / n_done) if n_done else 0.0
     provider_failures = sum(1 for r in results if (r.get("primary_failure_class") or "") == "provider")
     provider_failure_rate = (100.0 * provider_failures / n_done) if n_done else 0.0
+    grounded_submit_count = sum(1 for r in results if bool(r.get("submit_validator_accepted")))
+    forced_terminal_accept_count = sum(
+        1 for r in results if bool(r.get("submit_forced_accept_on_budget_exhaustion"))
+    )
     fallback_used_any = sum(1 for r in results if bool(r.get("fallback_used_any")))
     fallback_used_any_rate = (100.0 * fallback_used_any / n_done) if n_done else 0.0
     finalization_fallback_used = sum(1 for r in results if bool(r.get("finalization_fallback_used")))
@@ -3237,6 +3381,8 @@ def _save_results(
             "avg_f1_completed": avg_f1_completed,
             "n_provider_failures": provider_failures,
             "provider_failure_rate": provider_failure_rate,
+            "n_grounded_submit_accepted": grounded_submit_count,
+            "n_forced_terminal_accept": forced_terminal_accept_count,
             "n_fallback_used_any": fallback_used_any,
             "fallback_usage_rate_any": fallback_used_any_rate,
             "n_finalization_fallback_used": finalization_fallback_used,
