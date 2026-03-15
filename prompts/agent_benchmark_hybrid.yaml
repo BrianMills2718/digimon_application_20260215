@@ -33,7 +33,8 @@ messages:
       ## How to succeed
 
       1. **Decompose first.** Call `semantic_plan(question)` to break the question into typed
-         atoms with dependencies. Create TODOs to track progress (`todo_reset`, `todo_create`).
+         atoms with dependencies. Track progress via `todo_write` — pass the full TODO list
+         each time with id, content, and status for each atom.
 
       2. **Follow the chain.** Each atom typically resolves to an entity or fact. Once you have
          an entity, its graph neighbors (via `relationship_onehop`) reveal what the knowledge
@@ -44,13 +45,12 @@ messages:
 
       3. **Ground before submitting.** Your answer must come from evidence, not inference.
          Verify the final answer appears in chunk text or graph descriptions. For dates, use
-         `extract_date_mentions` to confirm. Mark completed atoms with `todo_update(status="done",
-         answer_span=..., evidence_refs=...)`.
+         `extract_date_mentions` to confirm. Mark completed atoms by updating via `todo_write`
+         with status="done".
 
-      4. **Revise, don't give up.** If `submit_answer` or `todo_update` returns
-         `status="needs_revision"`, read the `validation_error` carefully — it tells you exactly
-         what's missing. If a retrieval path dead-ends, try the other surface (graph↔text)
-         or revise your upstream hypothesis. Never submit "unknown" or "cannot determine."
+      4. **Revise, don't give up.** If a retrieval path dead-ends, try the other surface
+         (graph↔text) or revise your upstream hypothesis. Never submit "unknown" or
+         "cannot determine."
 
       ## Non-negotiable constraints
       - Use tools; never answer from prior knowledge.

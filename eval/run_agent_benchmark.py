@@ -216,6 +216,7 @@ _BENCHMARK_TOOL_NAME_CANDIDATES = [
     "chunk_get_text_by_chunk_ids",
     "chunk_get_text_by_entity_ids",
     "extract_date_mentions",
+    "extract_date_mentions_from_artifacts",
     "chunk_text_search",
     "chunk_vdb_search",
     "search_then_expand_onehop",
@@ -225,6 +226,7 @@ _BENCHMARK_TOOL_NAME_CANDIDATES = [
     "subgraph_steiner_tree",
     "meta_pcst_optimize",
     "semantic_plan",
+    "todo_write",
     "bridge_disambiguate",
     "submit_answer",
 ]
@@ -313,6 +315,18 @@ _BENCHMARK_TOOL_CONTRACTS: dict[str, dict[str, object]] = {
         ],
         "produces": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
     },
+    "extract_date_mentions_from_artifacts": {
+        "artifact_prereqs": "none",
+        "handle_inputs": [
+            {
+                "arg": "chunk_artifact_ids",
+                "inject_arg": "chunk_artifacts",
+                "representation": "payload",
+                "accepts": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+            }
+        ],
+        "produces": [{"kind": "CHUNK_SET", "ref_type": "fulltext"}],
+    },
     "chunk_text_search": {
         "requires_all": ["QUERY_TEXT"],
         "produces": [
@@ -361,6 +375,7 @@ _BENCHMARK_TOOL_CONTRACTS: dict[str, dict[str, object]] = {
     # Control/planning tools intentionally bypass artifact requirements.
     "list_available_resources": {"is_control": True},
     "semantic_plan": {"is_control": True},
+    "todo_write": {"is_control": True},
     "submit_answer": {"is_control": True},
 }
 _CONTROL_TOOL_NAMES: set[str] = {
@@ -553,7 +568,7 @@ def _classify_tool_error(error_text: str) -> str:
         return "tool_unavailable"
     if "missing required argument: tool_reasoning" in msg:
         return "missing_tool_reasoning"
-    if "suppressed:" in msg and ("submit_answer" in msg or "todo_update" in msg):
+    if "suppressed:" in msg and ("submit_answer" in msg or "todo_write" in msg):
         return "control_loop_suppressed"
     if (
         "unexpected keyword argument" in msg
@@ -803,6 +818,64 @@ DIGIMON_MCP_SERVERS = _build_mcp_servers(1)
 DIRECT_TOOLS: list = []
 
 
+async def _extract_date_mentions_from_artifacts_direct(
+    chunk_artifact_ids: list[str] | None = None,
+    chunk_artifacts: list[dict] | None = None,
+    max_mentions: int = 20,
+) -> str:
+    """Extract date mentions from runtime-resolved chunk artifact handles.
+
+    Use `chunk_artifact_ids` with llm_client handle-input contracts. `chunk_artifacts`
+    is runtime-injected and should not be populated by the model directly.
+    """
+    import digimon_mcp_stdio_server as dms
+
+    sources: list[dict[str, str]] = []
+    for item in chunk_artifacts or []:
+        if not isinstance(item, dict):
+            continue
+        chunk_id = str(item.get("chunk_id") or "").strip()
+        text = str(
+            item.get("text")
+            or item.get("text_content")
+            or item.get("content")
+            or ""
+        ).strip()
+        if not text:
+            continue
+        sources.append({"chunk_id": chunk_id, "text": text})
+
+    if not sources:
+        requested = [
+            str(item).strip()
+            for item in (chunk_artifact_ids or [])
+            if str(item).strip()
+        ]
+        return json.dumps(
+            {
+                "error": "No runtime-resolved chunk artifacts were available for the requested handles.",
+                "requested_chunk_artifact_ids": requested,
+                "n_sources": 0,
+            },
+            indent=2,
+        )
+
+    return dms._extract_date_mentions_from_sources(
+        sources=sources,
+        max_mentions=max_mentions,
+    )
+
+
+_extract_date_mentions_from_artifacts_direct.__name__ = "extract_date_mentions_from_artifacts"
+_extract_date_mentions_from_artifacts_direct.__tool_description__ = (
+    "Extract normalized date mentions from previously produced chunk artifact handles. "
+    "Use chunk_artifact_ids; chunk_artifacts is runtime-resolved."
+)
+_extract_date_mentions_from_artifacts_direct.__tool_input_examples__ = [
+    {"chunk_artifact_ids": ["art_chunk_1"], "max_mentions": 5},
+]
+
+
 async def _init_direct_tools(dataset_name: str, disable_embedding_tools: bool = False) -> list:
     """Import DIGIMON MCP server module and initialize in-process.
 
@@ -843,6 +916,7 @@ async def _init_direct_tools(dataset_name: str, disable_embedding_tools: bool = 
         dms.chunk_get_text_by_chunk_ids,
         dms.chunk_get_text_by_entity_ids,
         dms.extract_date_mentions,
+        _extract_date_mentions_from_artifacts_direct,
         dms.chunk_text_search,
         dms.chunk_vdb_search,
         dms.search_then_expand_onehop,
@@ -856,10 +930,7 @@ async def _init_direct_tools(dataset_name: str, disable_embedding_tools: bool = 
     # Benchmark planning/disambiguation controls (if available in server mode)
     for maybe_tool in (
         "semantic_plan",
-        "todo_reset",
-        "todo_create",
-        "todo_update",
-        "todo_list",
+        "todo_write",
         "bridge_disambiguate",
     ):
         if hasattr(dms, maybe_tool):

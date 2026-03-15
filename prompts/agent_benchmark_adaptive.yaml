@@ -36,9 +36,7 @@ messages:
       - list_available_resources: see what graphs/VDBs exist
       - meta_pcst_optimize: prize-collecting Steiner tree optimization (algorithmic, not LLM)
       - bridge_disambiguate: resolve ambiguous bridge entities using downstream evidence
-      - todo_create: create an atomic plan step
-      - todo_update: update step status (pending/in_progress/done/blocked)
-      - todo_list: inspect completion before submit
+      - todo_write: replace the full TODO list each call. Pass a list of items, each with id, content, status (pending/in_progress/done). Use to track decomposition and progress.
 
       ## Strategy Guide
 
@@ -62,8 +60,8 @@ messages:
 
       ## Rules
       - Resources are pre-loaded. The graph and VDBs for '{{ dataset_name }}' are ready to use.
-      - Before retrieval, break the question into atomic steps and create TODOs using `todo_create`.
-      - Track progress using `todo_update`; confirm with `todo_list` before submit.
+      - Before retrieval, break the question into atomic steps and track progress via `todo_write`.
+      - Update your TODO list with `todo_write` as steps complete; verify all are `done` before submit.
       - Adapt your strategy to the question. Do not follow the same steps every time.
       - If your first approach doesn't find relevant evidence, try a different operator.
       - Be efficient: aim for 8-15 tool calls per question.

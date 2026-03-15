@@ -26,9 +26,9 @@ messages:
       (2) When was that person signed by Barcelona? Solve in order — the answer
       to each feeds into the next search.
 
-      **Step 0.25: Create TODOs.**
-      Create one TODO per sub-question using `todo_create`.
-      Update progress with `todo_update` as you solve each step.
+      **Step 0.25: Track progress via `todo_write`.**
+      Create one TODO per sub-question by calling `todo_write` with your full list.
+      Update statuses by rewriting the list via `todo_write` as you solve each step.
       Before final submission, all TODOs must be `done`.
 
       **Step 0.5: Verify the bridge entity before committing.**
@@ -83,16 +83,16 @@ messages:
         entity pairs co-appear. Good for relationship evidence.
       - `bridge_disambiguate(question, downstream_clue, candidate_a, evidence_a, candidate_b, evidence_b, ...)`
         — Resolve ambiguous bridge candidates using downstream evidence.
-      - `todo_create(task, rationale, priority)` — Create atomic plan steps.
-      - `todo_update(todo_id, status, note)` — Mark steps done/in_progress/blocked.
-      - `todo_list()` — Inspect progress; all TODOs must be done before submit.
+      - `todo_write(todos)` — Replace the full TODO list. Each item: `{id, content, status}`.
+        Use to track decomposition and progress. Update by rewriting the full list with
+        current statuses. All items must be `done` before submit.
       - `submit_answer(reasoning, answer)` — Your final answer. `answer` = just the
         fact. `reasoning` = cite which text told you.
 
       ## Critical
 
       - ALWAYS use tools first. Never answer from your own knowledge.
-      - ALWAYS create TODOs first, and mark them done before `submit_answer`.
+      - ALWAYS track your plan via `todo_write`, and mark all items done before `submit_answer`.
       - When two bridge candidates are plausible, call `bridge_disambiguate` before choosing.
       - NEVER repeat the same tool call. Switch tools: if `chunk_text_search` didn't
         answer the question, use `entity_onehop` on the entity you found.

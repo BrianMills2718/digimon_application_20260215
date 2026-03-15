@@ -82,7 +82,7 @@ See `docs/adr/` for full details.
 parameter to override graph config at build time (e.g. `{"max_gleaning": 2, "enable_entity_description": true}`).
 Validated against per-graph-type Pydantic models in `Core/AgentSchema/graph_construction_tool_contracts.py`.
 
-**MCP tools (55 total, 19 in benchmark mode)**:
+**MCP tools (52 total, 28 in benchmark mode)**:
 - 5 graph build (er, rk, tree, tree_balanced, passage) + 1 corpus (prepare)
 - 7 entity (vdb_build, vdb_search, onehop, ppr, agent, link, tfidf)
 - 5 relationship (onehop, score_agg, agent, vdb_build, vdb_search)
@@ -96,6 +96,7 @@ Validated against per-graph-type Pydantic models in `Core/AgentSchema/graph_cons
 - 4 method-level (list_methods, list_graph_types, execute_method, auto_compose)
 - 1 context (list_available_resources)
 - 4 cross-modal (convert_modality, validate_conversion, select_analysis_mode, list_modality_conversions)
+- 4 benchmark planning (semantic_plan, todo_write, bridge_disambiguate, submit_answer)
 
 **Three execution modes** (increasing autonomy):
 1. **Operator composition** (primary) — client composes arbitrary retrieval DAGs by calling operators directly. Use `list_operators` + `get_compatible_successors` for discovery, `ChainValidator` to verify. Tested via `test_custom_chain.py`.
@@ -307,9 +308,9 @@ All enrichment config lives in `Config/GraphConfig.py`. Post-hoc methods live on
    - **Only loads `digimon-kgrag` MCP server** (not all 17 global servers) via `mcp_servers` kwarg
    - **Direct backend** (`--backend direct`): imports DIGIMON tool functions in-process, no subprocess/stdio/JSON-RPC overhead. Uses `python_tools=` kwarg on `acall_llm`. ~1.4K tokens for tool schemas (vs ~2K+ with MCP). Works with any litellm model.
    - Two prompt modes (`--mode`):
-     - `fixed` (default): prescribed workflow (VDB→onehop→chunk), `BENCHMARK_MODE=1` (~19 tools)
-     - `adaptive`: open-ended strategy guide, `BENCHMARK_MODE=1` (~19 tools)
-   - **Benchmark tool filtering**: 18 tools hidden (LLM wrappers, discovery, config, cross-modal, communities). 3 deterministic tools added (subgraph_khop_paths, subgraph_steiner_tree, meta_pcst_optimize). `list_available_resources` always shown. Direct backend dynamically filters based on available VDBs/sparse matrices. submit_answer simplified to single call (no verification step).
+     - `fixed` (default): prescribed workflow (VDB→onehop→chunk), `BENCHMARK_MODE=1` (28 tools)
+     - `adaptive`: open-ended strategy guide, `BENCHMARK_MODE=1` (28 tools)
+   - **Benchmark tool filtering**: ~24 tools hidden (LLM wrappers, discovery, config, cross-modal, communities). `list_available_resources` always shown. Direct backend dynamically filters based on available VDBs/sparse matrices. Single `todo_write` tool replaces the old 4-tool TODO system (todo_create/update/list/reset). No per-transition validation — submit_answer checks only answer format.
    - Agent SDK answer extraction: takes last non-empty line of full response (agent SDKs concatenate all text blocks)
    - CLI: `python eval/run_agent_benchmark.py --dataset HotpotQAsmallest --num 10 --model claude-code --mode adaptive`
    - CLI: `python eval/run_agent_benchmark.py --dataset HotpotQA --num 50 --model gemini/gemini-3-flash --backend direct`

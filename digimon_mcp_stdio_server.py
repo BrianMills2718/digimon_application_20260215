@@ -97,10 +97,7 @@ _BENCHMARK_HIDDEN_TOOLS_LEVEL2: set[str] = {
     "chunk_vdb_search",
     "relationship_vdb_search",
     "semantic_plan",
-    "todo_create",
-    "todo_update",
-    "todo_list",
-    "todo_reset",
+    "todo_write",
     "bridge_disambiguate",
     "entity_ppr",
     "relationship_score_aggregator",
@@ -138,10 +135,7 @@ _BENCHMARK_SHORT_DESCS: dict[str, str] = {
     "subgraph_steiner_tree": "Minimal subgraph connecting a set of entities.",
     "meta_pcst_optimize": "Prize-collecting Steiner tree optimization (algorithmic).",
     "list_available_resources": "List loaded graphs, VDBs, and sparse matrices.",
-    "todo_create": "Create an atomic TODO with answer type/dependencies.",
-    "todo_update": "Update TODO status; done requires answer_span + evidence_refs.",
-    "todo_list": "List TODO tasks and completion state.",
-    "todo_reset": "Reset TODO state and register current question.",
+    "todo_write": "Replace full TODO list. Each item: id, content, status.",
     "semantic_plan": "Build typed semantic decomposition (atoms/dependencies/composition).",
     "bridge_disambiguate": "Choose best bridge entity from ambiguous candidates using downstream evidence.",
     "submit_answer": "Submit your final answer. Call once with your best answer.",
@@ -476,20 +470,10 @@ _chunk_entity_index_cache: dict[str, dict[str, list[dict[str, Any]]]] = {}
 _latest_entity_candidates_by_chunk: dict[str, list[dict[str, Any]]] = {}
 _latest_entity_candidates_flat: list[dict[str, Any]] = []
 _todos: list[dict[str, Any]] = []  # question-local TODOs in benchmark mode
-_todo_counter: int = 0
 _current_question: str = ""
 _current_expected_answer_kind: str = ""
 _current_semantic_plan: dict[str, Any] = {}
 _current_semantic_plan_question: str = ""
-_atom_todo_map: dict[str, str] = {}  # semantic atom_id -> todo_id
-_relation_scope_branch_required: bool = False
-_relation_scope_branch_resolved: bool = False
-_bridge_candidate_failure_counts: dict[str, dict[str, int]] = {}
-_todo_recovery_guard: dict[str, dict[str, Any]] = {}
-_submit_recovery_guard: dict[str, Any] = {}
-
-_BRIDGE_CANDIDATE_RETRY_FAILURE_THRESHOLD = 2
-
 
 def _dedup_chunk(chunk_id: str, text: str) -> tuple[bool, str]:
     """Track a chunk. Returns (is_new, text_or_reference).
@@ -539,260 +523,17 @@ def _reset_chunk_dedup() -> None:
 
 def _reset_todos() -> None:
     """Reset TODO state — call between questions."""
-    global _todo_counter, _current_question, _current_expected_answer_kind
+    global _current_question, _current_expected_answer_kind
     _todos.clear()
-    _todo_counter = 0
     _current_question = ""
     _current_expected_answer_kind = ""
-    _atom_todo_map.clear()
-    _bridge_candidate_failure_counts.clear()
-    _todo_recovery_guard.clear()
-    _submit_recovery_guard.clear()
 
 
 def _clear_semantic_plan() -> None:
     """Clear semantic-plan contract state for current question."""
-    global _current_semantic_plan_question, _relation_scope_branch_required, _relation_scope_branch_resolved
+    global _current_semantic_plan_question
     _current_semantic_plan.clear()
     _current_semantic_plan_question = ""
-    _relation_scope_branch_required = False
-    _relation_scope_branch_resolved = False
-    _atom_todo_map.clear()
-
-
-def _normalize_todo_status(status: str) -> str:
-    """Normalize user-provided TODO status to canonical values."""
-    s = (status or "").strip().lower()
-    aliases = {
-        "pending": "pending",
-        "todo": "pending",
-        "in_progress": "in_progress",
-        "in-progress": "in_progress",
-        "doing": "in_progress",
-        "active": "in_progress",
-        "done": "done",
-        "completed": "done",
-        "complete": "done",
-        "finished": "done",
-        "blocked": "blocked",
-    }
-    return aliases.get(s, "")
-
-
-def _normalize_todo_operation(operation: str, task: str = "") -> str:
-    """Normalize todo operation label, with light task-text inference fallback."""
-    op = (operation or "").strip().lower()
-    aliases = {
-        "lookup": "lookup",
-        "relation": "relation",
-        "compose": "compose",
-        "composition": "compose",
-        "intersection": "intersection",
-        "compare": "compare",
-        "temporal": "temporal",
-        "disambiguation": "compare",
-        "disambiguate": "compare",
-        "rank": "compare",
-        "ranking": "compare",
-    }
-    if op in aliases:
-        return aliases[op]
-
-    task_l = (task or "").strip().lower()
-    if "intersection" in task_l or "common to" in task_l or "common region" in task_l:
-        return "intersection"
-    if "compose" in task_l or "combination of" in task_l or "combined" in task_l:
-        return "compose"
-    if "larger than" in task_l or "only group" in task_l or "rank" in task_l:
-        return "compare"
-    if "when " in task_l or "what year" in task_l or "what date" in task_l:
-        return "temporal"
-    if any(x in task_l for x in ("north of", "south of", "east of", "west of", "headquarters of", "located in")):
-        return "relation"
-    return "lookup"
-
-
-def _is_auxiliary_todo_task(task: str, operation: str = "", atom_id: str = "") -> bool:
-    """Heuristic: identify disambiguation/branch helper TODOs not tied to plan atoms."""
-    task_l = (task or "").strip().lower()
-    op_l = (operation or "").strip().lower()
-    atom_l = (atom_id or "").strip().lower()
-    if atom_l and re.fullmatch(r"a\d+", atom_l) is None:
-        return True
-    if any(x in op_l for x in ("disambigu", "branch", "verify")):
-        return True
-    if any(x in atom_l for x in ("_disamb", "disamb", "amb")):
-        return True
-    return any(
-        kw in task_l
-        for kw in (
-            "resolve ambiguity",
-            "ambiguity",
-            "disambigu",
-            "alternative parse",
-            "alternative hypothesis",
-            "verify pivot",
-            "candidate",
-        )
-    )
-
-
-def _semantic_plan_atoms() -> list[dict[str, Any]]:
-    """Return semantic-plan atoms if available."""
-    atoms = _current_semantic_plan.get("atoms")
-    if not isinstance(atoms, list):
-        return []
-    return [a for a in atoms if isinstance(a, dict)]
-
-
-def _semantic_plan_atom_by_id(atom_id: str) -> dict[str, Any] | None:
-    """Lookup semantic-plan atom by atom_id."""
-    aid = (atom_id or "").strip()
-    if not aid:
-        return None
-    for atom in _semantic_plan_atoms():
-        if (atom.get("atom_id") or "").strip() == aid:
-            return atom
-    return None
-
-
-def _todo_ids_to_atom_ids(todo_ids: list[str]) -> list[str]:
-    """Map TODO IDs to semantic atom IDs where known."""
-    reverse_map = {todo_id: atom_id for atom_id, todo_id in _atom_todo_map.items()}
-    out: list[str] = []
-    for tid in todo_ids:
-        atom_id = reverse_map.get((tid or "").strip())
-        if atom_id:
-            out.append(atom_id)
-    return out
-
-
-def _token_set(text: str) -> set[str]:
-    """Lightweight tokenization for task/atom similarity checks."""
-    return set(re.findall(r"[a-z0-9]+", (text or "").lower()))
-
-
-def _jaccard_similarity(a: set[str], b: set[str]) -> float:
-    """Jaccard similarity on token sets."""
-    if not a or not b:
-        return 0.0
-    return len(a & b) / max(1.0, len(a | b))
-
-
-def _auto_match_semantic_atom(
-    task_text: str,
-    operation_norm: str,
-    answer_kind_norm: str,
-    blocked_todo_ids: list[str],
-) -> tuple[dict[str, Any] | None, float]:
-    """Best-effort mapping from todo_create payload to one plan atom."""
-    atoms = _semantic_plan_atoms()
-    if not atoms:
-        return None, 0.0
-
-    blocked_atom_ids = set(_todo_ids_to_atom_ids(blocked_todo_ids))
-    task_tokens = _token_set(task_text)
-    best_atom: dict[str, Any] | None = None
-    best_score = -1.0
-
-    for atom in atoms:
-        aid = (atom.get("atom_id") or "").strip()
-        if not aid or aid in _atom_todo_map:
-            continue
-
-        sub_q = atom.get("sub_question") or ""
-        criteria = atom.get("done_criteria") or ""
-        atom_tokens = _token_set(sub_q) | _token_set(criteria)
-        text_sim = _jaccard_similarity(task_tokens, atom_tokens)
-
-        atom_op = _normalize_todo_operation(atom.get("operation", ""), sub_q)
-        op_bonus = 1.0 if atom_op == operation_norm else 0.0
-
-        atom_kind = _normalize_answer_kind(atom.get("answer_kind", ""))
-        kind_bonus = 1.0 if atom_kind and atom_kind == answer_kind_norm else 0.0
-
-        dep_atoms = set((atom.get("depends_on") or []))
-        dep_sim = _jaccard_similarity(blocked_atom_ids, dep_atoms) if dep_atoms or blocked_atom_ids else 1.0
-
-        score = (0.65 * text_sim) + (0.15 * op_bonus) + (0.10 * kind_bonus) + (0.10 * dep_sim)
-        if score > best_score:
-            best_score = score
-            best_atom = atom
-
-    return best_atom, max(0.0, best_score)
-
-
-def _is_compose_like_todo(todo: dict[str, Any]) -> bool:
-    """True when TODO semantics combine multiple upstream variables."""
-    op = _normalize_todo_operation(todo.get("operation", ""), todo.get("task", ""))
-    if op in {"intersection", "compose"}:
-        return True
-    deps = todo.get("blocked_by") or []
-    if len(deps) < 2:
-        return False
-    task_l = (todo.get("task", "") or "").lower()
-    return any(k in task_l for k in ("intersection", "common", "combine", "both"))
-
-
-def _todo_requires_relation_scope_branching(todo: dict[str, Any]) -> bool:
-    """Whether this TODO must resolve both relation-attachment parses first."""
-    if not _relation_scope_branch_required or _relation_scope_branch_resolved:
-        return False
-
-    op = _normalize_todo_operation(todo.get("operation", ""), todo.get("task", ""))
-    deps = todo.get("blocked_by") or []
-    if op in {"relation", "compose", "intersection"} and len(deps) >= 2:
-        return True
-
-    atom_id = (todo.get("atom_id") or "").strip()
-    atom = _semantic_plan_atom_by_id(atom_id) if atom_id else None
-    if not atom:
-        return False
-
-    atom_op = _normalize_todo_operation(atom.get("operation", ""), atom.get("sub_question", ""))
-    atom_deps = atom.get("depends_on") or []
-    return atom_op in {"relation", "compose", "intersection"} and len(atom_deps) >= 2
-
-
-def _todo_requires_bridge_alternatives(todo: dict[str, Any]) -> bool:
-    """Whether this bridge TODO truly needs explicit alternative hypotheses."""
-    op = _normalize_todo_operation(todo.get("operation", ""), todo.get("task", ""))
-    if op in {"relation", "compose", "intersection", "compare"}:
-        return True
-
-    task_l = (todo.get("task", "") or "").lower()
-    if any(k in task_l for k in ("compared", "whose", "which person", "which entity", "common", "intersection")):
-        return True
-
-    atom_id = (todo.get("atom_id") or "").strip()
-    atom = _semantic_plan_atom_by_id(atom_id) if atom_id else None
-    if atom is not None:
-        atom_op = _normalize_todo_operation(atom.get("operation", ""), atom.get("sub_question", ""))
-        if atom_op in {"relation", "compose", "intersection", "compare"}:
-            return True
-
-        # Only check planner uncertainty_points for non-lookup atoms.
-        # The LLM planner routinely lists ALL output_vars as uncertainty_points
-        # (they're "uncertain" in the trivial sense of being unresolved), which
-        # causes every lookup atom to be false-positively classified as a bridge.
-        # Lookup atoms should only require alternatives when their operation or
-        # task text explicitly signals ambiguity (checked above).
-        if atom_op not in {"lookup", "temporal"}:
-            uncertainty_points = _current_semantic_plan.get("uncertainty_points") or []
-            if uncertainty_points:
-                output_var = str(atom.get("output_var") or "").strip()
-                markers = {
-                    atom_id.lower(),
-                    output_var.lower(),
-                    output_var.replace("$", "").lower(),
-                }
-                markers = {m for m in markers if m}
-                if markers:
-                    for up in uncertainty_points:
-                        up_l = (up or "").lower()
-                        if any(marker in up_l for marker in markers):
-                            return True
-    return False
 
 
 def _todo_summary() -> dict[str, int]:
@@ -805,368 +546,47 @@ def _todo_summary() -> dict[str, int]:
     return counts
 
 
-def _todo_evidence_signature() -> str:
-    """Stable fingerprint of TODO evidence state for recovery gating."""
-    payload: list[dict[str, Any]] = []
-    for t in sorted(_todos, key=lambda x: (x.get("id") or "")):
-        payload.append(
-            {
-                "id": t.get("id"),
-                "status": t.get("status"),
-                "answer_span": (t.get("answer_span") or "").strip(),
-                "evidence_refs": _normalize_evidence_refs(t.get("evidence_refs")),
-                "alternatives_tested": [
-                    (a or "").strip()
-                    for a in (t.get("alternatives_tested") or [])
-                    if (a or "").strip()
-                ],
-            }
-        )
-    return json.dumps(payload, sort_keys=True, ensure_ascii=False)
+def _semantic_plan_atom_by_id(atom_id: str) -> dict[str, Any] | None:
+    """Lookup semantic-plan atom by atom_id."""
+    aid = (atom_id or "").strip()
+    if not aid:
+        return None
+    atoms = _current_semantic_plan.get("atoms")
+    if not isinstance(atoms, list):
+        return None
+    for atom in atoms:
+        if isinstance(atom, dict) and (atom.get("atom_id") or "").strip() == aid:
+            return atom
+    return None
 
 
-def _attempt_fingerprint(answer_span: str, refs: list[str], alts: list[str]) -> str:
-    """Fingerprint a proposed TODO completion attempt."""
-    payload = {
-        "answer_span": (answer_span or "").strip().lower(),
-        "evidence_refs": [r.lower() for r in _normalize_evidence_refs(refs)],
-        "alternatives_tested": sorted([(a or "").strip().lower() for a in (alts or []) if (a or "").strip()]),
-    }
-    return json.dumps(payload, sort_keys=True, ensure_ascii=False)
+def _todo_status_line() -> str:
+    """Compact one-line TODO status for state injection into agent context.
 
-
-def _classify_todo_update_error(message: str) -> dict[str, Any]:
-    """Map TODO validation failures to a structured correction policy."""
-    msg_l = (message or "").lower()
-    reason_code = "validation_failed"
-    required_fields: list[str] = ["answer_span", "evidence_refs"]
-    suggested_next_actions: list[str] = [
-        "Inspect cited evidence and update answer_span to a supported factual span.",
-        "Add or correct evidence_refs before marking done again.",
-    ]
-    requires_new_evidence = True
-
-    if "dependencies are unfinished" in msg_l:
-        reason_code = "dependencies_unfinished"
-        required_fields = ["blocked_by dependencies"]
-        suggested_next_actions = [
-            "Complete upstream dependency TODOs first.",
-            "Then retry todo_update(..., status='done').",
-        ]
-        requires_new_evidence = False
-    elif "without answer_span" in msg_l:
-        reason_code = "missing_answer_span"
-        required_fields = ["answer_span"]
-        suggested_next_actions = [
-            "Provide the shortest factual answer span for this atom.",
-            "Keep span format aligned with expected answer kind.",
-        ]
-    elif "evidence_refs cannot be empty" in msg_l or "unknown chunk evidence ref" in msg_l or "invalid evidence ref" in msg_l:
-        reason_code = "invalid_evidence_refs"
-        required_fields = ["evidence_refs"]
-        suggested_next_actions = [
-            "Retrieve supporting evidence and cite valid chunk_* or namespaced refs.",
-            "Retry with evidence_refs tied to the chosen answer span.",
-        ]
-    elif "answer_span does not match expected answer kind" in msg_l:
-        reason_code = "answer_kind_mismatch"
-        required_fields = ["answer_span", "answer_kind alignment"]
-        suggested_next_actions = [
-            "Reformat answer_span to match expected kind (date/number/entity/yes_no).",
-            "Keep evidence_refs unchanged only if they still support the corrected span.",
-        ]
-        requires_new_evidence = False
-    elif "answer_span is not present in cited chunk evidence" in msg_l:
-        reason_code = "unsupported_by_chunk_evidence"
-        required_fields = ["answer_span", "evidence_refs"]
-        suggested_next_actions = [
-            "Choose a span explicitly present in cited chunks, or cite the correct chunk refs.",
-            "Run retrieval to gather stronger evidence if needed.",
-        ]
-    elif "entity answer coarse type" in msg_l:
-        reason_code = "entity_type_mismatch"
-        required_fields = ["answer_span", "evidence_refs"]
-        suggested_next_actions = [
-            "Choose an entity matching the expected semantic type for this atom.",
-            "Re-run anchored retrieval and entity selection before marking done.",
-        ]
-    elif "evidence does not mention anchor phrase" in msg_l:
-        reason_code = "anchor_evidence_mismatch"
-        required_fields = ["evidence_refs", "answer_span"]
-        suggested_next_actions = [
-            "Cite chunk evidence that explicitly mentions the anchor entity in this atom.",
-            "If anchor evidence is missing, reopen upstream retrieval and revise the candidate.",
-        ]
-    elif "concrete entity span" in msg_l:
-        reason_code = "abstaining_entity_span"
-        required_fields = ["answer_span"]
-        suggested_next_actions = [
-            "Replace abstaining span with a concrete entity candidate.",
-            "Gather additional evidence if no concrete candidate is supported.",
-        ]
-    elif "bridge todo completion requires at least one alternative hypothesis" in msg_l:
-        reason_code = "missing_bridge_alternatives"
-        required_fields = ["alternatives_tested"]
-        suggested_next_actions = [
-            "Record at least one distinct alternative hypothesis.",
-            "Keep only alternatives that were actually tested.",
-        ]
-        requires_new_evidence = False
-    elif "relation-scope ambiguity" in msg_l:
-        reason_code = "relation_scope_unresolved"
-        required_fields = ["alternatives_tested", "evidence_refs"]
-        suggested_next_actions = [
-            "Test both parse hypotheses and record both alternatives.",
-            "Cite evidence for each tested parse before marking done.",
-        ]
-    elif "confidence must be in [0, 1]" in msg_l:
-        reason_code = "confidence_out_of_range"
-        required_fields = ["confidence"]
-        suggested_next_actions = [
-            "Set confidence to a numeric value between 0 and 1.",
-            "Retry todo_update with corrected confidence.",
-        ]
-        requires_new_evidence = False
-    elif "low-confidence todo completion requires alternatives_tested" in msg_l:
-        reason_code = "low_confidence_without_alternatives"
-        required_fields = ["alternatives_tested"]
-        suggested_next_actions = [
-            "Test at least one alternative branch.",
-            "Retry done only after recording tested alternatives.",
-        ]
-        requires_new_evidence = False
-    elif "compose/intersection consistency check failed" in msg_l:
-        reason_code = "compose_consistency_failed"
-        required_fields = ["answer_span", "evidence_refs", "alternatives_tested"]
-        suggested_next_actions = [
-            "Link parent spans, gather bridging evidence, and disambiguate candidates.",
-            "Retry done with a candidate consistent with parent atoms.",
-        ]
-    elif "no-evidence note" in msg_l:
-        reason_code = "weak_evidence_note"
-        required_fields = ["status", "note"]
-        suggested_next_actions = [
-            "Use status='blocked' with a concrete note for no-evidence outcomes.",
-            "Reopen upstream bridge TODOs to collect new evidence.",
-        ]
-    elif "previously failed downstream evidence checks" in msg_l:
-        reason_code = "bridge_candidate_repeated_failure"
-        required_fields = ["answer_span", "evidence_refs"]
-        suggested_next_actions = [
-            "Choose a different bridge candidate or gather genuinely new evidence.",
-            "Avoid retrying the same failed candidate without new support.",
-        ]
-
-    return {
-        "reason_code": reason_code,
-        "message": message,
-        "required_fields": required_fields,
-        "suggested_next_actions": suggested_next_actions,
-        "requires_new_evidence": requires_new_evidence,
-    }
-
-
-def _todo_needs_revision_response(
-    todo_id: str,
-    attempted_status: str,
-    note_text: str,
-    details: dict[str, Any],
-) -> str:
-    """Structured correction path for TODO validation failures."""
-    return json.dumps(
-        {
-            "status": "needs_revision",
-            "todo_id": todo_id,
-            "attempted_status": attempted_status,
-            "note": note_text or None,
-            "recovery_policy": {
-                "new_evidence_required_before_retry": bool(details.get("requires_new_evidence", False)),
-            },
-            "validation_error": {
-                "reason_code": details.get("reason_code", "validation_failed"),
-                "message": details.get("message", ""),
-                "required_fields": details.get("required_fields", []),
-                "suggested_next_actions": details.get("suggested_next_actions", []),
-            },
-            "summary": _todo_summary(),
-        },
-        indent=2,
-    )
-
-
-def _classify_submit_error(message: str) -> dict[str, Any]:
-    """Map submit validation failures to structured correction guidance."""
-    msg_l = (message or "").lower()
-    reason_code = "submit_validation_failed"
-    required_fixes: list[str] = ["answer"]
-    suggested_next_actions: list[str] = [
-        "Revise TODOs/evidence and submit a grounded final span.",
-    ]
-    requires_new_evidence = True
-
-    if "must use todos first" in msg_l:
-        reason_code = "todos_required"
-        required_fixes = ["todo_create", "todo_update"]
-        suggested_next_actions = [
-            "Create atomic TODOs first.",
-            "Complete TODOs with evidence before calling submit_answer.",
-        ]
-        requires_new_evidence = False
-    elif "unfinished todos" in msg_l:
-        reason_code = "unfinished_todos"
-        required_fixes = ["todo statuses"]
-        suggested_next_actions = [
-            "Complete pending TODOs or mark irrecoverable leaves as blocked with note.",
-            "Retry submit only after all TODOs are done/blocked.",
-        ]
-        requires_new_evidence = False
-    elif "blocked todos must include a reason note" in msg_l:
-        reason_code = "blocked_missing_note"
-        required_fixes = ["todo note"]
-        suggested_next_actions = [
-            "Add a concrete note to each blocked TODO.",
-            "Retry submit after notes are present.",
-        ]
-        requires_new_evidence = False
-    elif "missing evidence/span" in msg_l:
-        reason_code = "todo_missing_evidence_or_span"
-        required_fixes = ["todo answer_span", "todo evidence_refs"]
-        suggested_next_actions = [
-            "Update completed TODOs with answer_span and evidence_refs.",
-            "Gather additional evidence if current refs are insufficient.",
-        ]
-    elif "answer cannot be empty" in msg_l:
-        reason_code = "empty_answer"
-        required_fixes = ["answer"]
-        suggested_next_actions = [
-            "Submit a short factual guess (name/date/number/yes/no).",
-        ]
-        requires_new_evidence = False
-    elif "answer is too long" in msg_l:
-        reason_code = "answer_too_long"
-        required_fixes = ["answer"]
-        suggested_next_actions = [
-            "Return only the final factual span without explanation.",
-        ]
-        requires_new_evidence = False
-    elif "refusal-style answers are not allowed" in msg_l or "abstaining answers are not allowed" in msg_l:
-        reason_code = "abstaining_answer"
-        required_fixes = ["answer"]
-        suggested_next_actions = [
-            "Replace abstaining text with the best factual guess supported by evidence.",
-        ]
-        requires_new_evidence = False
-    elif "expected type" in msg_l:
-        reason_code = "answer_type_mismatch"
-        required_fixes = ["answer format"]
-        suggested_next_actions = [
-            "Match the expected answer type (date/number/entity/yes_no).",
-        ]
-        requires_new_evidence = False
-    elif "not grounded in todo answer_span" in msg_l:
-        reason_code = "answer_not_grounded"
-        required_fixes = ["answer", "todo answer_span alignment"]
-        suggested_next_actions = [
-            "Use the shortest factual span grounded in completed TODO answer_span fields.",
-            "If grounding is weak, gather additional evidence and revise TODO spans.",
-        ]
-        requires_new_evidence = False
-    elif "no date-like atom evidence found" in msg_l:
-        reason_code = "missing_date_atom_evidence"
-        required_fixes = ["date TODO completion"]
-        suggested_next_actions = [
-            "Reopen upstream TODOs and resolve a date span with evidence.",
-            "Then submit that date span as final answer.",
-        ]
-    elif "reasoning cannot be empty" in msg_l:
-        reason_code = "missing_reasoning"
-        required_fixes = ["reasoning"]
-        suggested_next_actions = [
-            "Provide concise evidence-grounded reasoning for the final answer.",
-        ]
-        requires_new_evidence = False
-
-    return {
-        "reason_code": reason_code,
-        "message": message,
-        "required_fixes": required_fixes,
-        "suggested_next_actions": suggested_next_actions,
-        "requires_new_evidence": requires_new_evidence,
-    }
-
-
-def _submit_needs_revision_response(details: dict[str, Any]) -> str:
-    """Structured submit correction payload."""
-    return json.dumps(
-        {
-            "status": "needs_revision",
-            "phase": "submit_answer",
-            "recovery_policy": {
-                "new_evidence_required_before_retry": bool(details.get("requires_new_evidence", False)),
-            },
-            "validation_error": {
-                "reason_code": details.get("reason_code", "submit_validation_failed"),
-                "message": details.get("message", ""),
-                "required_fixes": details.get("required_fixes", []),
-                "suggested_next_actions": details.get("suggested_next_actions", []),
-            },
-            "summary": _todo_summary(),
-        },
-        indent=2,
-    )
-
-
-def _answer_span_supported_by_chunk_refs(answer_span: str, refs: list[str]) -> bool:
-    """Whether answer span appears in at least one cited chunk ref text."""
-    span = (answer_span or "").strip().lower()
-    if not span:
-        return False
-
-    span_norm = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", " ", span)).strip()
-    for ref in refs:
-        ref_id = (ref or "").strip()
-        if not ref_id.startswith("chunk_"):
-            continue
-        chunk_text = (_seen_chunk_text.get(ref_id) or "").lower()
-        if not chunk_text:
-            continue
-        if span in chunk_text:
-            return True
-        chunk_norm = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", " ", chunk_text)).strip()
-        if span_norm and span_norm in chunk_norm:
-            return True
-    return False
-
-
-def _is_bridge_todo(todo_id: str) -> bool:
-    """Whether this TODO feeds at least one downstream TODO."""
-    for item in _todos:
-        deps = item.get("blocked_by") or []
-        if todo_id in deps:
-            return True
-    return False
-
-
-def _record_failed_bridge_candidates_from_downstream(todo: dict[str, Any]) -> None:
-    """Record upstream bridge candidates that failed a downstream no-evidence check."""
-    deps = todo.get("blocked_by") or []
-    for dep_id in deps:
-        dep_todo = next((t for t in _todos if t.get("id") == dep_id), None)
-        if dep_todo is None or not _is_bridge_todo(dep_id):
-            continue
-        candidate = (dep_todo.get("answer_span") or "").strip().lower()
-        if not candidate:
-            continue
-        bucket = _bridge_candidate_failure_counts.setdefault(dep_id, {})
-        bucket[candidate] = bucket.get(candidate, 0) + 1
-
-
-def _bridge_candidate_failure_count(todo_id: str, candidate: str) -> int:
-    """How many downstream no-evidence blocks were observed for this candidate."""
-    candidate_norm = (candidate or "").strip().lower()
-    if not candidate_norm:
-        return 0
-    return _bridge_candidate_failure_counts.get(todo_id, {}).get(candidate_norm, 0)
+    Format: [TODO: 2/4 done] [x] a1: designer → Ralph | [>] a2: death city | [ ] a3: body of water
+    """
+    if not _todos:
+        return "[TODO: no items]"
+    done_count = sum(1 for t in _todos if t.get("status") == "done")
+    total = len(_todos)
+    parts: list[str] = []
+    for t in _todos:
+        status = t.get("status", "pending")
+        tid = t.get("id", "?")
+        content = (t.get("content") or t.get("task") or "").strip()
+        if len(content) > 40:
+            content = content[:37] + "..."
+        if status == "done":
+            marker = "[x]"
+        elif status == "in_progress":
+            marker = "[>]"
+        elif status == "blocked":
+            marker = "[!]"
+        else:
+            marker = "[ ]"
+        parts.append(f"{marker} {tid}: {content}")
+    items = " | ".join(parts)
+    return f"[TODO: {done_count}/{total} done] {items}"
 
 
 def _normalize_answer_kind(answer_kind: str) -> str:
@@ -1209,14 +629,6 @@ _DATE_HINT_RE = re.compile(
 _NUMBER_HINT_RE = re.compile(r"\b(how many|how much|what number|what amount|population|count|total)\b")
 _YESNO_HINT_RE = re.compile(r"^\s*(is|are|was|were|do|does|did|can|could|will|has|have|had)\b")
 _CAPITALIZED_MENTION_RE = re.compile(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b")
-_ANCHOR_POSSESSIVE_RE = re.compile(r"\b([A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*){0,4})'s\b")
-_ANCHOR_RELATION_RE = re.compile(r"\b(?:of|for|by|from|at|in)\s+([A-Z][A-Za-z0-9]*(?:\s+[A-Z][A-Za-z0-9]*){0,4})\b")
-_TODO_WEAK_EVIDENCE_NOTE_RE = re.compile(
-    r"(no (?:evidence|information|support)|not found|unknown|insufficient|cannot|unable|could not find)",
-    flags=re.IGNORECASE,
-)
-
-
 def _infer_answer_kind(text: str) -> str:
     """Infer expected answer kind from question/task language."""
     probe = (text or "").strip().lower()
@@ -1332,70 +744,6 @@ _GENERIC_ENTITY_CANDIDATE_NAMES = {
 }
 
 
-def _extract_anchor_phrases(text: str, *, limit: int = 4) -> list[str]:
-    """Extract likely anchor entity phrases from a question/sub-question."""
-    if not text:
-        return []
-    blocked = {
-        "What", "When", "Where", "Which", "Who", "Whose", "How", "Why",
-        "The", "A", "An", "In", "On", "At", "By", "Of", "For", "From",
-    }
-    phrases: list[str] = []
-    seen: set[str] = set()
-
-    def _push(raw: str) -> None:
-        candidate = (raw or "").strip()
-        if not candidate or candidate in blocked:
-            return
-        key = candidate.lower()
-        if key in seen:
-            return
-        seen.add(key)
-        phrases.append(candidate)
-
-    for match in _ANCHOR_POSSESSIVE_RE.findall(text):
-        _push(match)
-    for match in _ANCHOR_RELATION_RE.findall(text):
-        _push(match)
-    # Fallback to capitalized mentions if explicit patterns were absent.
-    if not phrases:
-        for match in _CAPITALIZED_MENTION_RE.findall(text):
-            _push(match)
-            if len(phrases) >= max(1, int(limit)):
-                break
-    return phrases[: max(1, int(limit))]
-
-
-def _chunk_refs_contain_any_phrase(refs: list[str], phrases: list[str]) -> bool:
-    """Return True when any cited chunk text contains any anchor phrase."""
-    if not refs or not phrases:
-        return False
-    needles = [(p or "").strip().lower() for p in phrases if (p or "").strip()]
-    if not needles:
-        return False
-    for ref in refs:
-        ref_id = (ref or "").strip()
-        if not ref_id.startswith("chunk_"):
-            continue
-        chunk_text = (_seen_chunk_text.get(ref_id) or "").lower()
-        if not chunk_text:
-            continue
-        if any(needle in chunk_text for needle in needles):
-            return True
-    return False
-
-
-def _first_entity_id_from_refs(refs: list[str]) -> str:
-    """Extract first entity id from normalized evidence refs."""
-    for ref in refs:
-        raw = (ref or "").strip()
-        if raw.startswith("entity:"):
-            entity_id = raw.split(":", 1)[1].strip()
-            if entity_id:
-                return entity_id
-    return ""
-
-
 def _lookup_entity_coarse_type(entity_id: str, dataset_name: str = "") -> str:
     """Resolve coarse entity type from graph node metadata when available."""
     resolved_graph_id = _resolve_graph_reference_id(dataset_name=dataset_name)
@@ -1434,21 +782,6 @@ def _answer_matches_kind(answer: str, answer_kind: str) -> bool:
             return True
         return bool(re.fullmatch(r"[A-Za-z-]+(?:\s+[A-Za-z-]+){0,3}", value))
     return True
-
-
-def _normalize_evidence_refs(evidence_refs: list[str] | None) -> list[str]:
-    """Normalize/unique evidence references while preserving order."""
-    refs: list[str] = []
-    seen: set[str] = set()
-    for raw in evidence_refs or []:
-        ref = (raw or "").strip()
-        if not ref:
-            continue
-        if ref in seen:
-            continue
-        refs.append(ref)
-        seen.add(ref)
-    return refs
 
 
 def _normalize_string_list(values: Any, *, split_commas: bool = False) -> list[str]:
@@ -1543,29 +876,6 @@ def _normalize_alternatives_tested(alternatives_tested: Any) -> list[str]:
         seen.add(lowered)
         out.append(cleaned)
     return out
-
-
-def _validate_evidence_refs(evidence_refs: list[str]) -> tuple[bool, str]:
-    """Validate evidence references and ensure chunk refs were actually retrieved."""
-    if not evidence_refs:
-        return False, "evidence_refs cannot be empty when marking TODO as done."
-    for ref in evidence_refs:
-        if ref.startswith("chunk_"):
-            if ref not in _seen_chunks:
-                return False, f"Unknown chunk evidence ref: {ref!r}. Use chunk IDs returned by retrieval tools."
-            continue
-        if ref.startswith("entity:") or ref.startswith("relationship:"):
-            payload = ref.split(":", 1)[1].strip()
-            if not payload:
-                return False, f"Invalid evidence ref: {ref!r}."
-            continue
-        if re.fullmatch(r"[A-Za-z0-9_.:-]{3,}", ref):
-            continue
-        return False, (
-            f"Invalid evidence ref: {ref!r}. Use chunk IDs (chunk_*) "
-            "or namespaced refs (entity:..., relationship:...)."
-        )
-    return True, ""
 
 
 _MONTH_NAMES = (
@@ -4024,46 +3334,12 @@ async def chunk_get_text_by_entity_ids(
     )
 
 
-@mcp.tool()
-async def extract_date_mentions(
-    chunk_ids: list[str] | None = None,
-    chunk_id: str = "",
-    text: str = "",
-    dataset_name: str = "",
+def _extract_date_mentions_from_sources(
+    *,
+    sources: list[dict[str, str]],
     max_mentions: int = 20,
 ) -> str:
-    """Extract normalized date mentions from chunk text with evidence refs."""
-    await _ensure_initialized()
-
-    sources: list[dict[str, str]] = []
-    if (text or "").strip():
-        sources.append({"chunk_id": "", "text": text.strip()})
-
-    if chunk_ids or (chunk_id or "").strip():
-        payload_raw = await chunk_get_text_by_chunk_ids(
-            chunk_ids=chunk_ids,
-            chunk_id=chunk_id,
-            dataset_name=dataset_name,
-        )
-        try:
-            payload = json.loads(payload_raw)
-        except Exception:
-            payload = {}
-        retrieved_chunks = payload.get("retrieved_chunks") if isinstance(payload, dict) else []
-        if isinstance(retrieved_chunks, list):
-            for item in retrieved_chunks:
-                if not isinstance(item, dict):
-                    continue
-                cid = str(item.get("chunk_id") or "").strip()
-                chunk_text = str(
-                    item.get("text_content")
-                    or item.get("text")
-                    or item.get("content")
-                    or ""
-                )
-                if chunk_text:
-                    sources.append({"chunk_id": cid, "text": chunk_text})
-
+    """Shared date-mention extraction over normalized source text blocks."""
     if not sources:
         return json.dumps(
             {
@@ -4194,6 +3470,52 @@ async def extract_date_mentions(
         },
         indent=2,
         default=str,
+    )
+
+
+@mcp.tool()
+async def extract_date_mentions(
+    chunk_ids: list[str] | None = None,
+    chunk_id: str = "",
+    text: str = "",
+    dataset_name: str = "",
+    max_mentions: int = 20,
+) -> str:
+    """Extract normalized date mentions from chunk text with evidence refs."""
+    await _ensure_initialized()
+
+    sources: list[dict[str, str]] = []
+    if (text or "").strip():
+        sources.append({"chunk_id": "", "text": text.strip()})
+
+    if chunk_ids or (chunk_id or "").strip():
+        payload_raw = await chunk_get_text_by_chunk_ids(
+            chunk_ids=chunk_ids,
+            chunk_id=chunk_id,
+            dataset_name=dataset_name,
+        )
+        try:
+            payload = json.loads(payload_raw)
+        except Exception:
+            payload = {}
+        retrieved_chunks = payload.get("retrieved_chunks") if isinstance(payload, dict) else []
+        if isinstance(retrieved_chunks, list):
+            for item in retrieved_chunks:
+                if not isinstance(item, dict):
+                    continue
+                cid = str(item.get("chunk_id") or "").strip()
+                chunk_text = str(
+                    item.get("text_content")
+                    or item.get("text")
+                    or item.get("content")
+                    or ""
+                )
+                if chunk_text:
+                    sources.append({"chunk_id": cid, "text": chunk_text})
+
+    return _extract_date_mentions_from_sources(
+        sources=sources,
+        max_mentions=max_mentions,
     )
 
 
@@ -6414,160 +5736,6 @@ if BENCHMARK_MODE:
         flags=re.IGNORECASE,
     )
 
-    async def _auto_link_entity_ref(answer_span_text: str) -> str | None:
-        """Best-effort canonical entity link for entity TODO evidence enrichment."""
-        mention = (answer_span_text or "").strip()
-        if not mention:
-            return None
-        try:
-            ctx = _state.get("graphrag_context")
-            if ctx is None:
-                return None
-            vdb_names = list(ctx.list_vdbs() or [])
-            if not vdb_names:
-                return None
-            entity_vdb = next((v for v in vdb_names if v.endswith("_entities")), vdb_names[0])
-            raw = await entity_link([mention], entity_vdb, top_k=3)
-            parsed = json.loads(raw)
-            if not isinstance(parsed, dict):
-                return None
-            results = parsed.get("linked_entities_results")
-            if not isinstance(results, list):
-                return None
-            for item in results:
-                if not isinstance(item, dict):
-                    continue
-                linked_id = (item.get("linked_entity_id") or "").strip()
-                if linked_id:
-                    return linked_id
-        except Exception as e:
-            logger.debug("auto entity-link enrichment failed: %s", e)
-        return None
-
-    async def _verify_composed_answer_consistency(
-        target: dict[str, Any],
-        answer_span_text: str,
-        note_text: str,
-        refs: list[str],
-    ) -> tuple[bool, str]:
-        """Verify that a compose/intersection TODO result is consistent with parents.
-
-        Uses an LLM-backed structured verdict with a conservative heuristic fallback.
-        """
-        deps = target.get("blocked_by") or []
-        parent_items = [
-            t for dep_id in deps
-            for t in _todos
-            if t.get("id") == dep_id and t.get("status") == "done"
-        ]
-        if len(parent_items) < 2:
-            return False, "Compose/intersection TODO requires at least two completed parent TODOs."
-
-        parent_payload: list[dict[str, Any]] = []
-        for p in parent_items:
-            span = (p.get("answer_span") or "").strip()
-            if not span:
-                return False, f"Parent TODO {p.get('id')} is missing answer_span."
-            parent_payload.append(
-                {
-                    "id": p.get("id"),
-                    "task": p.get("task", ""),
-                    "answer_span": span,
-                    "evidence_refs": _normalize_evidence_refs(p.get("evidence_refs")),
-                }
-            )
-
-        evidence_payload: list[dict[str, str]] = []
-        for ref in refs:
-            if ref.startswith("chunk_"):
-                preview = _seen_chunks.get(ref, "")
-                evidence_payload.append({"ref": ref, "preview": preview})
-            else:
-                evidence_payload.append({"ref": ref, "preview": ""})
-
-        from llm_client import acall_llm_structured
-        from pydantic import BaseModel, Field
-
-        class ComposeVerdict(BaseModel):
-            is_consistent: bool = Field(description="Whether candidate is composition-consistent.")
-            rationale: str = Field(description="Brief reason based on parent outputs.")
-            unsupported_parent_ids: list[str] = Field(
-                default_factory=list,
-                description="Parent TODO ids that are not supported by candidate mapping.",
-            )
-            confidence: float = Field(description="0..1 confidence for the verdict.")
-
-        system_prompt = (
-            "You are a strict verifier of composed/intersection reasoning in multi-hop QA. "
-            "Given parent atom outputs and a candidate composed output, decide whether the candidate "
-            "is logically consistent with the parent outputs and evidence. "
-            "Reject abstentions and mismatched geography/entity scope."
-        )
-        user_prompt = (
-            f"Question: {_current_question or ''}\n"
-            f"Compose TODO task: {target.get('task', '')}\n"
-            f"Candidate answer_span: {answer_span_text}\n"
-            f"Candidate note: {note_text}\n\n"
-            f"Parent atoms JSON:\n{json.dumps(parent_payload, ensure_ascii=False, indent=2)}\n\n"
-            f"Candidate evidence refs JSON:\n{json.dumps(evidence_payload, ensure_ascii=False, indent=2)}\n\n"
-            "Rules:\n"
-            "1) Candidate must be a concrete entity/span, not a refusal/abstention.\n"
-            "2) Candidate should be explainable as composition/intersection over parent outputs.\n"
-            "3) If composition is impossible from parents, mark is_consistent=false.\n"
-            "4) Be conservative: if evidence is weak/contradictory, return false.\n"
-        )
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
-
-        llm = _state.get("agentic_llm")
-        model = llm.model if llm else _state["config"].llm.model
-        trace_id = f"digimon.compose_consistency.{uuid.uuid4().hex[:8]}"
-
-        try:
-            verdict, _meta = await acall_llm_structured(
-                model,
-                messages,
-                response_model=ComposeVerdict,
-                task="digimon.compose_consistency",
-                trace_id=trace_id,
-                max_budget=0,
-            )
-            if not verdict.is_consistent:
-                unsupported = ", ".join(verdict.unsupported_parent_ids or [])
-                detail = f" Unsupported parents: {unsupported}." if unsupported else ""
-                return False, (
-                    "Compose/intersection consistency check failed. "
-                    + (verdict.rationale or "Candidate does not align with parent outputs.")
-                    + detail
-                    + " Recovery: link each parent answer_span with entity_link, "
-                    + "expand with entity_onehop (or subgraph_steiner_tree), then "
-                    + "run bridge_disambiguate on candidates before retrying todo_update(done)."
-                )
-            return True, ""
-        except Exception:
-            # Conservative heuristic fallback.
-            candidate = (answer_span_text or "").strip().lower()
-            if not candidate:
-                return False, "Compose/intersection candidate answer span is empty."
-            if _ANSWER_REFUSAL_RE.search(candidate):
-                return False, "Compose/intersection candidate cannot be abstaining/refusal text."
-
-            parent_spans = [(p.get("answer_span") or "").strip().lower() for p in parent_payload]
-            # If candidate is unrelated to all parents and no supporting refs, fail conservatively.
-            overlap = 0
-            for p in parent_spans:
-                if not p:
-                    continue
-                if candidate in p or p in candidate:
-                    overlap += 1
-            if overlap == 0 and not refs:
-                return False, (
-                    "Compose/intersection result is not connected to parent spans and has no evidence refs."
-                )
-            return True, ""
-
     @mcp.tool()
     async def semantic_plan(question: str) -> str:
         """Create a typed semantic plan (atoms, dependencies, composition).
@@ -6576,7 +5744,7 @@ if BENCHMARK_MODE:
         is a compact JSON contract for TODO construction and evidence checks.
         """
         global _current_question, _current_expected_answer_kind
-        global _current_semantic_plan_question, _relation_scope_branch_required, _relation_scope_branch_resolved
+        global _current_semantic_plan_question
         await _ensure_initialized()
 
         from llm_client import acall_llm_structured
@@ -6810,9 +5978,6 @@ if BENCHMARK_MODE:
                 _normalize_answer_kind(plan.final_answer_kind)
                 or _infer_answer_kind(_current_question)
             )
-            _relation_scope_branch_required = relation_scope_risk
-            _relation_scope_branch_resolved = False
-            _atom_todo_map.clear()
             return json.dumps(plan.model_dump(), indent=2)
         except Exception as e:
             # Deterministic fallback keeps behavior safe if planner LLM is unavailable.
@@ -6846,617 +6011,7 @@ if BENCHMARK_MODE:
                 _normalize_answer_kind(fallback.get("final_answer_kind", ""))
                 or _infer_answer_kind(_current_question)
             )
-            _relation_scope_branch_required = False
-            _relation_scope_branch_resolved = False
-            _atom_todo_map.clear()
             return json.dumps(fallback, indent=2)
-
-    @mcp.tool()
-    async def todo_create(
-        task: str,
-        rationale: str = "",
-        priority: str = "medium",
-        answer_kind: str = "",
-        operation: str = "",
-        atom_id: str = "",
-        blocked_by: list[str] | None = None,
-        depends_on: list[str] | None = None,
-        done_criteria: str = "",
-    ) -> str:
-        """Create a TODO item for this question.
-
-        Args:
-            task: Short action item (atomic step)
-            rationale: Why this TODO matters
-            priority: low/medium/high
-            answer_kind: Optional expected answer type (date/number/yes_no/entity)
-            operation: Optional semantic operation (lookup/relation/intersection/compose/compare/temporal)
-            atom_id: Optional semantic atom id from semantic_plan (e.g., a1)
-            blocked_by: Optional TODO IDs that must be done before this one can be done
-            depends_on: Alias of blocked_by for semantic-plan style dependency lists
-            done_criteria: Optional explicit completion criteria
-
-        Returns:
-            Created TODO item with id/status.
-        """
-        global _todo_counter
-        task_text = (task or "").strip()
-        if not task_text:
-            raise ValueError("task cannot be empty")
-        priority_norm = (priority or "medium").strip().lower()
-        if priority_norm not in {"low", "medium", "high"}:
-            priority_norm = "medium"
-        answer_kind_norm = _normalize_answer_kind(answer_kind) or _infer_answer_kind(task_text)
-        operation_norm = _normalize_todo_operation(operation, task_text)
-        raw_dependencies: list[str] = []
-        if blocked_by:
-            raw_dependencies.extend(blocked_by)
-        if depends_on:
-            raw_dependencies.extend(depends_on)
-
-        blocked_norm: list[str] = []
-        known_ids = {t.get("id") for t in _todos}
-        for dep in raw_dependencies:
-            dep_id = (dep or "").strip()
-            if not dep_id:
-                continue
-            if dep_id not in known_ids:
-                # Accept semantic atom IDs in blocked_by and map them to TODO IDs.
-                mapped_dep = _atom_todo_map.get(dep_id)
-                if mapped_dep:
-                    dep_id = mapped_dep
-                else:
-                    raise ValueError(f"Unknown dependency todo_id: {dep_id!r}")
-            if dep_id not in blocked_norm:
-                blocked_norm.append(dep_id)
-
-        atom_id_norm = (atom_id or "").strip()
-        semantic_atoms = _semantic_plan_atoms()
-        selected_atom: dict[str, Any] | None = None
-        is_auxiliary = _is_auxiliary_todo_task(
-            task=task_text,
-            operation=operation,
-            atom_id=atom_id_norm,
-        )
-        if semantic_atoms:
-            if atom_id_norm:
-                selected_atom = _semantic_plan_atom_by_id(atom_id_norm)
-                if selected_atom is None:
-                    if is_auxiliary:
-                        logger.info(
-                            "todo_create: treating unknown atom_id=%r as auxiliary task (semantic plan atom IDs=%s)",
-                            atom_id_norm,
-                            [a.get("atom_id") for a in semantic_atoms if a.get("atom_id")][:12],
-                        )
-                        atom_id_norm = ""
-                    else:
-                        known_atoms = [a.get("atom_id") for a in semantic_atoms if a.get("atom_id")]
-                        return json.dumps(
-                            {
-                                "status": "needs_revision",
-                                "attempted_atom_id": atom_id_norm,
-                                "validation_error": {
-                                    "reason_code": "unknown_atom_id",
-                                    "message": (
-                                        f"Unknown atom_id {atom_id_norm!r}. "
-                                        f"Known atom_ids: {known_atoms}."
-                                    ),
-                                    "required_fields": ["atom_id"],
-                                    "suggested_next_actions": [
-                                        "Use one of the known semantic atom IDs from semantic_plan.",
-                                        "Use todo_list() to inspect current TODO mappings before creating new tasks.",
-                                    ],
-                                },
-                                "summary": _todo_summary(),
-                            },
-                            indent=2,
-                            default=str,
-                        )
-                if atom_id_norm in _atom_todo_map:
-                    existing_todo_id = _atom_todo_map[atom_id_norm]
-                    existing_todo = next((t for t in _todos if t.get("id") == existing_todo_id), None)
-                    if existing_todo is not None:
-                        return json.dumps(
-                            {
-                                "status": "exists",
-                                "todo": existing_todo,
-                                "summary": _todo_summary(),
-                                "status_message": (
-                                    f"atom_id {atom_id_norm!r} already mapped to {existing_todo_id!r}; "
-                                    "reusing existing TODO."
-                                ),
-                            },
-                            indent=2,
-                            default=str,
-                        )
-                    raise ValueError(
-                        f"atom_id {atom_id_norm!r} already mapped to {existing_todo_id!r}, "
-                        "but the mapped TODO was not found."
-                    )
-            else:
-                if is_auxiliary:
-                    # Auxiliary/disambiguation helper TODOs are intentionally not
-                    # forced onto semantic-plan atoms.
-                    selected_atom = None
-                else:
-                    auto_atom, auto_score = _auto_match_semantic_atom(
-                        task_text=task_text,
-                        operation_norm=operation_norm,
-                        answer_kind_norm=answer_kind_norm,
-                        blocked_todo_ids=blocked_norm,
-                    )
-                    if auto_atom is None or auto_score < 0.55:
-                        unmapped = [
-                            {"atom_id": a.get("atom_id"), "sub_question": a.get("sub_question")}
-                            for a in semantic_atoms
-                            if (a.get("atom_id") or "").strip() not in _atom_todo_map
-                        ]
-                        if len(unmapped) == 1:
-                            only_atom_id = (unmapped[0].get("atom_id") or "").strip()
-                            only_atom = _semantic_plan_atom_by_id(only_atom_id) if only_atom_id else None
-                            if only_atom is not None:
-                                selected_atom = only_atom
-                                atom_id_norm = only_atom_id
-                                logger.info(
-                                    "todo_create: auto-mapped single remaining semantic atom_id=%s",
-                                    only_atom_id,
-                                )
-                        if selected_atom is None:
-                            raise ValueError(
-                                "todo_create could not reliably map this task to semantic_plan atoms. "
-                                "Provide atom_id explicitly from semantic_plan. "
-                                f"Unmapped atoms: {unmapped[:6]}"
-                            )
-                    else:
-                        selected_atom = auto_atom
-                        atom_id_norm = (selected_atom.get("atom_id") or "").strip()
-
-        if selected_atom is not None:
-            expected_op = _normalize_todo_operation(
-                selected_atom.get("operation", ""),
-                selected_atom.get("sub_question", ""),
-            )
-            expected_kind = _normalize_answer_kind(selected_atom.get("answer_kind", ""))
-            expected_dep_atoms = [str(a).strip() for a in (selected_atom.get("depends_on") or []) if str(a).strip()]
-            missing_dep_atoms = [aid for aid in expected_dep_atoms if aid not in _atom_todo_map]
-            if missing_dep_atoms:
-                raise ValueError(
-                    "Create prerequisite atoms before this one. Missing dependency atom_ids: "
-                    + ", ".join(missing_dep_atoms)
-                )
-            expected_dep_todos = [_atom_todo_map[aid] for aid in expected_dep_atoms if aid in _atom_todo_map]
-            if blocked_norm and set(blocked_norm) != set(expected_dep_todos):
-                raise ValueError(
-                    f"blocked_by does not match semantic_plan dependencies for atom {atom_id_norm}. "
-                    f"Expected {expected_dep_todos}, got {blocked_norm}."
-                )
-            if not blocked_norm and expected_dep_todos:
-                blocked_norm = list(expected_dep_todos)
-            if operation and operation_norm != expected_op:
-                raise ValueError(
-                    f"operation mismatch for atom {atom_id_norm}: expected '{expected_op}', got '{operation_norm}'."
-                )
-            if answer_kind and expected_kind and answer_kind_norm != expected_kind:
-                raise ValueError(
-                    f"answer_kind mismatch for atom {atom_id_norm}: expected '{expected_kind}', got '{answer_kind_norm}'."
-                )
-            operation_norm = expected_op
-            answer_kind_norm = expected_kind or answer_kind_norm
-
-        _todo_counter += 1
-        todo_id = f"todo_{_todo_counter}"
-        done_criteria_text = (done_criteria or "").strip()
-        if not done_criteria_text:
-            done_criteria_text = (
-                f"Produce a supported {answer_kind_norm} span and cite evidence refs."
-                if answer_kind_norm else
-                "Produce a supported answer span and cite evidence refs."
-            )
-        item = {
-            "id": todo_id,
-            "task": task_text,
-            "status": "pending",
-            "priority": priority_norm,
-            "rationale": (rationale or "").strip(),
-            "answer_kind": answer_kind_norm or "entity",
-            "operation": operation_norm,
-            "atom_id": atom_id_norm or None,
-            "blocked_by": blocked_norm,
-            "done_criteria": done_criteria_text,
-            "answer_span": "",
-            "evidence_refs": [],
-            "confidence": None,
-            "alternatives_tested": [],
-        }
-        _todos.append(item)
-        if atom_id_norm:
-            _atom_todo_map[atom_id_norm] = todo_id
-        return json.dumps(
-            {
-                "status": "created",
-                "todo": item,
-                "summary": _todo_summary(),
-            },
-            indent=2,
-        )
-
-    @mcp.tool()
-    async def todo_update(
-        todo_id: str = "",
-        status: str = "",
-        note: str = "",
-        answer_span: str = "",
-        evidence_refs: list[str] | None = None,
-        confidence: float | None = None,
-        alternatives_tested: list[str] | None = None,
-        alternative_tested: str = "",
-        atom_id: str = "",
-        done_criteria: str = "",
-    ) -> str:
-        """Update status of an existing TODO.
-
-        Args:
-            todo_id: TODO id returned by todo_create (optional when atom_id is provided)
-            status: pending/in_progress/done/blocked
-            note: Optional note for transition
-            answer_span: Candidate answer span for this atom (required for done)
-            evidence_refs: Evidence refs backing this atom (required for done)
-            confidence: Optional confidence score [0,1]
-            alternatives_tested: Alternative bridge/hypothesis labels tested
-            atom_id: Optional compatibility field (ignored; TODO identity is todo_id)
-            done_criteria: Optional compatibility field (ignored on update)
-
-        Returns:
-            Updated TODO item and summary.
-        """
-        global _relation_scope_branch_resolved
-        todo_id_norm = (todo_id or "").strip()
-        if not todo_id_norm:
-            atom_id_norm = (atom_id or "").strip()
-            if atom_id_norm:
-                todo_id_norm = (_atom_todo_map.get(atom_id_norm) or "").strip()
-            if not todo_id_norm:
-                raise ValueError(
-                    "todo_update requires todo_id or a resolvable atom_id mapped by todo_create."
-                )
-        todo_id = todo_id_norm
-        normalized = _normalize_todo_status(status)
-        if not normalized:
-            raise ValueError("status must be one of pending/in_progress/done/blocked")
-        target = next((t for t in _todos if t.get("id") == todo_id), None)
-        if target is None:
-            raise ValueError(f"Unknown todo_id: {todo_id!r}")
-
-        note_text = (note or "").strip()
-        answer_span_text = (answer_span or "").strip()
-        refs = _normalize_evidence_refs(evidence_refs)
-        alts_input = list(alternatives_tested or [])
-        alt_single = (alternative_tested or "").strip()
-        if alt_single:
-            alts_input.append(alt_single)
-        alts = _normalize_alternatives_tested(alts_input)
-        if normalized == "done":
-            guard = _todo_recovery_guard.get(todo_id)
-            if guard:
-                candidate_span = answer_span_text or (target.get("answer_span") or "").strip()
-                candidate_refs = refs or _normalize_evidence_refs(target.get("evidence_refs"))
-                candidate_alts = alts or _normalize_alternatives_tested(target.get("alternatives_tested"))
-                attempt_fp = _attempt_fingerprint(candidate_span, candidate_refs, candidate_alts)
-                prior_fp = guard.get("attempt_fingerprint", "")
-                prior_refs = set(_normalize_evidence_refs(guard.get("attempt_refs") or []))
-                has_new_refs = any(r not in prior_refs for r in candidate_refs)
-                prior_alts = set(_normalize_alternatives_tested(guard.get("attempt_alts") or []))
-                has_new_alts = any(a not in prior_alts for a in candidate_alts)
-                todo_sig_changed = _todo_evidence_signature() != guard.get("todo_signature", "")
-                requires_new_evidence = bool(guard.get("requires_new_evidence", False))
-                repeated_attempt = attempt_fp == prior_fp
-                # Treat newly-added alternatives_tested as progress (not just new evidence_refs).
-                # When the prior failure was "missing bridge alternatives", providing alternatives
-                # is the correct fix and should not be blocked by the evidence-only gate.
-                has_progress = has_new_refs or has_new_alts or todo_sig_changed
-                if (requires_new_evidence and not has_progress) or (
-                    (not requires_new_evidence) and repeated_attempt and not todo_sig_changed
-                ):
-                    details = {
-                        "reason_code": "new_evidence_required_after_validation_error"
-                        if requires_new_evidence else
-                        "repeat_invalid_attempt",
-                        "message": (
-                            "Previous TODO completion attempt failed validation. "
-                            + (
-                                "Gather or cite new evidence before retrying done."
-                                if requires_new_evidence else
-                                "Apply a concrete correction before retrying."
-                            )
-                        ),
-                        "required_fields": ["answer_span", "evidence_refs"],
-                        "suggested_next_actions": [
-                            "Run retrieval to get additional evidence or correct refs.",
-                            "Update TODO with corrected span/refs and retry status='done'.",
-                        ],
-                        "requires_new_evidence": requires_new_evidence,
-                    }
-                    return _todo_needs_revision_response(
-                        todo_id=todo_id,
-                        attempted_status=normalized,
-                        note_text=note_text,
-                        details=details,
-                    )
-
-        try:
-            if confidence is not None and not (0.0 <= confidence <= 1.0):
-                raise ValueError("confidence must be in [0, 1].")
-
-            answer_kind_norm = (
-                _normalize_answer_kind(target.get("answer_kind", ""))
-                or _infer_answer_kind(target.get("task", ""))
-            )
-            todo_atom_id = (target.get("atom_id") or "").strip()
-            selected_atom = _semantic_plan_atom_by_id(todo_atom_id) if todo_atom_id else None
-
-            if normalized == "in_progress":
-                for item in _todos:
-                    if item.get("id") != todo_id and item.get("status") == "in_progress":
-                        item["status"] = "pending"
-
-            if normalized == "done":
-                deps = target.get("blocked_by") or []
-                unresolved = [
-                    dep_id for dep_id in deps
-                    if next((t for t in _todos if t.get("id") == dep_id and t.get("status") == "done"), None) is None
-                ]
-                if unresolved:
-                    raise ValueError(
-                        "Cannot mark TODO done while dependencies are unfinished: "
-                        + ", ".join(unresolved)
-                        + "."
-                    )
-
-                if _TODO_WEAK_EVIDENCE_NOTE_RE.search(note_text):
-                    raise ValueError(
-                        "Cannot mark TODO done with a no-evidence note. "
-                        "Set status='blocked' and reopen upstream bridge TODO(s) instead."
-                    )
-
-                if not answer_span_text:
-                    answer_span_text = (target.get("answer_span") or "").strip()
-                if not answer_span_text:
-                    raise ValueError(
-                        "Cannot mark TODO done without answer_span. Provide the short factual span this atom resolved to."
-                    )
-
-                if not refs:
-                    refs = _normalize_evidence_refs(target.get("evidence_refs"))
-
-                if answer_kind_norm == "entity":
-                    has_entity_ref = any((r or "").startswith("entity:") for r in refs)
-                    if not has_entity_ref:
-                        auto_entity_id = await _auto_link_entity_ref(answer_span_text)
-                        if auto_entity_id:
-                            refs.append(f"entity:{auto_entity_id}")
-
-                if answer_kind_norm == "entity":
-                    atom_task_text = (
-                        str(selected_atom.get("sub_question") or "").strip()
-                        if isinstance(selected_atom, dict) else ""
-                    ) or str(target.get("task") or "").strip()
-                    expected_types = _infer_expected_coarse_types(atom_task_text)
-                    resolved_entity_id = _first_entity_id_from_refs(refs)
-                    if (not resolved_entity_id) and answer_span_text:
-                        resolved_entity_id = await _auto_link_entity_ref(answer_span_text) or ""
-                        if resolved_entity_id and f"entity:{resolved_entity_id}" not in refs:
-                            refs.append(f"entity:{resolved_entity_id}")
-                    if expected_types and resolved_entity_id:
-                        resolved_type = _lookup_entity_coarse_type(resolved_entity_id)
-                        if resolved_type != "unknown" and not _coarse_type_matches(resolved_type, expected_types):
-                            expected_str = ", ".join(sorted(expected_types))
-                            raise ValueError(
-                                "Entity answer coarse type mismatch for this atom. "
-                                f"Expected one of [{expected_str}], got '{resolved_type}' "
-                                f"for entity '{resolved_entity_id}'."
-                            )
-
-                ok, msg = _validate_evidence_refs(refs)
-                if not ok:
-                    raise ValueError(msg)
-
-                if not _answer_matches_kind(answer_span_text, answer_kind_norm):
-                    raise ValueError(
-                        f"answer_span does not match expected answer kind '{answer_kind_norm}'."
-                    )
-
-                chunk_refs = [r for r in refs if (r or "").startswith("chunk_")]
-                if chunk_refs and answer_kind_norm in {"date", "number"}:
-                    if not _answer_span_supported_by_chunk_refs(answer_span_text, refs):
-                        raise ValueError(
-                            "answer_span is not present in cited chunk evidence. "
-                            "Use a span that appears in the referenced chunk text, "
-                            "or cite the correct evidence refs."
-                        )
-
-                if answer_kind_norm == "entity" and _ANSWER_REFUSAL_RE.search(answer_span_text):
-                    raise ValueError(
-                        "Entity TODO completion requires a concrete entity span. "
-                        "Do not use abstaining/negative spans like 'none', 'unknown', or 'no intersection'. "
-                        "Reopen upstream TODOs and gather more evidence."
-                    )
-                if answer_kind_norm == "entity":
-                    lowered_entity_span = answer_span_text.lower().strip()
-                    if lowered_entity_span.startswith("no ") or lowered_entity_span in {
-                        "none", "none found", "unknown", "n/a", "not applicable", "not found",
-                        "no intersection", "no common region", "no region identified",
-                    }:
-                        raise ValueError(
-                            "Entity TODO completion requires a concrete entity span, not an abstaining/negative phrase. "
-                            "Reopen upstream TODOs and gather new evidence."
-                        )
-
-                    # Semantic anchor verification: for lookup-like atoms, cited chunk
-                    # evidence should mention at least one anchor phrase from the atom.
-                    op_norm = _normalize_todo_operation(
-                        str(target.get("operation") or ""),
-                        str(target.get("task") or ""),
-                    )
-                    if op_norm == "lookup":
-                        anchor_source = (
-                            str(selected_atom.get("sub_question") or "").strip()
-                            if isinstance(selected_atom, dict) else ""
-                        ) or str(target.get("task") or "").strip()
-                        anchors = _extract_anchor_phrases(anchor_source)
-                        chunk_refs = [r for r in refs if (r or "").startswith("chunk_")]
-                        if anchors and chunk_refs and not _chunk_refs_contain_any_phrase(chunk_refs, anchors):
-                            raise ValueError(
-                                "Evidence does not mention anchor phrase(s) for this lookup atom. "
-                                f"Anchors={anchors}. Re-run anchored retrieval before marking done."
-                            )
-
-                if _is_compose_like_todo(target):
-                    ok_comp, msg_comp = await _verify_composed_answer_consistency(
-                        target,
-                        answer_span_text,
-                        note_text,
-                        refs,
-                    )
-                    if not ok_comp:
-                        raise ValueError(msg_comp)
-
-            # Bridge atoms (feeding downstream tasks) must demonstrate disambiguation:
-            # at least one alternative hypothesis tested beyond the chosen span.
-            if normalized == "done" and _is_bridge_todo(todo_id) and answer_kind_norm == "entity":
-                prior_failures = _bridge_candidate_failure_count(todo_id, answer_span_text)
-                if prior_failures >= _BRIDGE_CANDIDATE_RETRY_FAILURE_THRESHOLD:
-                        raise ValueError(
-                            "This bridge candidate previously failed downstream evidence checks "
-                            f"{prior_failures} times. Choose a DIFFERENT candidate (or gather genuinely new evidence) "
-                            "before marking this bridge TODO done again."
-                        )
-                chosen = answer_span_text.lower().strip()
-                distinct_alts = [
-                    a for a in alts
-                    if a.lower().strip() and a.lower().strip() != chosen
-                ]
-                if _todo_requires_bridge_alternatives(target) and not distinct_alts:
-                    raise ValueError(
-                        "Bridge TODO completion requires at least one tested alternative hypothesis in "
-                        "alternatives_tested (distinct from answer_span) when bridge ambiguity is present."
-                    )
-
-                # If semantic planner flagged relation-attachment ambiguity, require
-                # explicit two-parse investigation before committing this atom.
-                if _todo_requires_relation_scope_branching(target):
-                    chosen = answer_span_text.lower().strip()
-                    distinct_alts = [
-                        a for a in alts
-                        if a.lower().strip() and a.lower().strip() != chosen
-                    ]
-                    if len(distinct_alts) < 2:
-                        raise ValueError(
-                            "Relation-scope ambiguity detected. Before marking this TODO done, "
-                            "test two parse hypotheses and record both in alternatives_tested, e.g. "
-                            "'parse_a: R(intersection(...))' and 'parse_b: intersection(R(...), ...)'."
-                        )
-                    if len(set(refs)) < 2:
-                        raise ValueError(
-                            "Relation-scope ambiguity requires evidence for both parse hypotheses. "
-                            "Provide at least two evidence_refs."
-                        )
-                    _relation_scope_branch_resolved = True
-
-                if confidence is not None and confidence < 0.5 and not alts:
-                    raise ValueError(
-                        "Low-confidence TODO completion requires alternatives_tested. "
-                        "Test at least one alternative branch before marking done."
-                    )
-            if normalized == "done":
-                # Persist atom evidence for *all* completed TODOs.
-                # Bridge TODOs above add extra checks, but completion fields must
-                # always be recorded so downstream compose/intersection validation
-                # can consume parent answer_span/evidence_refs reliably.
-                target["answer_span"] = answer_span_text
-                target["evidence_refs"] = refs
-                target["alternatives_tested"] = alts
-
-            if normalized == "blocked" and _TODO_WEAK_EVIDENCE_NOTE_RE.search(note_text):
-                _record_failed_bridge_candidates_from_downstream(target)
-
-            target["status"] = normalized
-            if note_text:
-                target["note"] = note_text
-            if confidence is not None:
-                target["confidence"] = confidence
-
-            # Successful correction clears recovery gate.
-            if normalized in {"done", "blocked"}:
-                _todo_recovery_guard.pop(todo_id, None)
-
-            return json.dumps(
-                {
-                    "status": "updated",
-                    "todo": target,
-                    "summary": _todo_summary(),
-                },
-                indent=2,
-            )
-        except ValueError as e:
-            details = _classify_todo_update_error(str(e))
-            if normalized in {"done", "blocked"}:
-                candidate_span = answer_span_text or (target.get("answer_span") or "").strip()
-                candidate_refs = refs or _normalize_evidence_refs(target.get("evidence_refs"))
-                candidate_alts = alts or _normalize_alternatives_tested(target.get("alternatives_tested"))
-                _todo_recovery_guard[todo_id] = {
-                    "reason_code": details.get("reason_code", "validation_failed"),
-                    "message": details.get("message", ""),
-                    "requires_new_evidence": bool(details.get("requires_new_evidence", True)),
-                    "attempt_fingerprint": _attempt_fingerprint(candidate_span, candidate_refs, candidate_alts),
-                    "attempt_refs": candidate_refs,
-                    "attempt_alts": candidate_alts,
-                    "todo_signature": _todo_evidence_signature(),
-                }
-                return _todo_needs_revision_response(
-                    todo_id=todo_id,
-                    attempted_status=normalized,
-                    note_text=note_text,
-                    details=details,
-                )
-            raise
-
-    @mcp.tool()
-    async def todo_list() -> str:
-        """List all TODOs and completion summary for this question."""
-        return json.dumps(
-            {
-                "todos": _todos,
-                "summary": _todo_summary(),
-                "question": _current_question,
-                "expected_answer_kind": _current_expected_answer_kind or None,
-                "semantic_branching": {
-                    "relation_scope_required": _relation_scope_branch_required,
-                    "relation_scope_resolved": _relation_scope_branch_resolved,
-                },
-            },
-            indent=2,
-        )
-
-    @mcp.tool()
-    async def todo_reset(question: str = "") -> str:
-        """Reset TODO state for current question and register answer-type contract."""
-        global _current_question, _current_expected_answer_kind
-        _reset_todos()
-        q = (question or "").strip()
-        if q:
-            _current_question = q
-            _current_expected_answer_kind = _infer_answer_kind(q)
-            if _current_semantic_plan_question and _current_semantic_plan_question != q:
-                _clear_semantic_plan()
-        return json.dumps(
-            {
-                "status": "reset",
-                "summary": _todo_summary(),
-                "question": _current_question or None,
-                "expected_answer_kind": _current_expected_answer_kind or None,
-            },
-            indent=2,
-        )
 
     @mcp.tool()
     async def bridge_disambiguate(
@@ -7594,6 +6149,57 @@ if BENCHMARK_MODE:
             return json.dumps(result, indent=2)
 
     @mcp.tool()
+    async def todo_write(todos: list[dict[str, str]]) -> str:
+        """Replace the full TODO list. Each item must have id, content, and status.
+
+        This is the only TODO management tool. Call it to set or update your
+        plan. Pass the complete list every time — it replaces the previous state.
+
+        Args:
+            todos: List of TODO items. Each dict must contain:
+                - id: Short identifier (e.g., "a1", "a2")
+                - content: What this step needs to accomplish
+                - status: One of "pending", "in_progress", "done", "blocked"
+
+        Returns:
+            Confirmation with summary counts and compact status line.
+        """
+        if not isinstance(todos, list):
+            raise ValueError("todos must be a list of dicts with id/content/status.")
+        validated: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        valid_statuses = {"pending", "in_progress", "done", "blocked"}
+        for item in todos:
+            if not isinstance(item, dict):
+                raise ValueError(f"Each TODO must be a dict, got {type(item).__name__}.")
+            tid = str(item.get("id") or "").strip()
+            content = str(item.get("content") or item.get("task") or "").strip()
+            status = str(item.get("status") or "pending").strip().lower()
+            if not tid:
+                raise ValueError("Each TODO must have a non-empty 'id'.")
+            if not content:
+                raise ValueError(f"TODO '{tid}' must have non-empty 'content'.")
+            if status not in valid_statuses:
+                raise ValueError(
+                    f"TODO '{tid}' has invalid status '{status}'. "
+                    f"Must be one of: {', '.join(sorted(valid_statuses))}."
+                )
+            if tid in seen_ids:
+                raise ValueError(f"Duplicate TODO id: '{tid}'.")
+            seen_ids.add(tid)
+            validated.append({"id": tid, "content": content, "status": status})
+        _todos.clear()
+        _todos.extend(validated)
+        status_line = _todo_status_line()
+        return json.dumps(
+            {
+                "status": "ok",
+                "summary": _todo_summary(),
+                "status_line": status_line,
+            }
+        )
+
+    @mcp.tool()
     async def submit_answer(reasoning: str = "", answer: str = "") -> str:
         """Submit your final answer. Call once with your best answer.
 
@@ -7608,163 +6214,49 @@ if BENCHMARK_MODE:
         """
         normalized_answer = (answer or "").strip()
         normalized_reasoning = (reasoning or "").strip()
-        guard = _submit_recovery_guard.copy() if _submit_recovery_guard else {}
-        if guard:
-            same_todo_state = _todo_evidence_signature() == guard.get("todo_signature", "")
-            same_answer = normalized_answer.lower() == (guard.get("last_attempt_answer", "") or "").lower()
-            requires_new_evidence = bool(guard.get("requires_new_evidence", False))
-            if (requires_new_evidence and same_todo_state) or ((not requires_new_evidence) and same_todo_state and same_answer):
-                details = {
-                    "reason_code": (
-                        "new_evidence_required_after_submit_validation"
-                        if requires_new_evidence else
-                        "repeat_invalid_submit_attempt"
-                    ),
-                    "message": (
-                        "Previous submit attempt failed validation. "
-                        + (
-                            "Resolve TODO evidence with new supporting refs before retrying submit."
-                            if requires_new_evidence else
-                            "Apply a concrete correction before retrying submit."
-                        )
-                    ),
-                    "required_fixes": ["todo answer_span/evidence_refs", "answer"],
-                    "suggested_next_actions": [
-                        "Run retrieval and update TODO evidence if support is weak.",
-                        "Retry submit with grounded final span.",
-                    ],
-                    "requires_new_evidence": requires_new_evidence,
-                }
-                return _submit_needs_revision_response(details)
 
-        try:
-            # In benchmark mode, TODO/evidence checks are advisory: avoid hard-looping
-            # on validation and let the model submit best-effort final answers.
-            submit_warnings: list[str] = []
-            if not _todos:
-                submit_warnings.append(
-                    "No TODOs were created before submission.",
-                )
-            unfinished = [
-                t["id"] for t in _todos
-                if t.get("status") not in {"done", "blocked"}
-            ]
-            if unfinished:
-                submit_warnings.append(
-                    "Unfinished TODOs at submission: " + ", ".join(unfinished),
-                )
-
-            blocked_without_note = [
-                t.get("id", "?")
-                for t in _todos
-                if t.get("status") == "blocked" and not (t.get("note") or "").strip()
-            ]
-            if blocked_without_note:
-                submit_warnings.append(
-                    "Blocked TODOs missing note: " + ", ".join(blocked_without_note),
-                )
-
-            incomplete_evidence = [
-                t.get("id", "?")
-                for t in _todos
-                if t.get("status") == "done"
-                and (
-                    not _normalize_evidence_refs(t.get("evidence_refs"))
-                    or not (t.get("answer_span") or "").strip()
-                )
-            ]
-            if incomplete_evidence:
-                submit_warnings.append(
-                    "Completed TODOs missing evidence/span: " + ", ".join(incomplete_evidence),
-                )
-
-            if not normalized_answer:
-                raise ValueError(
-                    "Answer cannot be empty. Submit your best factual guess as a short span.",
-                )
-            if "\n" in normalized_answer or len(normalized_answer.split()) > 8:
-                raise ValueError(
-                    "Answer is too long. Submit only the fact (name/date/number/yes/no).",
-                )
-            if _ANSWER_REFUSAL_RE.search(normalized_answer):
-                raise ValueError(
-                    "Refusal-style answers are not allowed. Submit your best factual guess.",
-                )
-            lowered_answer = normalized_answer.lower()
-            if lowered_answer.startswith("not "):
-                raise ValueError(
-                    "Negative/abstaining answers are not allowed. Submit a factual guess (name/date/number).",
-                )
-            if lowered_answer.startswith("no ") and lowered_answer != "no":
-                raise ValueError(
-                    "Abstaining answers are not allowed. Submit a factual guess (name/date/number).",
-                )
-
-            expected_kind = _current_expected_answer_kind or _infer_answer_kind(_current_question)
-            if expected_kind and not _answer_matches_kind(normalized_answer, expected_kind):
-                raise ValueError(
-                    f"Answer does not match expected type '{expected_kind}'. "
-                    "Submit a factual span with the correct answer type."
-                )
-
-            spans = [(t.get("answer_span") or "").strip() for t in _todos]
-            done_todo_refs: list[str] = []
-            for todo in _todos:
-                if todo.get("status") != "done":
-                    continue
-                done_todo_refs.extend(_normalize_evidence_refs(todo.get("evidence_refs")))
-
-            grounded_in_spans = any(
-                normalized_answer.lower() in span.lower() or span.lower() in normalized_answer.lower()
-                for span in spans if span
+        if not normalized_answer:
+            raise ValueError(
+                "Answer cannot be empty. Submit your best factual guess as a short span.",
             )
-            grounded_in_chunk_refs = _answer_span_supported_by_chunk_refs(normalized_answer, done_todo_refs)
-
-            if spans and not grounded_in_spans and not grounded_in_chunk_refs:
-                raise ValueError(
-                    "Answer not grounded in TODO answer_span fields. "
-                    "Use a final span directly supported by completed TODO evidence "
-                    "(answer_span text or cited chunk evidence)."
-                )
-
-            if expected_kind == "date":
-                has_date_span = any(_answer_matches_kind(span, "date") for span in spans if span)
-                has_date_chunk_support = grounded_in_chunk_refs and _answer_matches_kind(normalized_answer, "date")
-                if not has_date_span and not has_date_chunk_support:
-                    raise ValueError(
-                        "No date-like atom evidence found in TODO spans. "
-                        "Resolve a date span in TODOs before submitting "
-                        "(or cite chunk evidence containing the submitted date)."
-                    )
-
-            if not normalized_reasoning:
-                raise ValueError(
-                    "Reasoning cannot be empty. Provide a concise evidence-grounded justification.",
-                )
-
-            _submit_recovery_guard.clear()
-            _reset_chunk_dedup()  # reset seen chunks for next question
-            return json.dumps(
-                {
-                    "status": "submitted",
-                    "answer": normalized_answer,
-                    "expected_answer_kind": expected_kind or None,
-                    "validation_warnings": submit_warnings,
-                }
+        if "\n" in normalized_answer or len(normalized_answer.split()) > 8:
+            raise ValueError(
+                "Answer is too long. Submit only the fact (name/date/number/yes/no).",
             )
-        except ValueError as e:
-            details = _classify_submit_error(str(e))
-            _submit_recovery_guard.clear()
-            _submit_recovery_guard.update(
-                {
-                    "reason_code": details.get("reason_code", "submit_validation_failed"),
-                    "message": details.get("message", ""),
-                    "requires_new_evidence": bool(details.get("requires_new_evidence", True)),
-                    "todo_signature": _todo_evidence_signature(),
-                    "last_attempt_answer": normalized_answer,
-                }
+        if _ANSWER_REFUSAL_RE.search(normalized_answer):
+            raise ValueError(
+                "Refusal-style answers are not allowed. Submit your best factual guess.",
             )
-            return _submit_needs_revision_response(details)
+        lowered_answer = normalized_answer.lower()
+        if lowered_answer.startswith("not "):
+            raise ValueError(
+                "Negative/abstaining answers are not allowed. Submit a factual guess (name/date/number).",
+            )
+        if lowered_answer.startswith("no ") and lowered_answer != "no":
+            raise ValueError(
+                "Abstaining answers are not allowed. Submit a factual guess (name/date/number).",
+            )
+
+        expected_kind = _current_expected_answer_kind or _infer_answer_kind(_current_question)
+        if expected_kind and not _answer_matches_kind(normalized_answer, expected_kind):
+            raise ValueError(
+                f"Answer does not match expected type '{expected_kind}'. "
+                "Submit a factual span with the correct answer type."
+            )
+
+        if not normalized_reasoning:
+            raise ValueError(
+                "Reasoning cannot be empty. Provide a concise evidence-grounded justification.",
+            )
+
+        _reset_chunk_dedup()  # reset seen chunks for next question
+        return json.dumps(
+            {
+                "status": "submitted",
+                "answer": normalized_answer,
+                "expected_answer_kind": expected_kind or None,
+            }
+        )
 
 
 # =============================================================================

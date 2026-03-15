@@ -51,10 +51,7 @@ These tools are control-plane operations and bypass artifact checks:
 
 - `list_available_resources`
 - `semantic_plan`
-- `todo_create`
-- `todo_update`
-- `todo_list`
-- `todo_reset`
+- `todo_write`
 - `submit_answer`
 
 ## Runtime Enforcement

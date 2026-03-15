@@ -21,10 +21,10 @@ messages:
         2. What album did they produce?
         3. What genre is that album?
 
-      ### Step 1.5: Create TODOs for the atoms
-      For each atom, call `todo_create(task, rationale, priority)`.
-      As you progress, call `todo_update(todo_id, status, note)`.
-      Before submitting, call `todo_list()` and ensure all TODOs are `done`.
+      ### Step 1.5: Track progress via `todo_write`
+      Call `todo_write` with one item per atom (id, content, status).
+      As you progress, rewrite the list via `todo_write` with updated statuses.
+      Before submitting, verify all items are `done`.
 
       ### Step 2: Solve each sub-question
       Work through your sub-questions in order. For each one:
@@ -63,9 +63,7 @@ messages:
       - `chunk_occurrence`: find text where two entities co-appear.
       - `chunk_from_relationships`: get text for specific relationships.
       - `bridge_disambiguate`: choose between ambiguous bridge candidates using downstream evidence.
-      - `todo_create`: create atomic plan steps.
-      - `todo_update`: mark steps pending/in_progress/done/blocked.
-      - `todo_list`: inspect progress; all TODOs must be done before submit.
+      - `todo_write`: replace the full TODO list each call. Each item: {id, content, status}. Use to track decomposition and progress; all items must be done before submit.
 
       **Typical per-hop flow**: entity_vdb_search → entity_onehop → chunk_get_text.
 
