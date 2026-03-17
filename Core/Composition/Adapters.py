@@ -82,9 +82,25 @@ async def adapter_subgraph_to_chunks(
     return {"chunks": SlotValue(kind=SlotKind.CHUNK_SET, data=records, producer="adapter.subgraph_to_chunks")}
 
 
+async def adapter_community_to_chunks(
+    inputs: Dict[str, SlotValue],
+    ctx: Any,
+    params: Optional[Dict[str, Any]] = None,
+) -> Dict[str, SlotValue]:
+    """Convert community reports into ChunkRecords so generate_answer can consume them."""
+    communities = inputs["communities"].data
+    records = [
+        ChunkRecord(chunk_id=c.community_id, text=c.report or c.title)
+        for c in communities
+        if c.report or c.title
+    ]
+    return {"chunks": SlotValue(kind=SlotKind.CHUNK_SET, data=records, producer="adapter.community_to_chunks")}
+
+
 # Adapter registry for quick lookup
 ADAPTER_REGISTRY = {
     "adapter.attach_clusters": adapter_attach_clusters,
     "adapter.entities_to_names": adapter_entities_to_names,
     "adapter.subgraph_to_chunks": adapter_subgraph_to_chunks,
+    "adapter.community_to_chunks": adapter_community_to_chunks,
 }

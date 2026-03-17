@@ -87,7 +87,7 @@ class Config(WorkingParams, YamlModel):
     # ColBert Option
     use_colbert: bool = True
     disable_colbert: bool = False  # Force disable ColBERT even if use_colbert is True (for dependency issues)
-    colbert_checkpoint_path: str = "/home/yingli/HippoRAG/exp/colbertv2.0"
+    colbert_checkpoint_path: str = ""
     index_name: str = "nbits_2"
     similarity_max: float = 1.0
     # Graph Augmentation
@@ -119,7 +119,6 @@ class Config(WorkingParams, YamlModel):
         chunk_config = ChunkConfig(**options.get("chunk_config", {}))
         graph_config = GraphConfig(**options.get("graph_config", {}))
         retriever_config = RetrieverConfig(**options.get("retriever_config", {}))
-        query_config = QueryQueryConfig(**options.get("query_config", {}))
         storage_config = StorageConfig(**options.get("storage_config", {}))
         query_config = QueryConfig(**options.get("query_config", {}))
 
@@ -160,37 +159,6 @@ class Config(WorkingParams, YamlModel):
     # Query Config 
     query: QueryConfig = QueryConfig()
   
-    @classmethod
-    def from_yaml_config(cls, path: str):
-        """user config llm
-        example:
-        llm_config = {"api_type": "xxx", "api_key": "xxx", "model": "xxx"}
-        gpt4 = Option.from_llm_config(llm_config)
-        A = Role(name="A", profile="Democratic candidate", goal="Win the election", actions=[a1], watch=[a2], config=gpt4)
-        """
-        opt = parse(path)
-        return Config(**opt)
-
-    @classmethod
-    def parse(cls, _path, dataset_name, exp_name: Optional[str] = None):
-        """Parse config from yaml file"""
-        opt = [parse(_path)]
-
-        default_config_paths: List[Path] = [
-            GRAPHRAG_ROOT / "Option/Config2.yaml",
-            CONFIG_ROOT / "Config2.yaml",
-        ]
-        opt += [Config.read_yaml(path) for path in default_config_paths]
-    
-        final = merge_dict(opt)
-        final["dataset_name"] = dataset_name
-        final["working_dir"] = os.path.join(final["working_dir"], dataset_name)
-        if exp_name is not None:
-            final["exp_name"] = exp_name
-        elif "exp_name" not in final:
-            final["exp_name"] = cls.exp_name
-        # else: use exp_name from YAML if present
-        return Config(**final)
     
     @classmethod
     def default(cls):
@@ -268,20 +236,5 @@ class Config(WorkingParams, YamlModel):
         if self.llm.api_type == LLMType.OPENAI:
             return self.llm
         return None
-def parse(opt_path):
-    
-        with open(opt_path, mode='r') as f:
-            opt = YamlModel.read_yaml(opt_path)
-        # export CUDA_VISIBLE_DEVICES
-        # gpu_list = ','.join(str(x) for x in opt['gpu_ids'])
-        # os.environ['CUDA_VISIBLE_DEVICES'] = gpu_list
-        return opt
-def merge_dict(dicts: Iterable[Dict]) -> Dict:
-    """Merge multiple dicts into one, with the latter dict overwriting the former"""
-    result = {}
-    for dictionary in dicts:
-        result.update(dictionary)
-    return result
-
 
 default_config = Config.default() # which is used in other files, only for LLM, embedding and save file. 

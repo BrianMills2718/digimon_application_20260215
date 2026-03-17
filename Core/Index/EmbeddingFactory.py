@@ -74,14 +74,13 @@ class RAGEmbeddingFactory(GenericFactory):
         return OllamaEmbedding(**params)
 
     def _create_hf(self, config) -> HuggingFaceEmbedding:
-        
+        import torch
         # For huggingface-hub embedding model, we only need to set the model_name
         params = dict(
             model_name=config.embedding.model,
             cache_folder=config.embedding.cache_folder,
-            device = "cuda",
-            target_devices = ["cuda:7"],
-            embed_batch_size = 128,
+            device="cuda" if torch.cuda.is_available() else "cpu",
+            embed_batch_size=128,
         )
         if config.embedding.cache_folder == "":
             del params["cache_folder"]

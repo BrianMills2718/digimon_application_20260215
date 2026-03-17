@@ -523,6 +523,32 @@ def _register_all():
     for d in descriptors:
         REGISTRY.register(d)
 
+    # Register adapters so PipelineExecutor can resolve them by tool_id
+    from Core.Composition.Adapters import ADAPTER_REGISTRY
+    for adapter_id, adapter_fn in ADAPTER_REGISTRY.items():
+        if adapter_id == "adapter.community_to_chunks":
+            REGISTRY.register(OperatorDescriptor(
+                operator_id=adapter_id,
+                display_name="Community → Chunks",
+                category="adapter",
+                input_slots=[SlotSpec("communities", SlotKind.COMMUNITY_SET)],
+                output_slots=[SlotSpec("chunks", SlotKind.CHUNK_SET)],
+                cost_tier=CostTier.FREE,
+                when_to_use="Bridge community.from_level output to meta.generate_answer input",
+                implementation=adapter_fn,
+            ))
+        elif adapter_id == "adapter.subgraph_to_chunks":
+            REGISTRY.register(OperatorDescriptor(
+                operator_id=adapter_id,
+                display_name="Subgraph → Chunks",
+                category="adapter",
+                input_slots=[SlotSpec("subgraph", SlotKind.ENTITY_SET)],
+                output_slots=[SlotSpec("chunks", SlotKind.CHUNK_SET)],
+                cost_tier=CostTier.FREE,
+                when_to_use="Convert subgraph nodes to their source text chunks",
+                implementation=adapter_fn,
+            ))
+
 
 # Auto-register on import
 _register_all()

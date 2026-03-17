@@ -61,7 +61,7 @@ logger = logging.getLogger(__name__)
 # Benchmark mode levels:
 #   0 / unset: all tools exposed (including build, pipeline shortcuts, etc.)
 #   1+: prune non-retrieval tools (graph build, corpus_prepare, graph_analyze,
-#        auto_compose, execute_method, list_methods, build_sparse_matrices, etc.)
+#        build_sparse_matrices, etc.)
 #        — agent must compose operators individually
 _bm_raw = os.environ.get("DIGIMON_BENCHMARK_MODE", "").strip().lower()
 if _bm_raw in ("2",):
@@ -183,21 +183,15 @@ entity (7), relationship (4), chunk (3), subgraph (3), community (2), meta (7).
 Each operator has typed I/O slots, cost tiers, and prerequisite flags.
 Call `list_operators` for the full catalog, `get_compatible_successors` to explore chains.
 
-## Three Execution Modes
+## Operator Composition
 
-### Mode 1: Individual Operators (client composes)
-Call operators directly for custom pipelines. Use `list_operators` +
+Call operators directly to build custom retrieval DAGs. Use `list_operators` +
 `get_compatible_successors` to discover valid chains. Typical flow:
 corpus_prepare → graph_build_er → entity_vdb_build → entity_vdb_search →
 relationship_onehop → chunk_occurrence → meta_generate_answer
 
-### Mode 2: Reference Pipelines (10 pre-composed shortcuts)
-Call `list_methods` to see profiles, then `execute_method` to run end-to-end.
-Pass `auto_build=True` to auto-build missing prerequisites.
-
-### Mode 3: Full Auto (auto_compose)
-`auto_compose(query, dataset, auto_build=True)` — an LLM picks the best
-method based on query characteristics and available resources.
+The agent decides what to call based on the question and intermediate results.
+There are no fixed pipelines — compose operators freely.
 
 ## Config
 
@@ -207,10 +201,10 @@ Two model roles: `llm.model` (graph building, cheap) vs `agentic_model`
 - `set_agentic_model` — override the reasoning model at runtime
 
 ## Graph Types (call list_graph_types for details)
-- **er**: General-purpose entity-relationship graph. Works with all methods.
-- **rk**: Keyword-enriched relationships. Best for LightRAG.
-- **tree/tree_balanced**: Hierarchical clustering. Best for summarization.
-- **passage**: Passage-level nodes. Best for document-centric retrieval.
+- **er**: General-purpose entity-relationship graph.
+- **rk**: Keyword-enriched relationships.
+- **tree/tree_balanced**: Hierarchical clustering for summarization.
+- **passage**: Passage-level nodes for document-centric retrieval.
 
 ## Cross-Modal Analysis
 Convert between graph, table, and vector representations:
@@ -220,8 +214,6 @@ Convert between graph, table, and vector representations:
 - `select_analysis_mode` — LLM recommends best modality for a research question
 
 ## Tips
-- Use `return_context_only=True` in execute_method when you want to synthesize
-  the answer yourself instead of letting DIGIMON's LLM generate it.
 - Call `list_available_resources` to see what graphs and VDBs exist.
 - Graph building auto-prepares corpus if you pass `input_directory` (supports .txt, .md, .json, .jsonl, .csv, .pdf).
   Or call `corpus_prepare` manually first. VDB building requires a graph.
@@ -4506,88 +4498,6 @@ async def set_agentic_model(model: str) -> str:
     }, indent=2)
 
 
-# =============================================================================
-# AUTO-COMPOSE (LLM-driven method selection)
-# =============================================================================
-
-async def auto_compose(query: str, dataset_name: str,
-                       auto_build: bool = True,
-                       return_context_only: bool = False) -> str:
-    """Automatically select and run the best retrieval method for a query.
-
-    An LLM analyzes the query characteristics and available resources,
-    picks from the 10 named methods, then executes it end-to-end.
-
-    Three client modes (increasing control):
-    1. auto_compose — DIGIMON picks the method (this tool)
-    2. execute_method — client picks from 10 methods
-    3. Individual operator tools — client composes everything
-
-    Args:
-        query: The question to answer
-        dataset_name: Name of the dataset (must have graph built)
-        auto_build: Auto-build missing prerequisites (VDBs, sparse matrices, communities)
-        return_context_only: If True, return raw context instead of generated answer
-    """
-    await _ensure_initialized()
-    _ensure_composer()
-
-    trace_id = f"digimon.auto_compose.{dataset_name}.{uuid.uuid4().hex[:8]}"
-
-    from Core.Composition.auto_compose import select_method
-
-    # Determine model for method selection
-    config = _state["config"]
-    model = getattr(config, "agentic_model", None) or config.llm.model
-
-    # Tag the agentic LLM with this trace_id for the method selection call
-    llm = _state.get("agentic_llm") or _state["llm"]
-    if hasattr(llm, "set_trace_id"):
-        llm.set_trace_id(trace_id)
-
-    # Get current resources
-    resources_json = await list_available_resources()
-
-    # LLM selects the method
-    composer = _state["composer"]
-    decision = await select_method(
-        query=query,
-        dataset_name=dataset_name,
-        composer=composer,
-        model=model,
-        resources=resources_json,
-        auto_build=auto_build,
-        trace_id=trace_id,
-    )
-
-    logger.info(
-        f"auto_compose: selected '{decision.method_name}' "
-        f"(confidence={decision.confidence:.2f}) — {decision.reasoning}"
-    )
-
-    # Execute the selected method
-    result_json = await execute_method(
-        method_name=decision.method_name,
-        query=query,
-        dataset_name=dataset_name,
-        return_context_only=return_context_only,
-        auto_build=auto_build,
-    )
-
-    # Attach composition metadata to the result
-    result = json.loads(result_json)
-    result["_composition"] = {
-        "method_selected": decision.method_name,
-        "reasoning": decision.reasoning,
-        "confidence": decision.confidence,
-        "trace_id": trace_id,
-    }
-
-    return json.dumps(result, indent=2, default=str)
-
-if not BENCHMARK_MODE:
-    auto_compose = mcp.tool()(auto_compose)
-
 
 # =============================================================================
 # RELATIONSHIP VDB BUILD + SEARCH
@@ -5029,8 +4939,6 @@ async def list_operators() -> str:
     requires_* flags, and when_to_use guidance.
     """
     await _ensure_initialized()
-    _ensure_composer()
-
     from Core.Operators.registry import REGISTRY
 
     operators = REGISTRY.list_all()
@@ -5065,8 +4973,6 @@ async def get_compatible_successors(operator_id: str) -> str:
         operator_id: The operator to find successors for (e.g. 'entity.ppr')
     """
     await _ensure_initialized()
-    _ensure_composer()
-
     from Core.Operators.registry import REGISTRY
 
     source = REGISTRY.get(operator_id)
@@ -5086,37 +4992,6 @@ async def get_compatible_successors(operator_id: str) -> str:
     ], indent=2)
 
 
-# =============================================================================
-# METHOD-LEVEL TOOLS
-# =============================================================================
-
-async def list_methods() -> str:
-    """List all 10 available retrieval methods with rich metadata.
-
-    Returns profiles including operator chains, requirements (VDB, community,
-    sparse matrices), cost tiers, and guidance on when to use each method.
-    Use this to decide which method to pass to execute_method.
-    """
-    await _ensure_initialized()
-    _ensure_composer()
-
-    profiles = _state["composer"].get_method_profiles()
-    return json.dumps([
-        {
-            "name": p.name,
-            "description": p.description,
-            "operator_chain": p.operator_chain,
-            "requires_entity_vdb": p.requires_entity_vdb,
-            "requires_relationship_vdb": p.requires_relationship_vdb,
-            "requires_community": p.requires_community,
-            "requires_sparse_matrices": p.requires_sparse_matrices,
-            "cost_tier": p.cost_tier,
-            "has_loop": p.has_loop,
-            "uses_llm_operators": p.uses_llm_operators,
-            "good_for": p.good_for,
-        }
-        for p in profiles
-    ], indent=2)
 
 
 @mcp.tool()
@@ -5165,184 +5040,8 @@ async def list_graph_types() -> str:
     return json.dumps(graph_types, indent=2)
 
 
-async def execute_method(method_name: str, query: str, dataset_name: str,
-                          return_context_only: bool = False,
-                          auto_build: bool = False) -> str:
-    """Run a named retrieval method pipeline end-to-end.
-
-    This executes a complete retrieval pipeline (e.g., basic_local runs:
-    entity VDB search -> relationship one-hop -> chunk co-occurrence -> answer).
-
-    Use list_methods to see all available methods and their requirements.
-
-    Args:
-        method_name: One of: basic_local, basic_global, lightrag, fastgraphrag,
-                     hipporag, tog, gr, dalk, kgp, med
-        query: The question to answer
-        dataset_name: Name of the dataset (must have graph + VDB built)
-        return_context_only: If True, return raw retrieved context instead of
-                           a generated answer. Useful when the calling agent
-                           wants to synthesize the answer itself.
-        auto_build: If True, automatically build all missing prerequisites before
-                   running: entity VDB, relationship VDB, sparse matrices, and
-                   community structure. Community building calls LLM (most expensive).
-    """
-    await _ensure_initialized()
-    _ensure_composer()
-
-    trace_id = f"digimon.execute_method.{method_name}.{dataset_name}.{uuid.uuid4().hex[:8]}"
-
-    composer = _state["composer"]
-
-    # Build the execution plan
-    plan = composer.build_plan(
-        method_name=method_name,
-        query=query,
-        return_context_only=return_context_only,
-        dataset=dataset_name,
-    )
-
-    # Build OperatorContext for pipeline execution
-    op_ctx = await _build_operator_context_for_dataset(dataset_name, trace_id=trace_id)
-
-    # Validate prerequisites before running
-    profile = composer.get_profile(method_name)
-    if profile:
-        missing = _check_prerequisites(profile, op_ctx, dataset_name)
-        if missing and auto_build:
-            built = await _auto_build_prerequisites(profile, op_ctx, dataset_name)
-            # Re-build context after auto-build
-            op_ctx = await _build_operator_context_for_dataset(dataset_name, trace_id=trace_id)
-            missing = _check_prerequisites(profile, op_ctx, dataset_name)
-            if missing:
-                return json.dumps({
-                    "error": f"Method '{method_name}' still missing prerequisites after auto-build",
-                    "built": built,
-                    "still_missing": missing,
-                    "hint": "Check logs for build errors. You can also try building prerequisites individually.",
-                }, indent=2)
-        elif missing:
-            return json.dumps({
-                "error": f"Method '{method_name}' cannot run: missing prerequisites",
-                "missing": missing,
-                "hint": "Build the required resources first, or pass auto_build=True to auto-build VDBs.",
-            }, indent=2)
-
-    # Execute the plan
-    from Core.Composition.PipelineExecutor import PipelineExecutionError
-    try:
-        result = await composer.execute(plan, op_ctx)
-    except PipelineExecutionError as e:
-        return json.dumps({
-            "error": f"Pipeline execution failed: {e}",
-            "method": method_name,
-            "dataset": dataset_name,
-            "trace_id": trace_id,
-        }, indent=2)
-
-    if isinstance(result, dict):
-        result["_trace_id"] = trace_id
-    return json.dumps(result, indent=2, default=str)
-
-if not BENCHMARK_MODE:
-    list_methods = mcp.tool()(list_methods)
-    execute_method = mcp.tool()(execute_method)
 
 
-async def _auto_build_prerequisites(profile, op_ctx, dataset_name: str) -> list[str]:
-    """Auto-build missing prerequisites for a method. Returns list of what was built."""
-    built = []
-
-    if op_ctx.graph is None:
-        # Try to load/build graph from disk (graph_build_er detects existing artifacts)
-        logger.info(f"auto_build: No graph in context for '{dataset_name}' — attempting graph_build_er")
-        try:
-            result_json = await graph_build_er(dataset_name=dataset_name)
-            result = json.loads(result_json)
-            if result.get("status") == "success":
-                built.append("graph")
-                logger.info(f"auto_build: Graph loaded/built for '{dataset_name}' ({result.get('node_count')} nodes)")
-            else:
-                logger.warning(f"auto_build: graph_build_er failed: {result}")
-                return built
-        except Exception as e:
-            logger.warning(f"auto_build: graph_build_er raised: {e}")
-            return built
-        # Re-derive op_ctx now that graph is loaded
-        op_ctx = await _build_operator_context_for_dataset(dataset_name)
-        if op_ctx.graph is None:
-            logger.warning(f"auto_build: Graph still None after build — giving up")
-            return built
-
-    # Determine graph_id from context
-    ctx = _state["context"]
-    graph_id = None
-    if hasattr(ctx, "list_graphs"):
-        for gid in ctx.list_graphs():
-            if dataset_name in gid:
-                graph_id = gid
-                break
-    if not graph_id:
-        logger.warning(f"auto_build: Could not find graph_id for '{dataset_name}'")
-        return built
-
-    if profile.requires_entity_vdb and op_ctx.entities_vdb is None:
-        logger.info(f"auto_build: Building entity VDB for '{dataset_name}'")
-        _ensure_embedding_provider_initialized(reason="auto_build entity_vdb")
-        from Core.AgentTools.entity_vdb_tools import entity_vdb_build_tool
-        from Core.AgentSchema.tool_contracts import EntityVDBBuildInputs
-        inputs = EntityVDBBuildInputs(
-            graph_reference_id=graph_id,
-            vdb_collection_name=f"{dataset_name}_entities",
-            force_rebuild=False,
-        )
-        await entity_vdb_build_tool(inputs, ctx)
-        built.append("entity_vdb")
-
-    if profile.requires_relationship_vdb and op_ctx.relations_vdb is None:
-        logger.info(f"auto_build: Building relationship VDB for '{dataset_name}'")
-        _ensure_embedding_provider_initialized(reason="auto_build relationship_vdb")
-        from Core.AgentTools.relationship_tools import relationship_vdb_build_tool
-        from Core.AgentSchema.tool_contracts import RelationshipVDBBuildInputs
-        inputs = RelationshipVDBBuildInputs(
-            graph_reference_id=graph_id,
-            vdb_collection_name=f"{dataset_name}_relations",
-            force_rebuild=False,
-        )
-        await relationship_vdb_build_tool(inputs, ctx)
-        built.append("relationship_vdb")
-
-    if profile.requires_sparse_matrices and not op_ctx.sparse_matrices:
-        logger.info(f"auto_build: Building sparse matrices for '{dataset_name}'")
-        result_json = await build_sparse_matrices(dataset_name, force_rebuild=False)
-        result = json.loads(result_json)
-        if result.get("status") in ("success", "loaded_from_disk"):
-            built.append("sparse_matrices")
-        else:
-            logger.warning(f"auto_build: Failed to build sparse matrices: {result.get('error')}")
-
-    if profile.requires_community and op_ctx.community is None:
-        logger.info(f"auto_build: Building communities for '{dataset_name}'")
-        result_json = await build_communities(dataset_name, force_rebuild=False)
-        result = json.loads(result_json)
-        if result.get("status") == "success":
-            built.append("community")
-        else:
-            logger.warning(f"auto_build: Failed to build communities: {result.get('error')}")
-
-    if built:
-        logger.info(f"auto_build: Built {built} for '{dataset_name}'")
-
-    return built
-
-
-def _ensure_composer() -> None:
-    """Lazily initialize the OperatorComposer."""
-    if "composer" not in _state:
-        from Core.Operators.registry import REGISTRY
-        from Core.Composition.OperatorComposer import OperatorComposer
-
-        _state["composer"] = OperatorComposer(REGISTRY)
 
 
 class _ChunkLookup:
@@ -5514,30 +5213,6 @@ async def _build_operator_context_for_dataset(dataset_name: str, *, trace_id: st
         trace_id=trace_id,
     )
 
-
-def _check_prerequisites(profile, op_ctx, dataset_name: str) -> list[str]:
-    """Check if OperatorContext has what a method profile requires.
-
-    Returns list of missing prerequisite descriptions (empty = all good).
-    """
-    missing = []
-
-    if op_ctx.graph is None:
-        missing.append(f"No graph found for dataset '{dataset_name}'. Build one first (e.g., graph_build_er).")
-
-    if profile.requires_entity_vdb and op_ctx.entities_vdb is None:
-        missing.append("Entity VDB required but not built. Run entity_vdb_build first.")
-
-    if profile.requires_relationship_vdb and op_ctx.relations_vdb is None:
-        missing.append("Relationship VDB required but not built. Run relationship_vdb_build first.")
-
-    if profile.requires_community and op_ctx.community is None:
-        missing.append("Community structure required but not available. Run community detection on the graph first.")
-
-    if profile.requires_sparse_matrices and not op_ctx.sparse_matrices:
-        missing.append("Sparse matrices (entity_to_rel, rel_to_chunk) required but not built.")
-
-    return missing
 
 
 # =============================================================================

@@ -30,15 +30,11 @@ Operators are typed functions with machine-readable I/O contracts. Any operator 
 | **Community** (2) | from_entity, from_level | Leverage detected community structure |
 | **Meta** (6) | extract_entities, generate_answer, pcst_optimize, decompose_question, synthesize_answers, rerank | LLM reasoning steps: entity extraction, question decomposition, answer synthesis |
 
-## Three Execution Modes
+## How It Works: Agent-Driven Operator Composition
 
-**Mode 1 — Operator Composition (primary).** An external agent (Claude, Codex, any LLM with tool calling) calls operators directly via MCP or Python function calling. The agent sees intermediate results and adapts: if VDB search returns low-confidence matches, it switches to TF-IDF or PPR. This is the mode used in benchmarks.
+An external agent (Claude, Codex, any LLM with tool calling) calls operators directly via MCP or Python function calling. The agent sees intermediate results and adapts: if VDB search returns low-confidence matches, it switches to TF-IDF or PPR. There are no fixed pipelines — the agent composes operators into DAGs per question.
 
-**Mode 2 — Reference Pipelines.** 10 pre-composed operator chains (basic_local, hipporag, lightrag, tog, dalk, etc.) that replicate known GraphRAG methods. One call runs the full pipeline. Useful for batch evaluation and baselines.
-
-**Mode 3 — Auto-Compose.** An LLM examines the question and available resources, then selects the best reference pipeline automatically.
-
-## How a Query Works (Mode 1, typical flow)
+### Typical flow
 
 ```
 Question: "Who founded the company that employed Jane Doe?"
@@ -65,16 +61,18 @@ The agent decides the chain at runtime. A comparison question might skip multi-h
 
 ## Benchmark Results
 
-| Dataset | Metric | DIGIMON | Youtu-GraphRAG (SOTA) | HippoRAG2 |
-|---------|--------|---------|----------------------|-----------|
-| **MuSiQue** (2-4 hop) | LLM-judge accuracy | **80.0%** (50q) | 53.6% (1000q) | 50.8% (1000q) |
+> **Caveat**: DIGIMON scores are on 50-question subsets. SOTA scores (Youtu-GraphRAG, HippoRAG2) are on full 1000-question benchmarks. These are not directly comparable — 50q results have wider confidence intervals and may not generalize. 1000-question runs are pending.
+
+| Dataset | Metric | DIGIMON (N) | Youtu-GraphRAG (N) | HippoRAG2 (N) |
+|---------|--------|-------------|---------------------|----------------|
+| MuSiQue (2-4 hop) | LLM-judge accuracy | 80.0% (50q) | 53.6% (1000q) | 50.8% (1000q) |
 | MuSiQue | EM | 52.0% (50q) | — | — |
 | MuSiQue | F1 | 67.7% (50q) | — | 48.6% (1000q) |
-| **HotpotQA** (2-hop) | LLM-judge accuracy | **90.0%** (50q) | 86.5% (1000q) | 81.8% (1000q) |
+| HotpotQA (2-hop) | LLM-judge accuracy | 90.0% (50q) | 86.5% (1000q) | 81.8% (1000q) |
 | HotpotQA | EM | 68.0% (50q) | — | — |
 | HotpotQA | F1 | 82.5% (50q) | — | 75.5% (1000q) |
 
-MuSiQue LLM-judge score (80%) is statistically significant vs SOTA (53.6%) at p<0.001 even with conservative adjustments. Audit of all 14 LLM-judge upgrades: 12 are formatting/detail differences (gold contained in prediction), 1 is a valid alternate answer, 1 is borderline. Sample size is 50 questions; 1000-question runs pending.
+MuSiQue LLM-judge score (80%) is statistically significant vs SOTA (53.6%) at p<0.001 even with conservative adjustments. Audit of all 14 LLM-judge upgrades: 12 are formatting/detail differences (gold contained in prediction), 1 is a valid alternate answer, 1 is borderline.
 
 ## Cost Profile
 

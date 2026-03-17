@@ -1,5 +1,9 @@
 """
 Pytest configuration and fixtures for DIGIMON tests.
+
+Heavy Core imports (LiteLLMProvider, GraphRAGContext, AgentOrchestrator)
+live in tests/integration/conftest.py so unit tests can collect without
+pulling in the full dependency tree.
 """
 
 import os
@@ -7,8 +11,6 @@ import sys
 import asyncio
 import pytest
 from pathlib import Path
-from typing import Dict, Any, Optional
-from unittest.mock import Mock, AsyncMock, patch
 import warnings
 
 # Add project root to Python path
@@ -21,11 +23,6 @@ warnings.filterwarnings("ignore", message="Tensorflow not installed")
 
 # Set minimal test environment
 os.environ["DIGIMON_TEST_MODE"] = "true"
-
-from Config.LLMConfig import LLMConfig
-from Core.Provider.LiteLLMProvider import LiteLLMProvider
-from Core.AgentSchema.context import GraphRAGContext
-from Core.AgentOrchestrator.orchestrator import AgentOrchestrator
 
 
 @pytest.fixture(scope="session")
@@ -43,27 +40,10 @@ def test_data_dir():
 
 
 @pytest.fixture
-def mock_llm_config():
-    """Mock LLM configuration for testing."""
-    return LLMConfig(
-        api_type="litellm",
-        model="openai/gpt-3.5-turbo",
-        api_key="test-key",
-        base_url="http://localhost:11434",
-        temperature=0.0,
-        max_token=1000,
-        calc_usage=False
-    )
-
-
-@pytest.fixture
 def mock_config():
     """Mock full configuration for testing."""
     from Option.Config2 import Config
-    from Config.LLMConfig import LLMConfig
-    from Config.EmbConfig import EmbeddingConfig
-    
-    # Create minimal config with required fields
+
     config_data = {
         'llm': {
             'api_type': 'litellm',
@@ -82,49 +62,8 @@ def mock_config():
         'working_dir': './results',
         'exp_name': 'test'
     }
-    
+
     return Config(**config_data)
-
-
-@pytest.fixture
-def mock_llm_provider(mock_llm_config):
-    """Mock LLM provider that doesn't make real API calls."""
-    from Core.Provider.LiteLLMProvider import LiteLLMProvider
-    
-    # Create a real instance but mock its methods
-    provider = LiteLLMProvider(mock_llm_config)
-    
-    # Mock the actual API calls
-    provider.acompletion = AsyncMock(return_value=Mock(
-        choices=[Mock(message=Mock(content="Test response"))]
-    ))
-    provider.async_instructor_completion = AsyncMock()
-    provider._achat_completion = AsyncMock(return_value=Mock(
-        choices=[Mock(message=Mock(content="Test response"))]
-    ))
-    
-    return provider
-
-
-@pytest.fixture
-def mock_context():
-    """Mock GraphRAG context for testing."""
-    return GraphRAGContext(
-        corpus_name="test_corpus",
-        dataset_name="test_dataset",
-        graph_id="test_graph",
-        vdb_collection_name="test_vdb"
-    )
-
-
-@pytest.fixture
-def mock_orchestrator(mock_context):
-    """Mock agent orchestrator for testing."""
-    orchestrator = Mock(spec=AgentOrchestrator)
-    orchestrator.context = mock_context
-    orchestrator.execute_plan = AsyncMock(return_value={"status": "success"})
-    orchestrator.execute_tool = AsyncMock(return_value={"result": "test"})
-    return orchestrator
 
 
 @pytest.fixture

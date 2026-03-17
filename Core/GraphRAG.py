@@ -252,7 +252,27 @@ class GraphRAG(ContextMixin, BaseModel):
             raise
 
     async def build_e2r_r2c_maps(self, force=False):
-        pass
+        """Build entity-to-relationship and relationship-to-chunk sparse maps."""
+        if not self.config.use_entity_link_chunk or self.config.graph.graph_type == "tree_graph":
+            logger.info("Skipping E2R/R2C map building as it's not configured or not applicable for tree graph.")
+            return
+
+        # Ensure these attributes are initialized before use
+        if self.entities_to_relationships is None or self.relationships_to_chunks is None:
+            logger.error("E2R/R2C maps are not initialized. Call _register_e2r_r2c_matrix first.")
+            self._register_e2r_r2c_matrix()  # Attempt to initialize them
+
+        logger.info("Starting build two maps: entity <-> relationship; relationship <-> chunks")
+        loaded_e2r = await self.entities_to_relationships.load(force)  # type: ignore
+        if not loaded_e2r:
+            await self.entities_to_relationships.set(await self.graph.get_entities_to_relationships_map(False))  # type: ignore
+            await self.entities_to_relationships.persist()  # type: ignore
+
+        loaded_r2c = await self.relationships_to_chunks.load(force)  # type: ignore
+        if not loaded_r2c:
+            await self.relationships_to_chunks.set(await self.graph.get_relationships_to_chunks_map(self.doc_chunk))  # type: ignore
+            await self.relationships_to_chunks.persist()  # type: ignore
+        logger.info("Finished building the two maps")
 
     async def get_graph_sample(self, num_nodes_to_sample: int = 10, num_edges_to_sample: int = 20):
         """
@@ -312,27 +332,6 @@ class GraphRAG(ContextMixin, BaseModel):
         
         logger.info(f"Returning sample with {len(sampled_nodes_data)} nodes and {len(sampled_edges_data)} edges.")
         return {"nodes": sampled_nodes_data, "edges": sampled_edges_data}
-
-        if not self.config.use_entity_link_chunk or self.config.graph.graph_type == "tree_graph":
-            logger.info("Skipping E2R/R2C map building as it's not configured or not applicable for tree graph.")
-            return
-        
-        # Ensure these attributes are initialized before use
-        if self.entities_to_relationships is None or self.relationships_to_chunks is None:
-            logger.error("E2R/R2C maps are not initialized. Call _register_e2r_r2c_matrix first.")
-            self._register_e2r_r2c_matrix() # Attempt to initialize them
-
-        logger.info("Starting build two maps: 1️⃣ entity <-> relationship; 2️⃣ relationship <-> chunks ")
-        loaded_e2r = await self.entities_to_relationships.load(force) # type: ignore
-        if not loaded_e2r:
-            await self.entities_to_relationships.set(await self.graph.get_entities_to_relationships_map(False)) # type: ignore
-            await self.entities_to_relationships.persist() # type: ignore
-        
-        loaded_r2c = await self.relationships_to_chunks.load(force) # type: ignore
-        if not loaded_r2c:
-            await self.relationships_to_chunks.set(await self.graph.get_relationships_to_chunks_map(self.doc_chunk)) # type: ignore
-            await self.relationships_to_chunks.persist() # type: ignore
-        logger.info("✅ Finished building the two maps ")
 
     def _update_costs_info(self, stage_str: str):
         if self.llm and hasattr(self.llm, 'get_last_stage_cost'): 

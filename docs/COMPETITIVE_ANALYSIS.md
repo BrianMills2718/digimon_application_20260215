@@ -2,11 +2,15 @@
 
 **Last Updated**: 2026-02-16
 
+## Important: Sample Size Caveat
+
+DIGIMON results are on 50-question subsets. Literature baselines are on 1000-question full benchmarks. These are **not directly comparable** — 50q results have wider confidence intervals and may not generalize. 1000-question runs are pending.
+
 ## Benchmark: 2WikiMultiHopQA
 
 1000 questions across 4 types: compositional (413), comparison (244), bridge_comparison (235), inference (108). 6119 corpus paragraphs.
 
-### Scoreboard
+### Scoreboard (literature baselines, 1000q)
 
 | Method | LLM | EM | F1 | Architecture | Source |
 |--------|-----|----|----|-------------|--------|
@@ -16,12 +20,25 @@
 | TCR-QF | ? | 59.8 | — | Query-focused text chunking | Search results |
 | SiReRAG | GPT-4o | 59.6 | 67.9 | Similarity + relevance | HopRAG paper |
 | HopRAG | GPT-4o | 61.1 | 68.3 | Logical passage graph | arXiv 2502.12442 |
-| **StepChain** | GPT-4o | **62.4** | **70.7** | Step-by-step KG reasoning | arXiv 2510.02827 |
-| **HippoRAG** | GPT-3.5 | **66.4** | **74.0** | PPR spreading activation | arXiv (ICLR 2025) |
-| DIGIMON (HotpotQA 200q) | gemini-3-flash + claude-sonnet | 61.5 | 73.9 | auto_compose → basic_local | Our eval |
+| StepChain | GPT-4o | 62.4 | 70.7 | Step-by-step KG reasoning | arXiv 2510.02827 |
+| HippoRAG | GPT-3.5 | 66.4 | 74.0 | PPR spreading activation | arXiv (ICLR 2025) |
+
+DIGIMON has not yet been evaluated on 2WikiMultiHopQA. Our baselines are on HotpotQA and MuSiQue (see below).
+
+### DIGIMON Results: HotpotQA (50q subset)
+
+| Configuration | EM | F1 | LLM-judge | Source |
+|--------------|----|----|-----------|--------|
+| deepseek-chat direct mode | 68.0 | 82.5 | 90.0 | Our eval (50q) |
+| gemini-3-flash fixed mode | 61.5 | 73.9 | — | Our eval (200q) |
+
+### DIGIMON Results: MuSiQue (50q subset)
+
+| Configuration | EM | F1 | LLM-judge | Source |
+|--------------|----|----|-----------|--------|
+| o4-mini direct mode | 52.0 | 67.7 | 80.0 | Our eval (50q) |
 
 Notes:
-- Our 61.5% EM is on HotpotQA, not 2WikiMultiHopQA. Not directly comparable.
 - HippoRAG achieves SOTA with GPT-3.5-turbo, meaning architecture matters more than LLM.
 - Microsoft GraphRAG (22.5% EM) is terrible at multi-hop QA — community summarization is wrong for this task.
 - The competitive band is narrow: 59-67% EM. Small retrieval improvements have outsized impact.
