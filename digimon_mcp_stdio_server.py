@@ -6039,7 +6039,10 @@ if BENCHMARK_MODE:
             if not isinstance(item, dict):
                 raise ValueError(f"Each TODO must be a dict, got {type(item).__name__}.")
             tid = str(item.get("id") or item.get("atom_id") or "").strip()
-            content = str(item.get("content") or item.get("task") or "").strip()
+            content = str(
+                item.get("content") or item.get("task") or item.get("sub_question")
+                or item.get("done_criteria") or item.get("result") or ""
+            ).strip()
             status = str(item.get("status") or "pending").strip().lower()
             status = status_aliases.get(status, status)
             if not tid:
