@@ -987,7 +987,7 @@ _MONTH_NAMES = (
     "july", "august", "september", "october", "november", "december",
 )
 _MONTH_RE = re.compile(r"\b(" + "|".join(_MONTH_NAMES) + r")\b", flags=re.IGNORECASE)
-_YEAR_RE = re.compile(r"\b(?:1[0-9]{3}|20[0-9]{2})\b")
+_YEAR_RE = re.compile(r"\b(?:[1-9][0-9]{2,3}|20[0-9]{2})\b")
 _QUERY_TITLE_TOKENS = {
     "mr", "mrs", "ms", "dr", "sir", "lady", "saint",
     "count", "countess", "duke", "duchess", "king", "queen",
