@@ -870,7 +870,12 @@ def _lookup_entity_coarse_type(entity_id: str, dataset_name: str = "") -> str:
 
 
 def _answer_matches_kind(answer: str, answer_kind: str) -> bool:
-    """Heuristic answer-kind validator for benchmark submit contract."""
+    """Heuristic answer-kind validator for benchmark submit contract.
+
+    Intentionally lenient — the semantic_plan's answer_kind prediction is
+    often wrong (e.g. 'date' for a count question). False rejections cause
+    70+ retry loops that burn budget. Only reject clear mismatches.
+    """
     value = (answer or "").strip()
     kind = _normalize_answer_kind(answer_kind) or "entity"
     if not value:
@@ -878,9 +883,12 @@ def _answer_matches_kind(answer: str, answer_kind: str) -> bool:
     if kind == "yes_no":
         return value.lower() in {"yes", "no"}
     if kind == "date":
+        # Accept years, months, dates, AND plain numbers (plan may have misclassified)
         if _YEAR_RE.search(value) or _MONTH_RE.search(value):
             return True
-        return bool(re.search(r"\b\d{1,2}\s+\w+\s+\d{4}\b", value))
+        if re.search(r"\d", value):
+            return True  # numbers are plausible dates/counts
+        return False
     if kind == "number":
         if re.search(r"\d", value):
             return True
