@@ -1,0 +1,55 @@
+{
+  "architecture_path": "docs/planning/digimon_v2/ARCHITECTURE.md",
+  "checks": [
+    {
+      "details": "config path=config/config.yaml",
+      "name": "config_exists",
+      "passed": true
+    },
+    {
+      "details": "gate path=acceptance_gates/digimon_v2_planning_phase.yaml",
+      "name": "gate_exists",
+      "passed": true
+    },
+    {
+      "details": "plan path=docs/plans/02_digimon_v2_greenfield_planning_phase.md",
+      "name": "plan_exists",
+      "passed": true
+    },
+    {
+      "details": "architecture path=docs/planning/digimon_v2/ARCHITECTURE.md",
+      "name": "architecture_exists",
+      "passed": true
+    },
+    {
+      "details": "plan all headings present",
+      "name": "plan_headings",
+      "passed": true
+    },
+    {
+      "details": "architecture all headings present",
+      "name": "architecture_headings",
+      "passed": true
+    },
+    {
+      "details": "architecture phases present count=8",
+      "name": "architecture_phases",
+      "passed": true
+    },
+    {
+      "details": "gate structure valid",
+      "name": "gate_shape",
+      "passed": true
+    },
+    {
+      "details": "gate references resolved count=5",
+      "name": "gate_references",
+      "passed": true
+    }
+  ],
+  "config_path": "config/config.yaml",
+  "gate_path": "acceptance_gates/digimon_v2_planning_phase.yaml",
+  "passed": true,
+  "phase": "digimon_v2_planning_phase",
+  "plan_path": "docs/plans/02_digimon_v2_greenfield_planning_phase.md"
+}

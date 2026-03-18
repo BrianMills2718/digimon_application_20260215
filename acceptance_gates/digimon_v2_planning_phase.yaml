@@ -1,0 +1,73 @@
+feature: digimon_v2_planning_phase
+planning_mode: detailed
+
+problem: |
+  DIGIMON needs a greenfield rebuild plan that preserves its graph-native mission
+  while making future interoperability explicit. The current repo does not contain
+  a machine-checkable planning package for that rebuild.
+
+design:
+  approach: |
+    Deliver a planning-phase package inside the repo: a design plan, a greenfield
+    architecture blueprint, a machine-readable acceptance gate, a config-driven
+    validator, a real test, and a generated evidence artifact.
+  key_decisions:
+    - "Keep DIGIMON v2 graph-first internally and push ecosystem interop to explicit projections."
+    - "Treat this deliverable as Phase 0 only; future implementation phases are specified but not claimed complete."
+    - "Use config/config.yaml to drive validator inputs rather than hardcoding repo paths."
+  risks:
+    - "The eventual v2 implementation may move into its own repo, which would require path updates."
+
+acceptance_criteria:
+  - id: AC-1
+    scenario: "Architecture package is present"
+    category: planning
+    given:
+      - "The repo contains the DIGIMON v2 planning package"
+    when: "The validator inspects the required files"
+    then:
+      - "The design-phase plan exists"
+      - "The architecture blueprint exists"
+      - "The machine-readable gate exists"
+    locked: false
+
+  - id: AC-2
+    scenario: "Validation is executable and fail-loud"
+    category: validation
+    given:
+      - "The validator loads config/config.yaml"
+    when: "A required artifact is missing or malformed"
+    then:
+      - "Validation exits non-zero"
+      - "The failure message identifies the missing or malformed artifact"
+    locked: false
+
+  - id: AC-3
+    scenario: "Execution evidence is written"
+    category: evidence
+    given:
+      - "The planning package is valid"
+    when: "The validator runs successfully"
+    then:
+      - "A JSON evidence report is written into docs/reports"
+      - "The unit test confirms the validator result"
+    locked: false
+
+out_of_scope:
+  - "Implementing DIGIMON v2 runtime code"
+  - "Porting legacy DIGIMON features"
+  - "Making the full current repo test suite green"
+
+adrs:
+  - 2
+
+code:
+  - config/config.yaml
+  - scripts/validate_digimon_v2_planning_phase.py
+
+tests:
+  - tests/unit/test_validate_digimon_v2_planning_phase.py
+
+docs:
+  - docs/plans/02_digimon_v2_greenfield_planning_phase.md
+  - docs/planning/digimon_v2/ARCHITECTURE.md

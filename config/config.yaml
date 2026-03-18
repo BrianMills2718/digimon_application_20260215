@@ -1,0 +1,32 @@
+digimon_v2_planning_phase:
+  gate_path: acceptance_gates/digimon_v2_planning_phase.yaml
+  plan_path: docs/plans/02_digimon_v2_greenfield_planning_phase.md
+  architecture_path: docs/planning/digimon_v2/ARCHITECTURE.md
+  report_path: docs/reports/digimon_v2_planning_phase_evidence.json
+  required_plan_headings:
+    - "## Gap"
+    - "## References Reviewed"
+    - "## Files Affected"
+    - "## Plan"
+    - "## Required Tests"
+    - "## Acceptance Criteria"
+    - "## Open Questions"
+  required_architecture_headings:
+    - "## Product Goals"
+    - "## Non-Goals"
+    - "## Design Principles"
+    - "## Domain Model"
+    - "## System Architecture"
+    - "## Phased Delivery"
+    - "## Success Criteria by Phase"
+    - "## Phase 0 Exit Evidence"
+    - "## Open Questions"
+  required_architecture_phases:
+    - "Phase 0"
+    - "Phase 1"
+    - "Phase 2"
+    - "Phase 3"
+    - "Phase 4"
+    - "Phase 5"
+    - "Phase 6"
+    - "Phase 7"

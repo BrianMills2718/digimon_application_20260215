@@ -1,6 +1,7 @@
 # Agent tooling scratch
 .codex/
 .claude/
+chatgpt_notes_*.txt
 
 # Python
 __pycache__/
@@ -43,6 +44,7 @@ venv.bak/
 
 # Logs
 *.log
+logs/
 pip-log.txt
 pip-delete-this-directory.txt
 
