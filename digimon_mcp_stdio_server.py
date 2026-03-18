@@ -6093,9 +6093,9 @@ if BENCHMARK_MODE:
             raise ValueError(
                 "Answer cannot be empty. Submit your best factual guess as a short span.",
             )
-        if "\n" in normalized_answer or len(normalized_answer.split()) > 8:
+        if "\n" in normalized_answer or len(normalized_answer.split()) > 25:
             raise ValueError(
-                "Answer is too long. Submit only the fact (name/date/number/yes/no).",
+                "Answer is too long. Submit a concise factual answer (name/date/number/short phrase).",
             )
         if _ANSWER_REFUSAL_RE.search(normalized_answer):
             raise ValueError(
