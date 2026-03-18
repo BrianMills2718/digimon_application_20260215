@@ -6034,7 +6034,11 @@ if BENCHMARK_MODE:
         validated: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
         valid_statuses = {"pending", "in_progress", "done", "blocked"}
-        status_aliases = {"started": "in_progress", "complete": "done", "completed": "done"}
+        status_aliases = {
+            "started": "in_progress", "ongoing": "in_progress", "active": "in_progress",
+            "complete": "done", "completed": "done", "resolved": "done",
+            "incomplete": "pending", "waiting": "pending", "not_started": "pending",
+        }
         for item in todos:
             if not isinstance(item, dict):
                 raise ValueError(f"Each TODO must be a dict, got {type(item).__name__}.")

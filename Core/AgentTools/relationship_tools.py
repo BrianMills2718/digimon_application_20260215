@@ -69,8 +69,16 @@ async def relationship_one_hop_neighbors_tool(
 
     for entity_id in params.entity_ids:
         if not nx_graph.has_node(entity_id):
-            logger.warning(f"Relationship.OneHopNeighbors: Entity ID '{entity_id}' not found in the graph. Skipping.")
-            continue
+            # Fuzzy fallback: try lowercase, stripped punctuation
+            import re
+            normalized = re.sub(r'[^a-z0-9\s]', ' ', entity_id.lower()).strip()
+            normalized = re.sub(r'\s+', ' ', normalized)
+            if nx_graph.has_node(normalized):
+                logger.info(f"Relationship.OneHopNeighbors: Normalized '{entity_id}' → '{normalized}'")
+                entity_id = normalized
+            else:
+                logger.warning(f"Relationship.OneHopNeighbors: Entity ID '{entity_id}' (and normalized '{normalized}') not found in the graph. Skipping.")
+                continue
         try:
             edge_attr_for_relation_name = 'relation_name'  
             edge_attr_for_description = 'description'
