@@ -2238,7 +2238,7 @@ async def entity_neighborhood(
     graph_reference_id: str = "",
     dataset_name: str = "",
     hops: int = 1,
-    max_nodes: int = 50,
+    max_nodes: int = 30,
 ) -> str:
     """Get the full subgraph neighborhood around one or more entities.
 
@@ -2249,13 +2249,15 @@ async def entity_neighborhood(
 
     Best for multi-hop questions: start from a seed entity, get its 1-2 hop
     neighborhood, then identify the chain that answers the question.
+    Prioritizes extracted relationships (with descriptions) over co-occurrence
+    edges when limiting results.
 
     Args:
         entity_names: One or more entity names to center the neighborhood on
         graph_reference_id: Graph to query (e.g. 'MuSiQue_ERGraph')
         dataset_name: Dataset alias (resolved to graph if needed)
         hops: Number of hops from seed entities (1 or 2, default 1)
-        max_nodes: Maximum nodes to return (default 50, prevents huge responses)
+        max_nodes: Maximum nodes to return (default 30)
 
     Returns:
         nodes: list of {name, type, description}
@@ -2318,18 +2320,25 @@ async def entity_neighborhood(
         if len(neighborhood) > max_nodes:
             break
 
-    # If too many nodes, prioritize by edge weight to seeds
+    # If too many nodes, prioritize: extracted relationships (high weight) over co-occurrence
     if len(neighborhood) > max_nodes:
         scored_nodes = []
         for node in neighborhood - seed_node_ids:
-            max_weight = 0
+            best_weight = 0
+            has_extracted_rel = False
             for seed in seed_node_ids:
-                edge_data = G.get_edge_data(seed, node) or G.get_edge_data(node, seed)
-                if edge_data:
-                    max_weight = max(max_weight, edge_data.get('weight', 0.5))
-            scored_nodes.append((node, max_weight))
+                for u, v in [(seed, node), (node, seed)]:
+                    edge_data = G.get_edge_data(u, v)
+                    if edge_data:
+                        w = edge_data.get('weight', 0.5)
+                        rname = edge_data.get('relation_name', '')
+                        if rname != 'chunk_cooccurrence':
+                            has_extracted_rel = True
+                            w += 100  # strongly prefer extracted relationships
+                        best_weight = max(best_weight, w)
+            scored_nodes.append((node, best_weight, has_extracted_rel))
         scored_nodes.sort(key=lambda x: -x[1])
-        neighborhood = seed_node_ids | {n for n, _ in scored_nodes[:max_nodes - len(seed_node_ids)]}
+        neighborhood = seed_node_ids | {n for n, _, _ in scored_nodes[:max_nodes - len(seed_node_ids)]}
 
     # Build node list
     nodes_out = []

@@ -1400,7 +1400,7 @@ async def run_agent(
     accept_forced_answer_on_max_tool_calls: bool = True,
     lane_policy: str = "pure",
     trace_id: str = "",
-    max_message_chars: int = 180_000,
+    max_message_chars: int = 0,  # 0 = no compaction (use model's full context window)
     codex_profile: str = "default",
 ) -> dict:
     """Run an agent on a single question via llm_client.
