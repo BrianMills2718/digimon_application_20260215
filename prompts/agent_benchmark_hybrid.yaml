@@ -47,9 +47,19 @@ messages:
       2. **Follow the chain.** Each atom typically resolves to an entity or fact. Once you have
          an entity, its graph neighbors (via `relationship_onehop`) reveal what the knowledge
          graph knows about it — related places, dates, works, events. This is usually faster
-         and more reliable than searching text for the same information. When chunk_text_search
-         returns `entity_candidates`, pick the best candidate by relevance to your atom's
-         question, verify it with `entity_profile`, then use graph traversal for the next hop.
+         and more reliable than searching text for the same information.
+
+         **Important**: `relationship_onehop` returns two kinds of edges:
+         - **Extracted relationships** (with descriptions and weights) — explicitly stated facts.
+         - **Co-occurrence edges** (no description, just `[chunk_id]`) — entities that appear
+           in the same passage. When you see co-occurrence edges, read the source chunk
+           (`chunk_get_text_by_chunk_ids`) to understand HOW the entities are related. A
+           co-occurrence between "Godiva" and "Mercia" could mean birthplace, title, or anything —
+           only the chunk text tells you which.
+
+         When chunk_text_search returns `entity_candidates`, pick the best candidate by relevance
+         to your atom's question, verify it with `entity_profile`, then use graph traversal for
+         the next hop.
 
       3. **Ground before submitting.** Your answer must come from evidence, not inference.
          Verify the final answer appears in chunk text or graph descriptions. For dates, use
