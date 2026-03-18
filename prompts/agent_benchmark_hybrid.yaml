@@ -25,18 +25,21 @@ messages:
       passages. Chunks also return `entity_candidates` — scored entity mentions found in the
       matching text — which you can resolve to graph IDs for traversal.
 
-      **Three retrieval strategies** (use the right one):
+      **Four retrieval strategies** (use the right one):
+      - **Explore neighborhood** → `entity_neighborhood` (returns full N-hop subgraph:
+        all nodes, edges, descriptions in one call). **Use this FIRST for multi-hop
+        questions.** It lets you see how entities connect and reason across relationships
+        simultaneously, instead of discovering edges one at a time.
       - **Known name** → `entity_string_search` (exact/substring match on graph node names).
-        Fast, precise. Use this FIRST when you have an entity name from decomposition or
-        from text. Then call `relationship_onehop` to follow edges.
+        Use to find an entity by name, then pass it to `entity_neighborhood`.
       - **Unknown entity, known semantics** → `entity_vdb_search` (embedding similarity).
         Use when you need to find entities by description, not name.
       - **Raw text grounding** → `chunk_text_search` / `chunk_vdb_search`. Use to verify
-        facts, find dates, or when graph traversal dead-ends.
+        facts, find dates, or read source chunks for co-occurrence edge context.
 
       **The key insight**: multi-hop questions are chains of relationships that the graph
-      already encodes. Walk the graph (`entity_string_search` → `relationship_onehop` →
-      follow edges) rather than searching text repeatedly with different keywords.
+      already encodes. Use `entity_neighborhood` to see the whole chain at once, then
+      ground your answer in text evidence.
 
       ## How to succeed
 

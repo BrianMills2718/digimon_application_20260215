@@ -902,6 +902,7 @@ async def _init_direct_tools(dataset_name: str, disable_embedding_tools: bool = 
     _BENCHMARK_TOOLS = [
         dms.entity_vdb_search,
         dms.entity_string_search,
+        dms.entity_neighborhood,
         dms.entity_onehop,
         dms.entity_ppr,
         dms.entity_link,

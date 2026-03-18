@@ -2233,6 +2233,150 @@ async def entity_string_search(
 
 
 @mcp.tool()
+async def entity_neighborhood(
+    entity_names: list[str] | str,
+    graph_reference_id: str = "",
+    dataset_name: str = "",
+    hops: int = 1,
+    max_nodes: int = 50,
+) -> str:
+    """Get the full subgraph neighborhood around one or more entities.
+
+    Returns ALL nodes and edges within N hops in a single response, so you
+    can reason across relationships simultaneously. Use this instead of
+    multiple relationship_onehop calls when you need to see how entities
+    connect to each other.
+
+    Best for multi-hop questions: start from a seed entity, get its 1-2 hop
+    neighborhood, then identify the chain that answers the question.
+
+    Args:
+        entity_names: One or more entity names to center the neighborhood on
+        graph_reference_id: Graph to query (e.g. 'MuSiQue_ERGraph')
+        dataset_name: Dataset alias (resolved to graph if needed)
+        hops: Number of hops from seed entities (1 or 2, default 1)
+        max_nodes: Maximum nodes to return (default 50, prevents huge responses)
+
+    Returns:
+        nodes: list of {name, type, description}
+        edges: list of {source, target, relation_name, description, weight}
+        seed_entities: which seeds were found in the graph
+    """
+    await _ensure_initialized()
+    import re as _re
+
+    normalized_names = _normalize_string_list(entity_names)
+    if not normalized_names:
+        return json.dumps({"error": "entity_names is required"})
+
+    resolved_graph_id = _resolve_graph_reference_id(
+        graph_reference_id=graph_reference_id,
+        dataset_name=dataset_name,
+    )
+    if not resolved_graph_id:
+        return json.dumps({"error": f"Could not resolve graph from {graph_reference_id!r} / {dataset_name!r}"})
+
+    graph_instance = _state["context"].get_graph_instance(resolved_graph_id)
+    if graph_instance is None:
+        return json.dumps({"error": f"Graph '{resolved_graph_id}' not found in context"})
+
+    storage = graph_instance._graph
+    G = storage._graph if hasattr(storage, '_graph') else None
+    if G is None:
+        return json.dumps({"error": "Could not access NetworkX graph"})
+
+    hops = max(1, min(hops, 2))  # clamp to 1-2
+
+    # Resolve entity names to graph node IDs (with normalization)
+    seeds_found = []
+    seed_node_ids = set()
+    for name in normalized_names:
+        if G.has_node(name):
+            seeds_found.append(name)
+            seed_node_ids.add(name)
+        else:
+            # Normalize: lowercase, strip punctuation
+            normalized = _re.sub(r'[^a-z0-9\s]', ' ', name.lower()).strip()
+            normalized = _re.sub(r'\s+', ' ', normalized)
+            if G.has_node(normalized):
+                seeds_found.append(normalized)
+                seed_node_ids.add(normalized)
+
+    if not seed_node_ids:
+        return json.dumps({
+            "error": f"None of the entities {normalized_names} found in graph",
+            "hint": "Try entity_string_search to find the correct entity name",
+        })
+
+    # Collect N-hop neighborhood
+    neighborhood = set(seed_node_ids)
+    for _ in range(hops):
+        next_layer = set()
+        for node in neighborhood:
+            next_layer.update(G.neighbors(node))
+        neighborhood.update(next_layer)
+        if len(neighborhood) > max_nodes:
+            break
+
+    # If too many nodes, prioritize by edge weight to seeds
+    if len(neighborhood) > max_nodes:
+        scored_nodes = []
+        for node in neighborhood - seed_node_ids:
+            max_weight = 0
+            for seed in seed_node_ids:
+                edge_data = G.get_edge_data(seed, node) or G.get_edge_data(node, seed)
+                if edge_data:
+                    max_weight = max(max_weight, edge_data.get('weight', 0.5))
+            scored_nodes.append((node, max_weight))
+        scored_nodes.sort(key=lambda x: -x[1])
+        neighborhood = seed_node_ids | {n for n, _ in scored_nodes[:max_nodes - len(seed_node_ids)]}
+
+    # Build node list
+    nodes_out = []
+    for node in sorted(neighborhood):
+        attrs = G.nodes.get(node, {})
+        desc = (attrs.get('description', '') or '').split('<SEP>')[0][:200]
+        nodes_out.append({
+            "name": node,
+            "type": attrs.get('entity_type', ''),
+            "description": desc,
+            "is_seed": node in seed_node_ids,
+        })
+
+    # Build edge list (only edges between neighborhood nodes)
+    edges_out = []
+    for u, v, data in G.edges(data=True):
+        if u in neighborhood and v in neighborhood:
+            rname = data.get('relation_name', '')
+            desc = (data.get('description', '') or '').split('<SEP>')[0][:150]
+            weight = data.get('weight', None)
+            source_chunks = data.get('source_id', '')
+            edge = {
+                "source": u,
+                "target": v,
+                "relation": rname,
+            }
+            if desc:
+                edge["description"] = desc
+            if weight is not None:
+                edge["weight"] = weight
+            if source_chunks and rname == 'chunk_cooccurrence':
+                # For co-occurrence edges, include chunk IDs so agent can read them
+                chunk_ids = [c.strip() for c in str(source_chunks).split('<SEP>') if c.strip()][:3]
+                if chunk_ids:
+                    edge["source_chunks"] = chunk_ids
+            edges_out.append(edge)
+
+    return json.dumps({
+        "seed_entities": seeds_found,
+        "nodes": nodes_out,
+        "edges": edges_out,
+        "n_nodes": len(nodes_out),
+        "n_edges": len(edges_out),
+    }, indent=2)
+
+
+@mcp.tool()
 async def entity_link(
                       source_entities: list[str] | str | None = None,
                       vdb_reference_id: str = "",
