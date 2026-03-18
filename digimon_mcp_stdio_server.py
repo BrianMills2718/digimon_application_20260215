@@ -5958,14 +5958,16 @@ if BENCHMARK_MODE:
         validated: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
         valid_statuses = {"pending", "in_progress", "done", "blocked"}
+        status_aliases = {"started": "in_progress", "complete": "done", "completed": "done"}
         for item in todos:
             if not isinstance(item, dict):
                 raise ValueError(f"Each TODO must be a dict, got {type(item).__name__}.")
-            tid = str(item.get("id") or "").strip()
+            tid = str(item.get("id") or item.get("atom_id") or "").strip()
             content = str(item.get("content") or item.get("task") or "").strip()
             status = str(item.get("status") or "pending").strip().lower()
+            status = status_aliases.get(status, status)
             if not tid:
-                raise ValueError("Each TODO must have a non-empty 'id'.")
+                raise ValueError("Each TODO must have a non-empty 'id'. Use 'id' or 'atom_id' key.")
             if not content:
                 raise ValueError(f"TODO '{tid}' must have non-empty 'content'.")
             if status not in valid_statuses:
