@@ -25,10 +25,18 @@ messages:
       passages. Chunks also return `entity_candidates` — scored entity mentions found in the
       matching text — which you can resolve to graph IDs for traversal.
 
-      **The key insight**: the graph is best for *navigating relationships* (who→where→what),
-      while text is best for *grounding specific facts* (exact dates, precise names, yes/no
-      verification). Multi-hop questions are chains of relationships — walk the graph to find
-      the chain, then ground your answer in text evidence.
+      **Three retrieval strategies** (use the right one):
+      - **Known name** → `entity_string_search` (exact/substring match on graph node names).
+        Fast, precise. Use this FIRST when you have an entity name from decomposition or
+        from text. Then call `relationship_onehop` to follow edges.
+      - **Unknown entity, known semantics** → `entity_vdb_search` (embedding similarity).
+        Use when you need to find entities by description, not name.
+      - **Raw text grounding** → `chunk_text_search` / `chunk_vdb_search`. Use to verify
+        facts, find dates, or when graph traversal dead-ends.
+
+      **The key insight**: multi-hop questions are chains of relationships that the graph
+      already encodes. Walk the graph (`entity_string_search` → `relationship_onehop` →
+      follow edges) rather than searching text repeatedly with different keywords.
 
       ## How to succeed
 
@@ -58,11 +66,11 @@ messages:
       - Every tool call must include `tool_reasoning` (one sentence: why this call, which atom).
 
       ## Composition contracts (API facts)
-      - `entity_*`/`relationship_*` tools consume **graph IDs**, not raw text.
+      - `entity_string_search` → finds entity by name → use result as graph ID for traversal.
+      - `entity_*`/`relationship_*` tools consume **graph IDs** (entity names from the graph).
       - `chunk_*` tools return **text/chunk IDs**, not graph IDs.
       - To cross from text→graph: extract entity names from chunks, resolve via
-        `entity_select_candidate` or `entity_resolve_names_to_ids`, then traverse.
-      - `entity_candidates` from chunk search are *uncertain* until resolved to graph IDs.
+        `entity_string_search` or `entity_select_candidate`, then traverse.
       - `relationship_*` outputs compose into `chunk_from_relationships` for text grounding.
 
       ## Handling ambiguity

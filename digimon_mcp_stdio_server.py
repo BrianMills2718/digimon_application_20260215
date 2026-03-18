@@ -2157,6 +2157,82 @@ async def entity_agent(query_text: str, text_context: str,
 
 
 @mcp.tool()
+async def entity_string_search(
+    query: str,
+    graph_reference_id: str = "",
+    dataset_name: str = "",
+    top_k: int = 10,
+) -> str:
+    """Find entities by exact or substring match on entity names in the graph.
+
+    Use this when you already know (or suspect) the entity name. Much faster
+    and more precise than VDB search for known names. Returns matching entity
+    names with their types and descriptions.
+
+    Args:
+        query: Entity name or substring to search for (case-insensitive)
+        graph_reference_id: Graph to search (e.g. 'MuSiQue_ERGraph')
+        dataset_name: Dataset alias (resolved to graph_reference_id if needed)
+        top_k: Maximum results to return
+
+    Returns:
+        matches: list of {entity_name, entity_type, description, match_type}
+    """
+    await _ensure_initialized()
+    query_lower = query.strip().lower()
+    if not query_lower:
+        return json.dumps({"error": "query is required"})
+
+    resolved_graph_id = _resolve_graph_reference_id(
+        graph_reference_id=graph_reference_id,
+        dataset_name=dataset_name,
+    )
+    if not resolved_graph_id:
+        return json.dumps({"error": f"Could not resolve graph from {graph_reference_id!r} / {dataset_name!r}"})
+
+    graph_instance = _state["context"].get_graph_instance(resolved_graph_id)
+    if graph_instance is None:
+        return json.dumps({"error": f"Graph '{resolved_graph_id}' not found in context"})
+
+    storage = graph_instance._graph
+    G = storage._graph if hasattr(storage, '_graph') else None
+    if G is None:
+        return json.dumps({"error": "Could not access NetworkX graph"})
+
+    # Score all nodes: exact > prefix > substring > word overlap
+    scored = []
+    for node_id in G.nodes():
+        name_lower = str(node_id).lower()
+        if name_lower == query_lower:
+            scored.append((node_id, 100, "exact"))
+        elif name_lower.startswith(query_lower) or query_lower.startswith(name_lower):
+            scored.append((node_id, 80, "prefix"))
+        elif query_lower in name_lower or name_lower in query_lower:
+            scored.append((node_id, 60, "substring"))
+        else:
+            # Word overlap
+            q_words = set(query_lower.split())
+            n_words = set(name_lower.split())
+            overlap = q_words & n_words
+            if overlap:
+                scored.append((node_id, 40 + len(overlap) * 5, "word_overlap"))
+
+    scored.sort(key=lambda x: -x[1])
+    results = []
+    for node_id, score, match_type in scored[:top_k]:
+        attrs = G.nodes[node_id]
+        results.append({
+            "entity_name": node_id,
+            "entity_type": attrs.get("entity_type", ""),
+            "description": (attrs.get("description", "") or "")[:200],
+            "match_type": match_type,
+            "match_score": score,
+        })
+
+    return json.dumps({"matches": results, "total_matches": len(scored)}, indent=2)
+
+
+@mcp.tool()
 async def entity_link(
                       source_entities: list[str] | str | None = None,
                       vdb_reference_id: str = "",
