@@ -4,7 +4,7 @@
 
 ### 1. Execution Memory Feedback Loop
 **Source**: `Core/Memory/memory_system.py` (PatternMemory class)
-**Idea**: After each `execute_method`/`auto_compose`, log `{query, method_chosen, quality_score, latency_ms}` to a JSONL file. Feed recent history as few-shot examples into `auto_compose`'s prompt so it learns which methods work for which query types. EMA smoothing on quality scores per method to handle drift. ~30 lines bolted onto existing auto_compose flow, no new module needed.
+**Idea**: After each operator chain execution, log `{query, operators_used, quality_score, latency_ms}` to a JSONL file. Feed recent history into the agent's context so it learns which operator compositions work for which query types. EMA smoothing on quality scores per composition pattern to handle drift.
 
 ### 2. Episodic→Semantic Consolidation
 **Source**: `Core/Memory/memory_architecture.py` (MemoryConsolidation class)

@@ -15,9 +15,17 @@ from Core.Schema.SlotTypes import EntityRecord, SlotKind, SlotValue
 
 async def _run_ppr(ctx: Any, query: str, seed_entities: list) -> np.ndarray:
     """Run Personalized PageRank from seed entities. Mirrors BaseRetriever._run_personalized_pagerank."""
+    if ctx.graph is None:
+        raise ValueError("entity.ppr: Graph not loaded. Build or load a graph first.")
+
     reset_prob = np.zeros(ctx.graph.node_num)
 
     if ctx.config.use_entity_similarity_for_ppr:
+        if ctx.entities_vdb is None:
+            raise ValueError(
+                "entity.ppr: Entity VDB required for similarity-based PPR but not initialized. "
+                "Build it first with entity_vdb_build."
+            )
         # FastGraphRAG-style
         reset_prob += await ctx.entities_vdb.retrieval_nodes_with_score_matrix(
             seed_entities, top_k=1, graph=ctx.graph,

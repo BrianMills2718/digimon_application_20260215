@@ -75,7 +75,7 @@ For benchmark scores, see `COMPETITIVE_ANALYSIS.md`.
 | 32 | Chunk text search (BM25/TF-IDF) | Various | **Done** | `chunk.text_search` |
 | 33 | Chunk VDB search (embedding) | EcphoryRAG | **Done** | `chunk.vdb` operator + `chunk_vdb_build` / `chunk_vdb_search` MCP tools |
 | 34 | Weighted centroid expansion | EcphoryRAG | **Missing** | Would be a new param on `entity.vdb_search` |
-| 35 | Per-question adaptive method selection | DIGIMON only | **Done** | `auto_compose` — unique to us, no competitor has this |
+| 35 | Per-question adaptive operator composition | DIGIMON only | **Done** | Agent composes operators per-question via `list_operators` + `get_compatible_successors` — unique to us, no competitor has this |
 | 36 | Multi-pipeline ensemble | DIGIMON only | **Possible** | Can run multiple methods and synthesize — untested |
 
 ### Architecture-Level Techniques
@@ -105,7 +105,7 @@ For benchmark scores, see `COMPETITIVE_ANALYSIS.md`.
 
 ### Our Implementation
 
-**Pipeline**: `hipporag` reference method (`Core/Methods/hipporag.py`)
+**Pipeline**: `hipporag`-style operator chain
 ```
 meta.extract_entities → entity.link → entity.ppr → chunk.aggregator
 ```

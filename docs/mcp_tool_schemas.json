@@ -801,38 +801,6 @@
     }
   },
   {
-    "name": "auto_compose",
-    "description": "Automatically select and run the best retrieval method for a query.\n\n    An LLM analyzes the query characteristics and available resources,\n    picks from the 10 named methods, then executes it end-to-end.\n\n    Three client modes (increasing control):\n    1. auto_compose \u2014 DIGIMON picks the method (this tool)\n    2. execute_method \u2014 client picks from 10 methods\n    3. Individual operator tools \u2014 client composes everything\n\n    Args:\n        query: The question to answer\n        dataset_name: Name of the dataset (must have graph built)\n        auto_build: Auto-build missing prerequisites (VDBs, sparse matrices, communities)\n        return_context_only: If True, return raw context instead of generated answer\n    ",
-    "inputSchema": {
-      "properties": {
-        "query": {
-          "title": "Query",
-          "type": "string"
-        },
-        "dataset_name": {
-          "title": "Dataset Name",
-          "type": "string"
-        },
-        "auto_build": {
-          "default": true,
-          "title": "Auto Build",
-          "type": "boolean"
-        },
-        "return_context_only": {
-          "default": false,
-          "title": "Return Context Only",
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "query",
-        "dataset_name"
-      ],
-      "title": "auto_composeArguments",
-      "type": "object"
-    }
-  },
-  {
     "name": "relationship_vdb_build",
     "description": "Build a vector database index from relationships in a graph. Required before relationship_vdb_search.\n\n    Args:\n        graph_reference_id: ID of the graph (e.g. 'Fictional_Test_ERGraph')\n        vdb_collection_name: Name for the VDB collection (e.g. 'Fictional_Test_relations')\n        force_rebuild: Force rebuild even if VDB exists\n\n    Returns:\n        status: str, vdb_id: str, num_relationships_indexed: int\n    ",
     "inputSchema": {
@@ -1107,57 +1075,11 @@
     }
   },
   {
-    "name": "list_methods",
-    "description": "List all 10 available retrieval methods with rich metadata.\n\n    Returns profiles including operator chains, requirements (VDB, community,\n    sparse matrices), cost tiers, and guidance on when to use each method.\n    Use this to decide which method to pass to execute_method.\n    ",
-    "inputSchema": {
-      "properties": {},
-      "title": "list_methodsArguments",
-      "type": "object"
-    }
-  },
-  {
     "name": "list_graph_types",
     "description": "List all 5 available graph types with descriptions and guidance.\n\n    Returns information about each graph type to help decide which to build.\n    ",
     "inputSchema": {
       "properties": {},
       "title": "list_graph_typesArguments",
-      "type": "object"
-    }
-  },
-  {
-    "name": "execute_method",
-    "description": "Run a named retrieval method pipeline end-to-end.\n\n    This executes a complete retrieval pipeline (e.g., basic_local runs:\n    entity VDB search -> relationship one-hop -> chunk co-occurrence -> answer).\n\n    Use list_methods to see all available methods and their requirements.\n\n    Args:\n        method_name: One of: basic_local, basic_global, lightrag, fastgraphrag,\n                     hipporag, tog, gr, dalk, kgp, med\n        query: The question to answer\n        dataset_name: Name of the dataset (must have graph + VDB built)\n        return_context_only: If True, return raw retrieved context instead of\n                           a generated answer. Useful when the calling agent\n                           wants to synthesize the answer itself.\n        auto_build: If True, automatically build all missing prerequisites before\n                   running: entity VDB, relationship VDB, sparse matrices, and\n                   community structure. Community building calls LLM (most expensive).\n    ",
-    "inputSchema": {
-      "properties": {
-        "method_name": {
-          "title": "Method Name",
-          "type": "string"
-        },
-        "query": {
-          "title": "Query",
-          "type": "string"
-        },
-        "dataset_name": {
-          "title": "Dataset Name",
-          "type": "string"
-        },
-        "return_context_only": {
-          "default": false,
-          "title": "Return Context Only",
-          "type": "boolean"
-        },
-        "auto_build": {
-          "default": false,
-          "title": "Auto Build",
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "method_name",
-        "query",
-        "dataset_name"
-      ],
-      "title": "execute_methodArguments",
       "type": "object"
     }
   },

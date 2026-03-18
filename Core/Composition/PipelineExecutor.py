@@ -115,9 +115,11 @@ class PipelineExecutor:
                     if out_name in result:
                         chain_outputs[out_name] = result[out_name]
                     else:
-                        logger.warning(
-                            f"Operator {tool_call.tool_id} did not produce expected output '{out_name}'. "
-                            f"Available keys: {list(result.keys())}. Skipping."
+                        raise PipelineExecutionError(
+                            f"Operator '{tool_call.tool_id}' in step '{step.step_id}' "
+                            f"did not produce expected output '{out_name}'. "
+                            f"Operator returned keys: {list(result.keys())}. "
+                            f"Check the operator implementation or named_outputs mapping."
                         )
             else:
                 chain_outputs.update(result)

@@ -12,7 +12,7 @@ The system supports two orchestration modes that are **not mutually exclusive**:
 
 1. **DIGIMON-internal brain** — A capable `agentic_model` handles orchestration and mid-pipeline reasoning. The client just sends a query and gets an answer.
 
-2. **Client-as-brain** — When the client is itself a capable agent (Claude Code, Codex CLI), it can bypass DIGIMON's orchestration and drive directly — choosing graph types, picking retrieval methods, composing operator chains. Mid-pipeline LLM calls still use the internal `agentic_model`.
+2. **Client-as-brain** — When the client is itself a capable agent (Claude Code, Codex CLI), it can bypass DIGIMON's orchestration and drive directly — choosing graph types, composing operator chains. Mid-pipeline LLM calls still use the internal `agentic_model`.
 
 Which mode to use is **the client's choice**, and should be **configurable at runtime via MCP**.
 
@@ -22,8 +22,7 @@ Which mode to use is **the client's choice**, and should be **configurable at ru
 
 **Orchestration** (can be done by client OR internal brain):
 - Choosing which graph type to build (ER, RK, tree, passage)
-- Selecting a retrieval method from the 10 named methods
-- Composing custom operator chains
+- Composing operator chains from the 28 typed operators
 - Deciding what prerequisites to build
 
 **Mid-pipeline agentic steps** (must be internal — client can't intervene):
@@ -34,13 +33,11 @@ Which mode to use is **the client's choice**, and should be **configurable at ru
 
 The client can own orchestration but **cannot** own mid-pipeline steps — those happen inside PipelineExecutor without round-tripping. So DIGIMON always needs a capable internal model.
 
-### Three MCP client modes
+### MCP client mode
 
-| Mode | Tool | Orchestration by | Mid-pipeline by |
-|------|------|-----------------|-----------------|
-| Full auto | `auto_compose(query, dataset)` | Internal brain | Internal brain |
-| Named method | `execute_method(method, query, dataset)` | Client | Internal brain |
-| Raw operators | Individual tools | Client | Internal brain |
+| Mode | Tools | Orchestration by | Mid-pipeline by |
+|------|-------|-----------------|-----------------|
+| Operator composition | `list_operators` + `get_compatible_successors` + individual operator tools | Client | Internal brain |
 
 ### Why the internal brain must be capable
 
@@ -67,7 +64,7 @@ The right answer is: **let the client choose**. Expose the configuration through
 | Config field | Controls | Default |
 |-------------|----------|---------|
 | `llm.model` | Graph construction (entity/relationship extraction), community reports | `openai/gpt-4o-mini` (bulk extraction, cost-sensitive) |
-| `agentic_model` | All agentic reasoning: auto_compose, meta operators, loop bodies | A capable model (Claude Sonnet, Codex, etc.) |
+| `agentic_model` | All agentic reasoning: meta operators, loop bodies | A capable model (Claude Sonnet, Codex, etc.) |
 
 ### MCP configuration exposure
 
@@ -81,13 +78,8 @@ This lets a Claude Code client say: "use Codex for internal reasoning" (cheaper)
 ### Recommended usage patterns
 
 **Capable client (Claude Code, Codex CLI)**:
-- Use Mode 2 (`list_methods` + `execute_method`) for orchestration — client picks the method with full goal context
-- Or use `auto_compose` when the client doesn't have strong opinions about retrieval strategy
+- Use `list_operators` + `get_compatible_successors` for discovery, then compose operator chains directly — client picks operators with full goal context
 - Optionally call `set_agentic_model` at session start to control cost/quality
-
-**Simple client (script, webhook, automation)**:
-- Use `auto_compose(query, dataset, auto_build=True)` — one call, full auto
-- Internal brain handles everything
 
 **Cost-sensitive setup**:
 - `agentic_model`: cheaper-but-capable model (Codex) for internal reasoning

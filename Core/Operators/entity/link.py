@@ -21,6 +21,12 @@ async def entity_link(
     Inputs:  {"entities": SlotValue(ENTITY_SET)}  -- entities with names to link
     Outputs: {"entities": SlotValue(ENTITY_SET)}   -- linked entities from graph
     """
+    if ctx.entities_vdb is None:
+        raise ValueError(
+            "entity.link: Entity VDB not initialized. "
+            "Build it first with entity_vdb_build, or check that the VDB was loaded into context."
+        )
+
     seed = inputs["entities"].data  # List[EntityRecord]
     if not seed:
         return {"entities": SlotValue(kind=SlotKind.ENTITY_SET, data=[], producer="entity.link")}

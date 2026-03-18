@@ -76,21 +76,15 @@ Every competitor is a fixed pipeline. HippoRAG always runs NER→link→PPR→ch
 | Bridge comparison | 235 | Multi-hop + comparison hybrid (`tog`, `kgp`) |
 | Inference | 108 | Iterative reasoning with backtracking (`tog`, `kgp`) |
 
-In Mode 1, the agent sees the question type and picks a different operator chain. In Mode 3, `auto_compose` selects from 10 methods. Neither capability exists in the literature.
+The agent sees the question type and picks a different operator chain. This capability does not exist in the literature.
 
-**Untested hypothesis**: Per-question method selection outperforms the best single pipeline. This is the publishable contribution — not "we beat HippoRAG by 2 points" but "composable architectures with adaptive selection outperform fixed pipelines on heterogeneous QA."
+**Untested hypothesis**: Per-question adaptive operator composition outperforms the best single pipeline. This is the publishable contribution — not "we beat HippoRAG by 2 points" but "composable architectures with adaptive selection outperform fixed pipelines on heterogeneous QA."
 
 ### 2. Multi-Pipeline Ensemble
 
-Run multiple pipelines on the same question, collect candidate answers, synthesize the best. Nobody else can do this because they only have one pipeline. We have 10.
+Run multiple operator chains on the same question, collect candidate answers, synthesize the best. Nobody else can do this because they only have one pipeline. The agent can compose different chains and use `meta.synthesize_answers` to pick the best result.
 
-```
-for method in [hipporag, basic_local, tog]:
-    answers.append(execute_method(method, query))
-best = meta.synthesize_answers(question, answers)
-```
-
-Cost: 3x retrieval per question. Benefit: covers cases where one pipeline misses but another hits.
+Cost: Nx retrieval per question. Benefit: covers cases where one chain misses but another hits.
 
 ### 3. Entity Canonicalization (planned)
 
@@ -114,7 +108,7 @@ ER + RK + Tree + Passage graphs simultaneously. Could query across representatio
 
 1. **Tuning**: Our pipelines exist but haven't been optimized. HippoRAG spent months tuning PPR damping factor, top-k, NER strategy. We've run exactly one benchmark.
 2. **Passage-level retrieval**: HopRAG's logical passage graph is a different approach we haven't explored.
-3. **Agent overhead**: Mode 1 (agent composition) adds latency and cost. For 1000 questions, this matters.
+3. **Agent overhead**: Agent-driven operator composition adds latency and cost. For 1000 questions, this matters.
 4. **HippoRAG's entity linking is more sophisticated**: They use NER + entity linking with schema-aware matching. Our `entity.link` does embedding similarity, which can miss exact-match entities.
 
 ## Benchmark Strategy
@@ -122,21 +116,21 @@ ER + RK + Tree + Passage graphs simultaneously. Could query across representatio
 ### Phase 1: Establish 2Wiki Baseline (immediate)
 
 1. Build 2WikiMultiHopQA graph (6119 docs, ~2-3hr with fallback chain)
-2. Run 1000 questions through auto_compose
+2. Run 1000 questions through agent-driven operator composition
 3. Establish baseline EM/F1
 
 ### Phase 2: Pipeline Comparison (1 day)
 
-Run all 10 methods on a 50-question sample (balanced across 4 types). Find:
-- Best overall method
-- Best method per question type
-- Whether type-aware routing beats best single method
+Run diverse operator compositions on a 50-question sample (balanced across 4 types). Find:
+- Best overall composition
+- Best composition per question type
+- Whether type-aware routing beats best single composition
 
 ### Phase 3: Adaptive Composition (the publishable result)
 
-1. Implement type-aware method routing in auto_compose
+1. Implement type-aware operator routing in the agent
 2. Run full 1000-question benchmark
-3. Compare: best single pipeline vs type-aware routing vs ensemble
+3. Compare: best single composition vs type-aware routing vs ensemble
 4. If type-aware wins → paper contribution
 
 ### Phase 4: Graph Quality (if needed)
@@ -150,8 +144,8 @@ Run all 10 methods on a 50-question sample (balanced across 4 types). Find:
 | Step | Model | Est. Cost |
 |------|-------|----------|
 | Graph build (6119 docs) | gemini-2.5-flash + fallback | ~$3-5 |
-| 1000q benchmark (auto_compose) | gemini-3-flash | ~$35-50 |
-| 50q pipeline comparison (10 methods) | gemini-3-flash | ~$25-35 |
+| 1000q benchmark (agent composition) | gemini-3-flash | ~$35-50 |
+| 50q composition comparison | gemini-3-flash | ~$25-35 |
 | 1000q final benchmark | gemini-3-flash | ~$35-50 |
 
 Total to publishable result: ~$100-140.

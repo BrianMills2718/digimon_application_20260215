@@ -60,7 +60,7 @@ Supporting infrastructure:
 
 Tools that read graphs to answer questions. All read-only.
 
-#### EXISTS Today (27 operators + 10 methods + 4 cross-modal + composition tools)
+#### EXISTS Today (27 operators + 4 cross-modal + composition tools)
 
 **27 Operators** (uniform signature: `async op(inputs, ctx, params) -> outputs`):
 
@@ -72,21 +72,6 @@ Tools that read graphs to answer questions. All read-only.
 | **Subgraph** (3) | `khop_paths`, `steiner_tree`, `agent_path` | Extract subgraphs: k-hop neighborhoods, Steiner trees, LLM-guided paths |
 | **Community** (2) | `from_entities`, `from_level` | Community detection from entity sets or hierarchy levels |
 | **Meta** (7) | `extract_entities`, `reason_step`, `rerank`, `generate_answer`, `pcst_optimize`, `decompose_question`, `synthesize_answers` | Query preprocessing, reasoning, reranking, answer generation, AoT decomposition |
-
-**10 Reference Methods** (pre-composed operator chains):
-
-| Method | Pipeline |
-|--------|----------|
-| `basic_local` | extract_entities → entity.onehop → rel.onehop → chunk.from_rel → generate_answer |
-| `basic_global` | extract_entities → community.from_level → chunk.aggregator → generate_answer |
-| `ppr_based` | extract_entities → entity.ppr → rel.onehop → chunk.from_rel → generate_answer |
-| `vdb_only` | extract_entities → entity.vdb → chunk.from_rel → generate_answer |
-| `steiner_optimized` | extract_entities → entity.vdb → subgraph.steiner → chunk.from_rel → generate_answer |
-| `comprehensive` | extract_entities → entity.vdb+ppr → rel.score_agg → subgraph.steiner → chunk.aggregator → generate_answer |
-| `entity_focused` | extract_entities → entity.vdb → entity.ppr → rel.onehop → chunk.occurrence → generate_answer |
-| `hipporag_style` | extract_entities → entity.link → entity.ppr → rel.onehop → chunk.occurrence → generate_answer |
-| `lightrag_style` | extract_entities → entity.vdb → rel.vdb → chunk.from_rel → generate_answer |
-| `aot_reasoning` | decompose_question → [per-sub-question: entity.vdb → rel.onehop → chunk.from_rel → generate_answer] → synthesize_answers |
 
 **4 Cross-Modal Tools**:
 
@@ -103,9 +88,6 @@ Tools that read graphs to answer questions. All read-only.
 |------|-------------|
 | `list_operators` | Full operator catalog with I/O types |
 | `get_compatible_successors` | Given an operator, list valid next operators |
-| `execute_method` | Run a named reference method end-to-end |
-| `auto_compose` | LLM picks best method based on query characteristics |
-| `list_methods` | List all 10 reference methods with profiles |
 | `get_config` / `set_agentic_model` | Runtime configuration |
 | `list_available_resources` | What graphs and VDBs exist on disk |
 
@@ -242,7 +224,7 @@ This enables safe experimentation: snapshot before mutation, diff to verify, res
                     │  Creation   │ │  Retrieval │ │  Mutation   │
                     ├─────────────┤ ├────────────┤ ├─────────────┤
                     │corpus_prepare│ │27 operators│ │upsert/delete│
-                    │graph_build_* │ │10 methods  │ │belief ops   │
+                    │graph_build_* │ │composition │ │belief ops   │
                     │entity_vdb_*  │ │cross-modal │ │governance   │
                     │[post-build]  │ │[cypher]    │ │[versioning] │
                     └──────┬──────┘ └─────┬──────┘ └──────┬──────┘

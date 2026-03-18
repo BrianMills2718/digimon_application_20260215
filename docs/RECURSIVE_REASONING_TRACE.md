@@ -152,9 +152,9 @@ progressively distill a massive knowledge space into question-relevant structure
 
 ### What Already Exists
 
-- **Mode 1 (agent-driven composition)**: Claude Code/Codex already composes operators
+- **Agent-driven composition**: Claude Code/Codex already composes operators
   dynamically. The agent IS the reasoning graph — no fixed plan needed.
-- **PipelineExecutor**: Supports LoopConfig, ConditionalBranch for Mode 2/3 fixed plans.
+- **PipelineExecutor**: Supports LoopConfig, ConditionalBranch for validated plans.
 - **OperatorContext**: Carries graph, VDBs, LLM, config through pipeline execution.
 - **ER graph format**: The standard graph type. Trace graphs must match this format.
 - **`agentic_model: "claude-code"`**: Mid-pipeline LLM calls route through Agent SDK.
@@ -191,7 +191,7 @@ The trace writer captures what happened regardless of who drove it.
   Validated against a real 23-atom AoT trace with 6 rounds of self-correction.
 - DIGIMON's existing ER graph operators can operate on a trace graph if the schema is right.
 - The two new operators (decompose, synthesize) are straightforward LLM prompt templates.
-- Mode 1 (agent-driven composition) already supports dynamic operator sequencing.
+- Agent-driven composition already supports dynamic operator sequencing.
 
 ### Medium Confidence — Needs Validation
 
@@ -265,7 +265,7 @@ DIGIMON already has all four capabilities. The gap is composition + evaluation.
 ## Next Steps (Priority Order)
 
 1. **Build eval harness** — Benchmark operator compositions on HotPotQA/MuSiQue/2Wiki.
-   Test the 10 reference pipelines as baselines, then novel operator chains.
+   Test various operator compositions as baselines, then novel chains.
    This tells us if we even need the recursive system to compete,
    or if an existing composition is already close.
 

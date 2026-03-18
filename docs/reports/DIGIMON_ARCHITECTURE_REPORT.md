@@ -35,10 +35,6 @@ Core/
 │   ├── ChainValidator.py          # Validates operator I/O connections
 │   ├── PipelineExecutor.py        # Executes validated ExecutionPlans
 │   └── Adapters.py                # Type adapters between operators
-├── Methods/                       # NEW: 10 method plans as ExecutionPlan factories
-│   ├── basic_local.py             # entity.vdb → rel.onehop → chunk.occurrence → answer
-│   ├── basic_global.py            # community.from_level → answer
-│   ├── lightrag.py, fastgraphrag.py, hipporag.py, tog.py, gr.py, dalk.py, kgp.py, med.py
 ├── Schema/                        # Data schemas
 │   ├── SlotTypes.py               # NEW: 7 SlotKinds + typed records (EntityRecord, etc.)
 │   ├── OperatorDescriptor.py      # NEW: Machine-readable operator metadata
@@ -127,15 +123,6 @@ async def op(inputs: Dict[str, SlotValue], ctx: OperatorContext, params: Dict) -
 - **Subgraph** (3): khop_paths, steiner_tree, agent_path
 - **Community** (2): from_entity, from_level
 - **Meta** (5): extract_entities, reason_step, rerank, generate_answer, pcst_optimize
-
-#### **Method Plans** (`Core/Methods/`)
-10 pre-defined operator chains expressed as `ExecutionPlan` factories:
-- **basic_local**: entity.vdb → relationship.onehop → chunk.occurrence → generate_answer
-- **fastgraphrag**: entity.vdb → entity.ppr → relationship.score_agg → chunk.aggregator
-- **hipporag**: extract_entities → entity.link → entity.ppr → chunk.aggregator
-- **tog**: extract_entities → entity.link → Loop(relationship.agent → entity.agent) → chunk.from_relation → answer
-- **dalk**: extract_entities → entity.link → subgraph.khop_paths → subgraph.agent_path → chunk.from_relation → answer
-- Plus: basic_global, lightrag, gr, kgp, med
 
 #### **Composition Engine** (`Core/Composition/`)
 - **ChainValidator**: Validates all I/O slot connections in an ExecutionPlan
@@ -304,8 +291,7 @@ The system is designed for extensibility:
 1. **New Graph Types**: Implement BaseGraph interface
 2. **Custom Tools**: Add to AgentTools with contracts
 3. **New Operators**: Add to Core/Operators/ with OperatorDescriptor and register in registry
-4. **New Method Plans**: Compose operators into ExecutionPlans in Core/Methods/
-5. **Storage Backends**: Implement BaseStorage
+4. **Storage Backends**: Implement BaseStorage
 6. **LLM Providers**: Register with LiteLLM
 
 ## Performance Optimizations

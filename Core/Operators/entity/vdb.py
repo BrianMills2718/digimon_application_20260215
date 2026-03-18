@@ -22,6 +22,12 @@ async def entity_vdb(
     Outputs: {"entities": SlotValue(ENTITY_SET)}
     Params:  {"top_k": int, "tree_node": bool}
     """
+    if ctx.entities_vdb is None:
+        raise ValueError(
+            "entity.vdb: Entity VDB not initialized. "
+            "Build it first with entity_vdb_build, or check that the VDB was loaded into context."
+        )
+
     query = inputs["query"].data
     p = params or {}
     top_k = p.get("top_k", ctx.config.top_k)

@@ -29,9 +29,8 @@ class FaissIndex(BaseIndex):
         if not graph:
             logger.error("FaissIndex.retrieval_nodes_with_score_matrix: graph object is None!")
             node_num_fallback = 100 # Arbitrary fallback if graph.node_num is not accessible
-            try:
-                node_num_fallback = self.config.graph_node_num_default_for_empty_graph if hasattr(self.config, 'graph_node_num_default_for_empty_graph') else 100
-            except: pass # Ignore if self.config is not set or lacks attribute
+            if hasattr(self, 'config') and hasattr(self.config, 'graph_node_num_default_for_empty_graph'):
+                node_num_fallback = self.config.graph_node_num_default_for_empty_graph
             logger.warning(f"Graph object is None. Using fallback node_num: {node_num_fallback}")
             return np.zeros(node_num_fallback)
 
@@ -386,20 +385,5 @@ class FaissIndex(BaseIndex):
         # return VectorStoreIndex([])
 
     async def _similarity_score(self, object_q, object_d):
-        # For llama_index based vector database, we do not need it now!
+        """Not used for llama_index-based vector database."""
         pass
-
-
-
-        async def set_idx_score(idx, res):
-            for entity, score in zip(res[0], res[1]):
-                entity_indices.append(await graph.get_node_index(entity["entity_name"]))
-                scores.append(score)
-
-        await asyncio.gather(*[set_idx_score(idx, res) for idx, res in enumerate(results)])
-        reset_prob_matrix[np.arange(len(query_list)).reshape(-1, 1), entity_indices] = scores
-        all_entity_weights = reset_prob_matrix.max(axis=0)  # (1, #all_entities)
-
-        # Normalize the scores
-        all_entity_weights /= all_entity_weights.sum()
-        return all_entity_weights

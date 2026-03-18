@@ -487,12 +487,6 @@ async def op(inputs: Dict[str, SlotValue], ctx: OperatorContext, params: Dict) -
 - Machine-readable metadata: input/output slots, cost tier, requirements
 - Composition helpers: `get_compatible_successors()`, `find_chains_to_goal()`
 
-### Method Plans (10 pre-defined)
-
-Each method is an `ExecutionPlan` factory in `Core/Methods/`:
-- basic_local, basic_global, lightrag, fastgraphrag, hipporag
-- tog, gr, dalk, kgp, med
-
 ## 7. Configuration Management
 
 ### Configuration Files
