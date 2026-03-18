@@ -2973,6 +2973,8 @@ async def main() -> None:
             trace_id=trace_id,
             extra={
                 "tool_calls": record["tool_calls"],
+                "tool_details": record.get("tool_details"),
+                "conversation_trace": record.get("conversation_trace"),
                 "composability": record.get("composability"),
                 "warnings": record.get("warnings"),
                 "models_used": record.get("models_used"),
