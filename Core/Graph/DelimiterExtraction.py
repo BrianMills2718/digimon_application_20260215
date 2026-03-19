@@ -12,6 +12,7 @@ from collections import defaultdict
 from typing import Any, List, Optional, Tuple
 
 from Core.Common.Logger import logger
+from Core.Common.entity_name_hygiene import classify_entity_name
 from Core.Common.Utils import clean_str, split_string_by_multi_markers, is_float_regex
 from Core.Common.Constants import (
     DEFAULT_RECORD_DELIMITER,
@@ -152,7 +153,15 @@ class DelimiterExtractionMixin:
             return None
 
         entity_name = clean_str(record_attributes[1])
-        if not entity_name.strip():
+        valid_entity_name, invalid_reason = classify_entity_name(entity_name)
+        if not valid_entity_name:
+            logger.warning(
+                "Skipping invalid extracted entity. chunk_key=%s raw_entity=%r cleaned_entity=%r reason=%s",
+                chunk_key,
+                record_attributes[1],
+                entity_name,
+                invalid_reason,
+            )
             return None
 
         graph_cfg = getattr(self, "graph_config", self.config)

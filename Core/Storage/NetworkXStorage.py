@@ -12,6 +12,7 @@ import numpy as np
 from dataclasses import field, dataclass
 import asyncio
 from Core.Common.Constants import GRAPH_FIELD_SEP
+from Core.Common.entity_name_hygiene import classify_entity_name
 from Core.Common.Logger import logger
 from Core.Schema.CommunitySchema import LeidenInfo
 from Core.Storage.BaseGraphStorage import BaseGraphStorage
@@ -151,6 +152,24 @@ class NetworkXStorage(BaseGraphStorage):
         return None
 
     async def upsert_node(self, node_id: str, node_data: dict):
+        """Insert or replace one graph node after validating its identifier.
+
+        Invalid node IDs poison entity search and can silently create junk
+        graph state that is hard to debug later. This method therefore rejects
+        blank and low-signal identifiers loudly before touching storage.
+        """
+
+        valid_node_id, invalid_reason = classify_entity_name(node_id)
+        if not valid_node_id:
+            logger.error(
+                "Rejecting invalid node upsert. node_id=%r reason=%s node_data=%s",
+                node_id,
+                invalid_reason,
+                node_data,
+            )
+            raise ValueError(
+                f"Invalid node_id for graph upsert: {node_id!r} (reason={invalid_reason})"
+            )
         self._graph.add_node(node_id, **node_data)
 
     # TODO: not use dict for edge_data

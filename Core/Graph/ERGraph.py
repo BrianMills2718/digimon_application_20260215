@@ -5,6 +5,7 @@ from collections import defaultdict
 from typing import Any, List
 from Core.Graph.BaseGraph import BaseGraph
 from Core.Graph.DelimiterExtraction import DelimiterExtractionMixin
+from Core.Common.entity_name_hygiene import classify_entity_name
 from Core.Common.Logger import logger
 from Core.Common.Utils import (
     clean_str,
@@ -342,8 +343,15 @@ class ERGraph(DelimiterExtractionMixin, BaseGraph):
 
         for _entity in entities:
             entity_name = clean_str(_entity)
-            if entity_name == '':
-                logger.warning(f"Entity name is not valid, entity is: {_entity}, skipping.")
+            valid_entity_name, invalid_reason = classify_entity_name(entity_name)
+            if not valid_entity_name:
+                logger.warning(
+                    "Skipping invalid tuple entity. chunk_key=%s raw_entity=%r cleaned_entity=%r reason=%s",
+                    chunk_key,
+                    _entity,
+                    entity_name,
+                    invalid_reason,
+                )
                 continue
 
             entity = Entity(
@@ -365,8 +373,19 @@ class ERGraph(DelimiterExtractionMixin, BaseGraph):
             tgt_entity = clean_str(triple[2])
             relation_name = clean_str(triple[1])
 
-            if src_entity == '' or tgt_entity == '' or relation_name == '':
-                logger.warning(f"Triple contains empty values: {triple}, skipping.")
+            valid_src_entity, src_reason = classify_entity_name(src_entity)
+            valid_tgt_entity, tgt_reason = classify_entity_name(tgt_entity)
+            if not valid_src_entity or not valid_tgt_entity or relation_name == '':
+                logger.warning(
+                    "Skipping invalid triple. chunk_key=%s triple=%r src_entity=%r src_reason=%s tgt_entity=%r tgt_reason=%s relation_name=%r",
+                    chunk_key,
+                    triple,
+                    src_entity,
+                    src_reason,
+                    tgt_entity,
+                    tgt_reason,
+                    relation_name,
+                )
                 continue
 
             relationship = Relationship(

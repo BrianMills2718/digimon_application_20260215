@@ -7,6 +7,7 @@ from lazy_object_proxy.utils import await_
 from scipy.sparse import csr_matrix
 
 from Core.Common.Logger import logger
+from Core.Common.entity_name_hygiene import classify_entity_name
 from typing import List
 from Core.Common.Constants import GRAPH_FIELD_SEP
 from Core.Common.Memory import Memory
@@ -134,6 +135,16 @@ class BaseGraph(ABC):
     async def _merge_nodes_then_upsert(self, entity_name: str, nodes_data: List[Entity]):
         import asyncio
         from Core.Common.Logger import logger
+        valid_entity_name, invalid_reason = classify_entity_name(entity_name)
+        if not valid_entity_name:
+            logger.error(
+                "Rejecting invalid entity merge/upsert. entity_name=%r reason=%s",
+                entity_name,
+                invalid_reason,
+            )
+            raise ValueError(
+                f"Invalid entity name for graph upsert: {entity_name!r} (reason={invalid_reason})"
+            )
         existing_node = await self._graph.get_node(entity_name)
 
         existing_data = build_data_for_merge(existing_node) if existing_node else defaultdict(list)
@@ -831,4 +842,3 @@ class BaseGraph(ABC):
 
     async def _clear(self):
         self._graph.clear()
-
