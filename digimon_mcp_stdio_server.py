@@ -6287,7 +6287,7 @@ if BENCHMARK_MODE:
             {
                 "status": "submitted",
                 "answer": normalized_answer,
-                "expected_answer_kind": expected_kind or None,
+                "expected_answer_kind": _current_expected_answer_kind or None,
             }
         )
 
