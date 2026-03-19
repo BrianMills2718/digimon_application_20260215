@@ -5886,6 +5886,8 @@ if BENCHMARK_MODE:
                 task="digimon.semantic_plan",
                 trace_id=trace_id,
                 max_budget=0,
+                num_retries=3,
+                fallback_models=["deepseek/deepseek-chat", "gpt-5-nano"],
             )
 
             # Second-pass plan critic/reviser:
