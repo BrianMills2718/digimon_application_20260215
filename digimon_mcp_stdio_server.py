@@ -5878,16 +5878,18 @@ if BENCHMARK_MODE:
         model = llm.model if llm else _state["config"].llm.model
         trace_id = f"digimon.semantic_plan.{uuid.uuid4().hex[:8]}"
 
+        # Use deepseek for planning to avoid Gemini rate limits.
+        # Planning is cheap (~500 tokens) and deepseek handles structured output well.
+        plan_model = "deepseek/deepseek-chat"
         try:
             plan, _meta = await acall_llm_structured(
-                model,
+                plan_model,
                 messages,
                 response_model=SemanticPlan,
                 task="digimon.semantic_plan",
                 trace_id=trace_id,
                 max_budget=0,
-                num_retries=3,
-                fallback_models=["deepseek/deepseek-chat", "gpt-5-nano"],
+                num_retries=2,
             )
 
             # Second-pass plan critic/reviser:
