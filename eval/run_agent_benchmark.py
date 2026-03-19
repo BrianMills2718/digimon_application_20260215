@@ -3092,8 +3092,22 @@ async def main() -> None:
     try:
         if args.backend == "direct":
             # --- Direct path: no MCP servers, no session pool ---
+            consecutive_provider_failures = 0
+            MAX_CONSECUTIVE_PROVIDER_FAILURES = 3
             for q in pending:
                 await _process_question(q, None)
+                # Abort on consecutive provider failures (quota exhaustion, auth errors)
+                if results and (results[-1].get("primary_failure_class") or "") == "provider":
+                    consecutive_provider_failures += 1
+                    if consecutive_provider_failures >= MAX_CONSECUTIVE_PROVIDER_FAILURES:
+                        print(
+                            f"\nABORTING: {consecutive_provider_failures} consecutive provider failures. "
+                            f"Likely quota exhaustion or auth error. Use --resume to continue later.",
+                            file=sys.stderr,
+                        )
+                        break
+                else:
+                    consecutive_provider_failures = 0
         elif parallel <= 1:
             # --- Sequential path (original behavior) ---
             if use_session_pool:
