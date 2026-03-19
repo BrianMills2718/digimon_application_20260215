@@ -3507,6 +3507,11 @@ async def chunk_get_text(
             ordered_chunk_ids.append(cid)
 
         resolved_dataset_name = _resolve_dataset_name(dataset_name) if dataset_name else ""
+        # Auto-resolve from preloaded dataset if not provided
+        if not resolved_dataset_name:
+            preloaded = os.environ.get("DIGIMON_PRELOAD_DATASET", "")
+            if preloaded:
+                resolved_dataset_name = preloaded
         retrieved_chunks: list[dict[str, Any]] = []
         missing_chunk_ids: list[str] = []
 
