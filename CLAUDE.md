@@ -49,7 +49,7 @@ entity_vdb_search → relationship_onehop → chunk_occurrence → meta_generate
 
 The agent decides the chain at runtime. A comparison question might skip multi-hop traversal; a 4-hop question might iterate deeper.
 
-**MCP tools (~45 total)**:
+**MCP tools (50+ total)**:
 - 5 graph build (er, rk, tree, tree_balanced, passage) + 1 corpus (prepare)
 - 7 entity (vdb_build, vdb_search, onehop, ppr, agent, link, tfidf)
 - 5 relationship (onehop, score_agg, agent, vdb_build, vdb_search)
@@ -109,7 +109,8 @@ Both route through `llm_client.acall_llm` — smart retry, fallback chains, cost
 
 **Agent benchmark** (`eval/run_agent_benchmark.py`) — the agent freely composes operators.
 - Backends: Codex SDK, Claude Agent SDK, MCP agent loop, Direct Python tools (`--backend direct`)
-- Modes: `fixed` (prescribed workflow), `adaptive` (open-ended)
+- Modes: `baseline` (no graph), `fixed_graph` (deterministic graph chain), `hybrid` (adaptive)
+- Legacy aliases: `fixed`, `adaptive`, and `aot` currently map to `hybrid`
 - `BENCHMARK_MODE=1` hides build/config/discovery tools — agent uses retrieval operators only
 - CLI: `python eval/run_agent_benchmark.py --dataset HotpotQA --num 50 --model gemini/gemini-3-flash --backend direct`
 
@@ -118,6 +119,13 @@ Both route through `llm_client.acall_llm` — smart retry, fallback chains, cost
 **Best results** (50q subsets — not directly comparable to 1000q SOTA):
 - HotpotQA: 68.0% EM, 90.0% LLM_EM, 82.5% F1 (deepseek-chat, $0.30)
 - MuSiQue: 52.0% EM, 80.0% LLM_EM, 67.7% F1 (o4-mini, $3.41)
+
+**Latest controlled comparison** (MuSiQue 50q balanced dev sample, March 18, 2026):
+- Baseline: 34.0% EM, 60.0% LLM_EM
+- Fixed Graph: 32.0% EM, 54.0% LLM_EM
+- Hybrid: 32.0% EM, 44.0% LLM_EM
+
+This is development evidence only, but it does not currently support the adaptive-routing thesis.
 
 **Test datasets**: `Data/Social_Discourse_Test` (best for dev), `Data/Synthetic_Test`, `Data/MySampleTexts`.
 

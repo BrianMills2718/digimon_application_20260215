@@ -2,7 +2,7 @@
 
 ## What It Is
 
-DIGIMON is a knowledge-graph-based retrieval-augmented generation system with 27 typed operators that can be freely composed into retrieval pipelines. Unlike fixed-pipeline GraphRAG systems (HippoRAG, LightRAG, GraphRAG), DIGIMON adapts its retrieval strategy per question.
+DIGIMON is a knowledge-graph-based retrieval-augmented generation system with 28 typed operators that can be freely composed into retrieval pipelines. Unlike fixed-pipeline GraphRAG systems (HippoRAG, LightRAG, GraphRAG), DIGIMON adapts its retrieval strategy per question.
 
 ## Architecture
 
@@ -17,7 +17,7 @@ Documents ──► Graph Build ──► Knowledge Graph + VDBs ──► Agent
 
 **Graph construction.** Documents are chunked, then entity-relationship triples are extracted with descriptions and types. The graph is stored as NetworkX + GraphML with FAISS vector indexes for entity, relationship, and chunk embeddings. Optional post-build enrichment adds co-occurrence edges, PageRank centrality, and synonym links.
 
-## The 27 Operators
+## The 28 Operators
 
 Operators are typed functions with machine-readable I/O contracts. Any operator whose output type matches another's input type can be chained.
 
@@ -28,7 +28,7 @@ Operators are typed functions with machine-readable I/O contracts. Any operator 
 | **Chunk** (5) | from_relation, occurrence, aggregator, text_search, vdb_search | Map graph elements back to source text passages |
 | **Subgraph** (3) | khop_paths, steiner_tree, agent_path | Extract reasoning-relevant subgraph structures |
 | **Community** (2) | from_entity, from_level | Leverage detected community structure |
-| **Meta** (6) | extract_entities, generate_answer, pcst_optimize, decompose_question, synthesize_answers, rerank | LLM reasoning steps: entity extraction, question decomposition, answer synthesis |
+| **Meta** (7) | extract_entities, generate_answer, pcst_optimize, decompose_question, synthesize_answers, rerank, reason_step | LLM reasoning steps: entity extraction, question decomposition, answer synthesis |
 
 ## How It Works: Agent-Driven Operator Composition
 
@@ -57,11 +57,11 @@ The agent decides the chain at runtime. A comparison question might skip multi-h
 
 **Post-build graph enrichment.** Co-occurrence edges (entities sharing a chunk get implicit links), PageRank centrality (node importance scoring), and synonym edges (embedding-based near-duplicate linking). No LLM cost, minutes to run, measurably improves retrieval.
 
-**27 composable operators with typed contracts.** Research velocity: new retrieval strategies are tested in minutes by composing existing operators, not by building new systems.
+**28 composable operators with typed contracts.** Research velocity: new retrieval strategies are tested in minutes by composing existing operators, not by building new systems.
 
 ## Benchmark Results
 
-> **Caveat**: DIGIMON scores are on 50-question subsets. SOTA scores (Youtu-GraphRAG, HippoRAG2) are on full 1000-question benchmarks. These are not directly comparable — 50q results have wider confidence intervals and may not generalize. 1000-question runs are pending.
+> **Caveat**: DIGIMON scores below are on 50-question subsets. SOTA scores (Youtu-GraphRAG, HippoRAG2) are on full 1000-question benchmarks. These are not directly comparable — 50q results have wider confidence intervals and may not generalize. 1000-question runs are pending.
 
 | Dataset | Metric | DIGIMON (N) | Youtu-GraphRAG (N) | HippoRAG2 (N) |
 |---------|--------|-------------|---------------------|----------------|
@@ -73,6 +73,16 @@ The agent decides the chain at runtime. A comparison question might skip multi-h
 | HotpotQA | F1 | 82.5% (50q) | — | 75.5% (1000q) |
 
 MuSiQue LLM-judge score (80%) is statistically significant vs SOTA (53.6%) at p<0.001 even with conservative adjustments. Audit of all 14 LLM-judge upgrades: 12 are formatting/detail differences (gold contained in prediction), 1 is a valid alternate answer, 1 is borderline.
+
+**Current development status (March 18, 2026).** A later 50-question balanced MuSiQue comparison using `gemini-2.5-flash` for answering did **not** support the adaptive-routing thesis:
+
+| Mode | EM | LLM-judge | Run Cost | Notes |
+|------|----|-----------|----------|-------|
+| Baseline | 34.0% | 60.0% | $2.03 | non-graph chunk retrieval |
+| Fixed Graph | 32.0% | 54.0% | $1.85 | deterministic graph chain |
+| Hybrid | 32.0% | 44.0% | $5.50 | adaptive mode underperformed and cost more |
+
+Treat that run as development evidence, not decision-grade proof.
 
 ## Cost Profile
 
@@ -95,6 +105,6 @@ Per-query cost: **$0.068/query** at benchmark. Production with cheaper models (d
 - **Graph storage**: NetworkX + GraphML (persistent, 82MB for MuSiQue)
 - **Vector indexes**: FAISS with OpenAI text-embedding-3-small (1024d)
 - **LLM routing**: llm_client library (litellm backend, automatic retry + fallback chains, cost tracking)
-- **Interface**: MCP server (55 tools) or direct Python function calling
+- **Interface**: MCP server (50+ tools) or direct Python function calling
 - **Evaluation**: EM, F1, LLM-as-judge, per-hop-complexity breakdown
 - **Observability**: All LLM/embedding calls logged to SQLite with trace_id correlation

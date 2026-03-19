@@ -37,7 +37,7 @@
 
 - `config/config.yaml` (create)
 - `docs/plans/02_digimon_v2_greenfield_planning_phase.md` (create)
-- `docs/planning/digimon_v2/ARCHITECTURE.md` (create)
+- `docs/archive/planning/digimon_v2/ARCHITECTURE.md` (historical)
 - `acceptance_gates/digimon_v2_planning_phase.yaml` (create)
 - `scripts/validate_digimon_v2_planning_phase.py` (create)
 - `tests/unit/test_validate_digimon_v2_planning_phase.py` (create)

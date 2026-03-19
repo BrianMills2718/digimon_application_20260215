@@ -1,64 +1,65 @@
-# DIGIMON KG-RAG: What It Does
+# DIGIMON: Supported Functionality
 
-## One-liner
+## One-Liner
 
-Point Claude Code at a folder of documents, and it builds a knowledge graph, indexes it, and answers questions grounded in your source material.
+DIGIMON builds document knowledge graphs and exposes graph-retrieval tools so an external agent can answer multi-hop questions with grounded evidence.
 
-## How It Works
+## What Is Supported Today
 
-You give Claude Code a goal and a folder of documents (.txt, .md, .json, .jsonl, .csv, .pdf). Claude Code calls DIGIMON's tools in the right order to:
+### 1. Graph Build
 
-1. **Ingest** your documents into a structured corpus
-2. **Build a knowledge graph** — extracting entities (people, orgs, places, concepts) and the relationships between them
-3. **Index** those entities for fast semantic search
-4. **Search and retrieve** relevant entities and source text based on your questions
-5. **Synthesize** answers grounded in the actual documents
+- Build ER, RK, Tree, Tree-Balanced, and Passage graphs from a DIGIMON dataset.
+- Use a cheaper build-time model for extraction and embeddings.
+- Persist graph artifacts and indexes under `results/`.
 
-You don't manage any of this. You state what you want to know, Claude Code figures out the steps.
+### 2. Agent-Driven Retrieval
 
-## What's in the Toolbox
+- Expose 28 typed operators through the MCP server and the direct benchmark harness.
+- Let an external agent choose retrieval chains at query time.
+- Support non-graph, fixed-graph, and adaptive benchmark modes in `eval/run_agent_benchmark.py`.
 
-### Corpus Preparation
-- **corpus_prepare**: Turns a directory of documents into a structured corpus. Supports .txt, .md, .json, .jsonl, .csv, .pdf. Auto-detects text/title fields in structured formats.
+### 3. Grounded QA
 
-### Graph Construction (5 types)
-All graph_build tools accept an optional `input_directory` parameter — if no corpus exists yet, they auto-prepare it first. One-call workflow: `graph_build_er(dataset_name="my_kg", input_directory="/path/to/data/")`.
+- Retrieve entities, relationships, chunks, and subgraphs.
+- Synthesize answers from retrieved evidence.
+- Score runs with EM, F1, and LLM-as-judge.
 
-- **graph_build_er**: Entity-Relationship graph. Best general-purpose option — extracts named entities and how they relate.
-- **graph_build_rk**: Relationship-Keyword graph. Like ER but enriches edges with keywords for better retrieval.
-- **graph_build_tree**: Hierarchical summary tree (RAPTOR-style). Clusters and summarizes chunks at multiple levels.
-- **graph_build_tree_balanced**: Balanced tree using K-Means. More uniform cluster sizes than basic tree.
-- **graph_build_passage**: Passage graph. Nodes are text passages, linked when they share entities.
+## Supported Interfaces
 
-### Search and Retrieval
-- **entity_vdb_build**: Build a vector index over graph entities (required before search)
-- **entity_vdb_search**: Find entities relevant to a natural language query
-- **entity_onehop**: Get direct neighbors of an entity in the graph
-- **entity_ppr**: Personalized PageRank — find structurally important entities related to seed entities
-- **relationship_onehop**: Get the relationships (edges) connected to given entities
-- **chunk_get_text**: Retrieve the original source text associated with entities
+- `digimon_mcp_stdio_server.py`
+  Primary tool surface for Claude Code, Codex, and other MCP-capable agents.
+- `eval/run_agent_benchmark.py --backend direct`
+  In-process benchmark path with no MCP subprocess overhead.
 
-### Analysis
-- **graph_analyze**: Node count, edge count, centrality, clustering metrics
-- **graph_visualize**: Export graph structure as JSON or GML
-- **list_available_resources**: Show what graphs and indexes exist in the current session
+## Typical Workflow
 
-## Typical Session
+1. Prepare a dataset under `Data/<dataset_name>/`.
+2. Build an ER graph and any needed indexes.
+3. Query via `baseline`, `fixed_graph`, or `hybrid` benchmark mode.
+4. Inspect scored results and tool traces.
 
-```
-You: "I have 50 news articles about defense contracting in ~/data/defense/.
-      Who are the key players and how are they connected?"
+Representative tool flow:
 
-Claude Code:
-  1. graph_build_er("defense_contracts", input_directory="~/data/defense/")
-     → auto-prepares corpus, then builds graph: 500 entities, 380 edges
-  3. entity_vdb_build("defense_contracts_ERGraph") → 500 entities indexed
-  4. entity_vdb_search("key defense contractors")  → Lockheed Martin, Raytheon, ...
-  5. relationship_onehop(["lockheed martin"])       → contracts with, lobbies, partners...
-  6. chunk_get_text(["lockheed martin", ...])       → original article passages
-  7. Synthesizes answer from all retrieved context
+```text
+graph_build_er
+  -> entity_vdb_build
+  -> entity_string_search / entity_neighborhood / chunk_text_search
+  -> submit_answer
 ```
 
-You see the final answer. The intermediate steps happen automatically.
+The exact chain depends on mode and question.
 
+## What Is Not a Supported Surface
 
+- No maintained REST API.
+- No maintained Streamlit frontend.
+- No maintained social-media UI workflow.
+- No claim that DIGIMON is already a polished end-user document-chat product.
+
+Those older materials are historical only and belong in `docs/archive/`.
+
+## Current Value Proposition
+
+The repo is strongest as a research system for testing whether adaptive operator routing over graph retrieval beats simpler baselines on heterogeneous multi-hop QA.
+
+That thesis is still being validated. See `docs/COMPETITIVE_ANALYSIS.md` and `docs/plans/03_prove_adaptive_routing.md`.

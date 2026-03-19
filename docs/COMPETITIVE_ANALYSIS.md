@@ -1,6 +1,6 @@
 # Competitive Analysis: DIGIMON vs Multi-Hop QA SOTA
 
-**Last Updated**: 2026-02-16
+**Last Updated**: 2026-03-18
 
 ## Important: Sample Size Caveat
 
@@ -25,7 +25,7 @@ DIGIMON results are on 50-question subsets. Literature baselines are on 1000-que
 
 DIGIMON has not yet been evaluated on 2WikiMultiHopQA. Our baselines are on HotpotQA and MuSiQue (see below).
 
-### DIGIMON Results: HotpotQA (50q subset)
+### DIGIMON Results: HotpotQA (available internal runs)
 
 | Configuration | EM | F1 | LLM-judge | Source |
 |--------------|----|----|-----------|--------|
@@ -37,6 +37,16 @@ DIGIMON has not yet been evaluated on 2WikiMultiHopQA. Our baselines are on Hotp
 | Configuration | EM | F1 | LLM-judge | Source |
 |--------------|----|----|-----------|--------|
 | o4-mini direct mode | 52.0 | 67.7 | 80.0 | Our eval (50q) |
+
+### Latest Internal Comparison: MuSiQue Dev Sample (50q balanced, seed=42)
+
+This is the current best apples-to-apples comparison for the adaptive-routing thesis on the active benchmark harness. It is **development evidence only**, not locked-eval evidence.
+
+| Configuration | EM | LLM-judge | Run Cost | Tools/q | Interpretation |
+|--------------|----|-----------|----------|---------|----------------|
+| baseline (no graph) | 34.0 | 60.0 | $2.03 | 10.8 | current winner |
+| fixed_graph | 32.0 | 54.0 | $1.85 | 8.7 | graph did not beat baseline |
+| hybrid (adaptive) | 32.0 | 44.0 | $5.50 | 11.7 | worst quality, highest cost |
 
 Notes:
 - HippoRAG achieves SOTA with GPT-3.5-turbo, meaning architecture matters more than LLM.
@@ -94,9 +104,9 @@ Post-build entity dedup via onto-canon's `match_entities_to_concepts()` merges d
 
 Expected impact: +2-3% EM from better graph quality alone.
 
-### 4. 27 Typed Operators with Machine-Readable Contracts
+### 4. 28 Typed Operators with Machine-Readable Contracts
 
-Others package retrieval as monoliths. We expose operators with typed I/O slots, compatibility metadata, and 95 valid 3-step chains. An agent can inspect intermediate results and pivot — if VDB search returns low-confidence matches, fall back to TFIDF or PPR dynamically.
+Others package retrieval as monoliths. We expose operators with typed I/O slots, compatibility metadata, and valid typed chains. An agent can inspect intermediate results and pivot — if VDB search returns low-confidence matches, fall back to TFIDF or PPR dynamically.
 
 This is infrastructure for research velocity, not directly a benchmark advantage. But it means we can test new retrieval strategies in minutes instead of days.
 
@@ -106,7 +116,7 @@ ER + RK + Tree + Passage graphs simultaneously. Could query across representatio
 
 ## What We're Weak At
 
-1. **Tuning**: Our pipelines exist but haven't been optimized. HippoRAG spent months tuning PPR damping factor, top-k, NER strategy. We've run exactly one benchmark.
+1. **Tuning**: Our pipelines exist but have not yet beaten the non-graph baseline in the latest controlled dev comparison. HippoRAG spent months tuning PPR damping factor, top-k, and NER strategy.
 2. **Passage-level retrieval**: HopRAG's logical passage graph is a different approach we haven't explored.
 3. **Agent overhead**: Agent-driven operator composition adds latency and cost. For 1000 questions, this matters.
 4. **HippoRAG's entity linking is more sophisticated**: They use NER + entity linking with schema-aware matching. Our `entity.link` does embedding similarity, which can miss exact-match entities.

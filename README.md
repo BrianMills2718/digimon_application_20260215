@@ -38,6 +38,16 @@ embedding:
   model: "text-embedding-3-small"
 ```
 
+### Canonical Docs
+
+- `FUNCTIONALITY.md` — supported user workflow and non-goals
+- `docs/ACTIVE_DOCS.md` — current doc index and archive policy
+- `docs/SYSTEM_OVERVIEW.md` — architecture and benchmark caveats
+- `docs/COMPETITIVE_ANALYSIS.md` — evidence, baselines, and open thesis
+- `docs/plans/03_prove_adaptive_routing.md` — active investment-decision plan
+
+Historical API/UI/integration docs have been moved under `docs/archive/` and are not supported surfaces.
+
 ## Architecture
 
 **28 operators** across 6 categories, all with typed I/O contracts:
@@ -58,7 +68,7 @@ embedding:
 
 ### Interface
 
-- **MCP server**: `digimon_mcp_stdio_server.py` (~45 tools)
+- **MCP server**: `digimon_mcp_stdio_server.py` (50+ tools)
 - **Direct Python**: `eval/run_agent_benchmark.py --backend direct` (in-process, no MCP overhead)
 
 ### Two-Model Design
