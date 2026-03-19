@@ -6272,12 +6272,10 @@ if BENCHMARK_MODE:
                 "Abstaining answers are not allowed. Submit a factual guess (name/date/number).",
             )
 
-        expected_kind = _current_expected_answer_kind or _infer_answer_kind(_current_question)
-        if expected_kind and not _answer_matches_kind(normalized_answer, expected_kind):
-            raise ValueError(
-                f"Answer does not match expected type '{expected_kind}'. "
-                "Submit a factual span with the correct answer type."
-            )
+        # Answer-kind validation removed — semantic_plan's answer_kind prediction
+        # is frequently wrong (e.g. "date" for count questions), and every false
+        # rejection causes 70+ retry loops that burn budget. The LLM judge handles
+        # format-agnostic scoring. Only empty/refusal checks above are kept.
 
         if not normalized_reasoning:
             raise ValueError(
