@@ -26,6 +26,10 @@ Track all implementation work here.
 3. Add to this index
 4. Commit with `[Plan #N]` prefix
 
+## Supporting Templates
+
+- `BATCH_ITERATION_TEMPLATE.md` - for 10-20 question development batches during iterative tuning
+
 ## Trivial Changes
 
 Not everything needs a plan. Use `[Trivial]` for:
