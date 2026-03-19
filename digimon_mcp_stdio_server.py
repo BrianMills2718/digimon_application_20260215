@@ -55,6 +55,7 @@ except ImportError:
     pass
 
 from mcp.server.fastmcp import FastMCP
+from Core.Common.entity_name_hygiene import classify_entity_name, score_entity_candidate
 
 logger = logging.getLogger(__name__)
 
@@ -2187,8 +2188,7 @@ async def entity_string_search(
         matches: list of {entity_name, entity_type, description, match_type}
     """
     await _ensure_initialized()
-    query_lower = query.strip().lower()
-    if not query_lower:
+    if not query.strip():
         return json.dumps({"error": "query is required"})
 
     resolved_graph_id = _resolve_graph_reference_id(
@@ -2207,32 +2207,72 @@ async def entity_string_search(
     if G is None:
         return json.dumps({"error": "Could not access NetworkX graph"})
 
-    # Score all nodes: exact > prefix > substring > word overlap
-    scored = []
-    for node_id in G.nodes():
-        name_lower = str(node_id).lower()
-        if name_lower == query_lower:
-            scored.append((node_id, 100, "exact"))
-        elif name_lower.startswith(query_lower) or query_lower.startswith(name_lower):
-            scored.append((node_id, 80, "prefix"))
-        elif query_lower in name_lower or name_lower in query_lower:
-            scored.append((node_id, 60, "substring"))
-        else:
-            # Word overlap
-            q_words = set(query_lower.split())
-            n_words = set(name_lower.split())
-            overlap = q_words & n_words
-            if overlap:
-                scored.append((node_id, 40 + len(overlap) * 5, "word_overlap"))
+    def _entity_aliases(attrs: Dict[str, Any]) -> tuple[str, ...]:
+        """Extract de-duplicated aliases from graph node attributes."""
 
-    scored.sort(key=lambda x: -x[1])
+        aliases: list[str] = []
+        seen: set[str] = set()
+        for key in ("aliases", "alias", "aka", "surface_forms", "names"):
+            raw_value = attrs.get(key)
+            if isinstance(raw_value, str):
+                values = [raw_value]
+            elif isinstance(raw_value, (list, tuple, set)):
+                values = [str(v) for v in raw_value if v is not None]
+            else:
+                values = []
+            for value in values:
+                alias = re.sub(r"\s+", " ", value.strip())
+                if not alias:
+                    continue
+                alias_key = alias.casefold()
+                if alias_key in seen:
+                    continue
+                seen.add(alias_key)
+                aliases.append(alias)
+        return tuple(aliases)
+
+    def _entity_type(attrs: Dict[str, Any]) -> str:
+        """Return the most informative available entity type for a node."""
+
+        return (
+            str(attrs.get("entity_type") or "").strip()
+            or str(attrs.get("type") or "").strip()
+            or str(attrs.get("category") or "").strip()
+            or str(attrs.get("label") or "").strip()
+        )
+
+    def _entity_description(attrs: Dict[str, Any]) -> str:
+        """Return a compact description preview for one search result."""
+
+        for key in ("description", "summary", "text", "content"):
+            value = str(attrs.get(key) or "").strip()
+            if value:
+                return value[:200]
+        return ""
+
+    scored: list[tuple[float, str, str, Dict[str, Any]]] = []
+    for raw_node_id in G.nodes():
+        node_id = str(raw_node_id)
+        valid, _ = classify_entity_name(node_id)
+        if not valid:
+            continue
+
+        attrs = dict(G.nodes[raw_node_id])
+        aliases = _entity_aliases(attrs)
+        match = score_entity_candidate(query_text=query, candidate_name=node_id, aliases=aliases)
+        if match.score <= 0:
+            continue
+        scored.append((match.score, node_id, match.match_type, attrs))
+
+    scored.sort(key=lambda item: (-item[0], len(item[1]), item[1]))
     results = []
-    for node_id, score, match_type in scored[:top_k]:
-        attrs = G.nodes[node_id]
+    for score, node_id, match_type, attrs in scored[:top_k]:
         results.append({
             "entity_name": node_id,
-            "entity_type": attrs.get("entity_type", ""),
-            "description": (attrs.get("description", "") or "")[:200],
+            "canonical_name": str(attrs.get("entity_name") or attrs.get("name") or attrs.get("title") or node_id).strip()
+            or node_id,
+            "entity_type": _entity_type(attrs),
+            "description": _entity_description(attrs),
             "match_type": match_type,
             "match_score": score,
         })
@@ -6304,6 +6344,29 @@ if BENCHMARK_MODE:
         if not normalized_reasoning:
             raise ValueError(
                 "Reasoning cannot be empty. Provide a concise evidence-grounded justification.",
+            )
+
+        # Warn if there are unfinished TODOs — agent may be submitting prematurely
+        incomplete_todos = [
+            t for t in _todos
+            if t.get("status") in ("pending", "in_progress", "blocked")
+        ]
+        if incomplete_todos:
+            todo_warning = (
+                f"WARNING: {len(incomplete_todos)} TODO(s) still incomplete: "
+                + ", ".join(t.get("content", t.get("id", "?"))[:40] for t in incomplete_todos[:3])
+                + ". Are you sure this is the FINAL answer to the original question, "
+                "not just an intermediate entity? If your answer is an intermediate "
+                "result, continue working on the remaining TODOs instead."
+            )
+            _reset_chunk_dedup()
+            return json.dumps(
+                {
+                    "status": "submitted_with_warning",
+                    "answer": normalized_answer,
+                    "expected_answer_kind": _current_expected_answer_kind or None,
+                    "warning": todo_warning,
+                }
             )
 
         _reset_chunk_dedup()  # reset seen chunks for next question
