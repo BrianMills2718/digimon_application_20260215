@@ -1087,7 +1087,7 @@ def _normalize_primary_model_for_benchmark(model: str) -> str:
     lower = raw.lower()
     if lower.startswith(("codex", "claude-code", "openai-agents")):
         return raw
-    if lower.startswith(("openrouter/", "gemini/", "deepseek/")):
+    if lower.startswith(("openrouter/", "gemini/")):
         return raw
     if _is_image_generation_model(raw):
         return raw
