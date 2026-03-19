@@ -1,6 +1,8 @@
-"""Dataset loading and preparation for benchmarks.
+"""Dataset loading and selection helpers for benchmarks.
 
-Loads question files and ensures the corresponding corpus/graph are ready.
+This module owns benchmark-facing dataset I/O: loading DIGIMON question files,
+resolving dataset paths, and reading checked-in question-ID manifests used for
+repeatable dev and locked-eval runs.
 """
 
 from __future__ import annotations
@@ -43,6 +45,33 @@ def load_questions(
 
     logger.info(f"Loaded {len(questions)} questions from {question_file}")
     return questions
+
+
+def load_question_ids_file(ids_path: str) -> List[str]:
+    """Load newline-separated question IDs from a manifest file.
+
+    Blank lines and comment lines beginning with ``#`` are ignored. Duplicate
+    IDs fail loudly because a checked-in benchmark manifest should be explicit
+    and deterministic.
+    """
+    path = Path(ids_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Question ID file not found: {path}")
+
+    ids: List[str] = []
+    seen: set[str] = set()
+    with open(path, "r") as f:
+        for lineno, raw_line in enumerate(f, start=1):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line in seen:
+                raise ValueError(f"Duplicate question ID '{line}' in {path} at line {lineno}")
+            ids.append(line)
+            seen.add(line)
+
+    logger.info(f"Loaded {len(ids)} question IDs from {path}")
+    return ids
 
 
 def get_dataset_path(dataset_name: str, data_root: str = "./Data") -> str:

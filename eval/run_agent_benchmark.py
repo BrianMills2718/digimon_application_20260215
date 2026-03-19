@@ -18,6 +18,7 @@ Usage:
     python eval/run_agent_benchmark.py --dataset HotpotQA --num 50 --model codex --resume
     python eval/run_agent_benchmark.py --dataset HotpotQA --num 50 --parallel 5
     python eval/run_agent_benchmark.py --dataset HotpotQA --num 50 --model gemini/gemini-3-flash --backend direct
+    python eval/run_agent_benchmark.py --dataset MuSiQue --questions-file results/locked_eval/locked_eval_ids.txt --mode baseline
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ import contextlib
 import json
 import logging
 import os
+import random
 import re
 import sys
 import time
@@ -41,7 +43,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 os.chdir(str(Path(__file__).parent.parent))
 
 from eval.benchmark import exact_match, llm_judge, token_f1
-from eval.data_prep import load_questions
+from eval.data_prep import load_question_ids_file, load_questions
 from llm_client import MCPAgentResult
 from llm_client import (
     activate_feature_profile as llm_activate_feature_profile,
@@ -759,6 +761,14 @@ def _load_failing_ids_from_results_file(
     if not isinstance(records, list):
         return set()
     return _collect_failing_ids(records, metric=metric, threshold=threshold)
+
+
+def _write_selected_question_ids(ids_path: Path, question_ids: list[str]) -> None:
+    """Persist the final selected question IDs for reproducible reruns."""
+    ids_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(ids_path, "w") as f:
+        for qid in question_ids:
+            f.write(f"{qid}\n")
 
 
 # --- MCP server config ---
@@ -2060,6 +2070,8 @@ async def main() -> None:
                         help="Prompt mode. 'hybrid' is canonical. 'baseline' uses no graph tools. 'fixed_graph' uses deterministic graph pipeline.")
     parser.add_argument("--questions", type=str, default=None,
                         help="Comma-separated question IDs to run (e.g. 'q1,q4,q7')")
+    parser.add_argument("--questions-file", type=str, default=None,
+                        help="Path to newline-separated question IDs to run.")
     parser.add_argument("--only-failures-from", type=str, default=None,
                         help="Path to a prior benchmark JSON; run only IDs that failed.")
     parser.add_argument("--failure-metric", type=str, default="llm_em",
@@ -2070,6 +2082,10 @@ async def main() -> None:
                              "Defaults: llm_em/em=0.5, f1=0.999999.")
     parser.add_argument("--write-failing-ids", type=str, default=None,
                         help="Write failing IDs from this run to a file (one ID per line).")
+    parser.add_argument("--write-selected-ids", type=str, default=None,
+                        help="Write the final selected question IDs to a file (one ID per line).")
+    parser.add_argument("--sample-seed", type=int, default=None,
+                        help="Deterministically sample questions instead of taking the first N after --start.")
     parser.add_argument("--parallel", type=int, default=1,
                         help="Number of concurrent questions (each gets its own MCP server). Default: 1 (sequential)")
     parser.add_argument("--backend", default="mcp", choices=["mcp", "direct"],
@@ -2334,6 +2350,12 @@ async def main() -> None:
         selected_ids = requested_ids if selected_ids is None else (selected_ids & requested_ids)
         print(f"Question ID filter active: {len(selected_ids)} IDs")
 
+    if args.questions_file:
+        file_ids = load_question_ids_file(args.questions_file)
+        file_id_set = set(file_ids)
+        selected_ids = file_id_set if selected_ids is None else (selected_ids & file_id_set)
+        print(f"Question file filter active: {len(selected_ids)} IDs from {args.questions_file}")
+
     if selected_ids is not None:
         known_ids = {q.get("id") for q in all_questions if q.get("id")}
         missing_ids = sorted([qid for qid in selected_ids if qid not in known_ids])
@@ -2344,14 +2366,33 @@ async def main() -> None:
         questions = [q for q in all_questions if q.get("id") in selected_ids]
         print(f"Loaded {len(questions)} selected questions from {args.dataset}")
     else:
-        questions = all_questions[args.start:]
-        if args.num is not None:
-            questions = questions[:args.num]
-        print(f"Loaded {len(questions)} questions from {args.dataset} (start={args.start}, num={args.num})")
+        candidate_questions = all_questions[args.start:]
+        if args.sample_seed is not None:
+            rng = random.Random(args.sample_seed)
+            if args.num is not None:
+                sample_size = min(args.num, len(candidate_questions))
+                questions = rng.sample(candidate_questions, sample_size)
+            else:
+                questions = candidate_questions[:]
+                rng.shuffle(questions)
+            print(
+                f"Loaded {len(questions)} sampled questions from {args.dataset} "
+                f"(start={args.start}, num={args.num}, sample_seed={args.sample_seed})"
+            )
+        else:
+            questions = candidate_questions
+            if args.num is not None:
+                questions = questions[:args.num]
+            print(f"Loaded {len(questions)} questions from {args.dataset} (start={args.start}, num={args.num})")
 
     if not questions:
         print("No questions selected; exiting.")
         return
+
+    if args.write_selected_ids:
+        selected_question_ids = [str(q.get("id")) for q in questions if q.get("id")]
+        _write_selected_question_ids(Path(args.write_selected_ids), selected_question_ids)
+        print(f"Wrote {len(selected_question_ids)} selected question IDs to {args.write_selected_ids}")
 
     post_gate_policy_effective, post_gate_policy_source = _resolve_post_gate_policy(
         args.dataset,

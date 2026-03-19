@@ -1,32 +1,34 @@
-# Batch Iteration Template
+# Batch 01: MuSiQue Dev Iteration
 
-Use this template for 10-20 question development batches while tuning DIGIMON.
+Use this record for the first 10-20 question MuSiQue development batch.
+
+Reference template: `docs/plans/BATCH_ITERATION_TEMPLATE.md`
 
 Important:
-- A batch run is a development artifact, not a final benchmark claim.
+- This batch is for development and failure analysis, not the final benchmark claim.
 - Save exact question IDs before running.
-- Do not change prompts, tools, or scoring rules mid-batch.
-- If you rerun after changes, create a new batch record such as `batch_03_rerun_a`.
+- Freeze prompts, tool surface, and scoring rules for the duration of the batch.
+- If you rerun after changes, create a follow-up record such as `batch_01_musique_dev_rerun_a.md`.
 
 ---
 
 ## Batch Metadata
 
-- **Batch ID:** `batch_XX`
-- **Date:**
-- **Owner:**
-- **Dataset:** `MuSiQue | HotpotQA | 2WikiMultiHopQA`
+- **Batch ID:** `batch_01`
+- **Date:** `2026-03-18`
+- **Owner:** `Brian`
+- **Dataset:** `MuSiQue`
 - **Question Count:** `10-20`
-- **Question IDs File:** `results/iterative/batch_XX/batch_ids.txt`
-- **Seen Before:** `yes | no | mixed`
+- **Question IDs File:** `results/iterative/batch_01/batch_ids.txt`
+- **Seen Before:** `no | mixed | yes`
 - **Purpose:** `bug fix | routing tune | baseline check | regression check`
 
 ## Split Record
 
-- **Sampling Method:** `manual | random | balanced`
-- **Seed:** 
+- **Sampling Method:** `balanced`
+- **Seed:**
 - **Hop Mix:** `2-hop: _ | 3-hop: _ | 4-hop: _`
-- **Notes:**
+- **Question Selection Notes:**
 
 ## Frozen Run Configuration
 
@@ -52,21 +54,21 @@ Important:
 # baseline
 python eval/run_agent_benchmark.py \
   --dataset MuSiQue \
-  --questions-file results/iterative/batch_XX/batch_ids.txt \
+  --questions-file results/iterative/batch_01/batch_ids.txt \
   --mode baseline \
   ...
 
 # fixed_graph
 python eval/run_agent_benchmark.py \
   --dataset MuSiQue \
-  --questions-file results/iterative/batch_XX/batch_ids.txt \
+  --questions-file results/iterative/batch_01/batch_ids.txt \
   --mode fixed_graph \
   ...
 
 # adaptive
 python eval/run_agent_benchmark.py \
   --dataset MuSiQue \
-  --questions-file results/iterative/batch_XX/batch_ids.txt \
+  --questions-file results/iterative/batch_01/batch_ids.txt \
   --mode hybrid \
   ...
 ```
@@ -152,20 +154,13 @@ Limit changes to 1-3 items.
 
 ## Required Artifacts
 
-- [ ] `results/iterative/batch_XX/batch_ids.txt`
-- [ ] `results/iterative/batch_XX/results.json`
-- [ ] `results/iterative/batch_XX/summary.md`
-- [ ] `results/iterative/batch_XX/changes.md`
+- [ ] `results/iterative/batch_01/batch_ids.txt`
+- [ ] `results/iterative/batch_01/results.json`
+- [ ] `results/iterative/batch_01/summary.md`
+- [ ] `results/iterative/batch_01/changes.md`
 
-## Directory Convention
+## Notes
 
-```text
-results/iterative/
-  batch_01/
-  batch_02/
-  batch_03_rerun_a/
-```
-
-## Final Reminder
-
-Do not use tuned-on batch scores as the final go/no-go evidence. Once gains flatten, freeze the system and run a separate locked evaluation split.
+- Do not use this batch score as the final go/no-go evidence.
+- If this batch is rerun after changes, preserve the original record and create a new rerun record.
+- Once gains flatten across batches, freeze the system and move to a separate locked evaluation split.

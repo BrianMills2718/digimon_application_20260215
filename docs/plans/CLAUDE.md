@@ -1,6 +1,8 @@
 # Implementation Plans
 
-Track all implementation work here.
+Track current implementation work here.
+
+Historical planning artifacts outside `docs/plans/` are not authoritative unless explicitly linked from this index.
 
 ## Gap Summary
 
@@ -29,6 +31,12 @@ Track all implementation work here.
 ## Supporting Templates
 
 - `BATCH_ITERATION_TEMPLATE.md` - for 10-20 question development batches during iterative tuning
+- `LOCKED_EVAL_PROTOCOL.md` - for decision-grade benchmark runs on untouched question IDs
+
+## Batch Records
+
+- `batch_01_musique_dev.md` - first MuSiQue development batch record
+- `batch_01_musique_dev_rerun_a.md` - first rerun record for batch 01
 
 ## Trivial Changes
 
