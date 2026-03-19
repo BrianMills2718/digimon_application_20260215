@@ -168,6 +168,8 @@ CANONICAL_MODE = "hybrid"
 PROMPT_TEMPLATES = {
     "hybrid": Path(__file__).parent.parent / "prompts" / "agent_benchmark_hybrid.yaml",
     "codex_compact": Path(__file__).parent.parent / "prompts" / "agent_benchmark_codex_compact.yaml",
+    "baseline": Path(__file__).parent.parent / "prompts" / "agent_benchmark_baseline.yaml",
+    "fixed_graph": Path(__file__).parent.parent / "prompts" / "agent_benchmark_fixed_graph.yaml",
 }
 LEGACY_MODE_ALIASES = {
     "fixed": CANONICAL_MODE,
@@ -977,6 +979,22 @@ async def _init_direct_tools(dataset_name: str, disable_embedding_tools: bool = 
             f"Direct backend: embedding tools disabled ({', '.join(sorted(disabled))})",
             file=sys.stderr,
         )
+
+    # Mode-based tool filtering
+    mode_env = os.environ.get("DIGIMON_BENCHMARK_MODE_NAME", "")
+    if mode_env == "baseline":
+        # Non-graph baseline: only chunk search + submit
+        baseline_tools = {"chunk_text_search", "chunk_vdb_search", "submit_answer",
+                          "list_available_resources"}
+        _BENCHMARK_TOOLS = [t for t in _BENCHMARK_TOOLS if t.__name__ in baseline_tools]
+        print(f"Baseline mode: {len(_BENCHMARK_TOOLS)} tools (no graph)", file=sys.stderr)
+    elif mode_env == "fixed_graph":
+        # Fixed graph pipeline: entity search + neighborhood + chunk + submit
+        fixed_tools = {"entity_string_search", "entity_neighborhood", "entity_profile",
+                       "chunk_text_search", "chunk_get_text_by_chunk_ids",
+                       "list_available_resources", "submit_answer"}
+        _BENCHMARK_TOOLS = [t for t in _BENCHMARK_TOOLS if t.__name__ in fixed_tools]
+        print(f"Fixed graph mode: {len(_BENCHMARK_TOOLS)} tools", file=sys.stderr)
 
     tool_names = [t.__name__ for t in _BENCHMARK_TOOLS]
     short_descs = getattr(dms, "_BENCHMARK_SHORT_DESCS", {})
@@ -2038,8 +2056,8 @@ async def main() -> None:
                         help="Tool-call budget per question (non-agent models only).")
     parser.add_argument("--max-turns", type=int, default=80, help=argparse.SUPPRESS)
     parser.add_argument("--data-root", default="./Data", help="Data root directory")
-    parser.add_argument("--mode", default=CANONICAL_MODE, choices=["fixed", "adaptive", "aot", "hybrid"],
-                        help="Prompt mode. Canonical is 'hybrid'; fixed/adaptive/aot are legacy aliases.")
+    parser.add_argument("--mode", default=CANONICAL_MODE, choices=["fixed", "adaptive", "aot", "hybrid", "baseline", "fixed_graph"],
+                        help="Prompt mode. 'hybrid' is canonical. 'baseline' uses no graph tools. 'fixed_graph' uses deterministic graph pipeline.")
     parser.add_argument("--questions", type=str, default=None,
                         help="Comma-separated question IDs to run (e.g. 'q1,q4,q7')")
     parser.add_argument("--only-failures-from", type=str, default=None,
@@ -2342,6 +2360,8 @@ async def main() -> None:
 
     # Initialize direct backend only after question selection resolves.
     if args.backend == "direct":
+        # Pass mode name to tool init for mode-based filtering
+        os.environ["DIGIMON_BENCHMARK_MODE_NAME"] = args.mode
         if effective_embed_model:
             os.environ["DIGIMON_EMBED_MODEL"] = effective_embed_model
         if isinstance(args.embed_dimensions, int) and args.embed_dimensions > 0:
