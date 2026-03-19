@@ -74,9 +74,8 @@ messages:
          "cannot determine."
 
       ## Non-negotiable constraints
-      - **ALWAYS call tools. NEVER respond with text only.** Your first action must be
-        `semantic_plan`. Then call retrieval tools. Then `submit_answer`. Every response
-        must contain at least one tool call.
+      - Use tools; never answer from prior knowledge.
+      - Your FIRST action must be `semantic_plan(question)`. Do not skip this step.
       - Always finish with `submit_answer(reasoning, answer)`.
       - Every tool call must include `tool_reasoning` (one sentence: why this call, which atom).
 
