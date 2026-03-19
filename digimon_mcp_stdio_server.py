@@ -3864,7 +3864,7 @@ async def extract_date_mentions(
 
 @mcp.tool()
 async def chunk_text_search(query_text: str, dataset_name: str,
-                             top_k: int = 10,
+                             top_k: int = 5,
                              entity_names: list[str] | str | None = None,
                              max_candidates_per_chunk: int = 4,
                              max_text_chars: int = 1200) -> str:
@@ -3963,6 +3963,11 @@ async def chunk_text_search(query_text: str, dataset_name: str,
             for chunk_id, items in (enriched.get("entity_candidates_by_chunk") or {}).items()
             if isinstance(items, list)
         }
+        # Compact entity candidates: only name, type, score (agent can call entity_profile for details)
+        compact_candidates = [
+            {"entity_id": c.get("entity_id", ""), "type": c.get("coarse_type", ""), "score": c.get("candidate_score", 0)}
+            for c in enriched.get("entity_candidates", [])
+        ]
         return json.dumps({
             "resolved_dataset_name": resolved_dataset_name,
             "chunks": [entry for entry in deduped],
@@ -3972,9 +3977,7 @@ async def chunk_text_search(query_text: str, dataset_name: str,
                 if isinstance(entry, dict) and str(entry.get("evidence_ref") or "").strip()
             ],
             "resolved_graph_reference_id": enriched.get("resolved_graph_reference_id"),
-            "entity_candidates": enriched.get("entity_candidates", []),
-            "entity_candidates_by_chunk": compact_candidates_by_chunk,
-            "candidate_summary": enriched.get("candidate_summary", {}),
+            "entity_candidates": compact_candidates,
         }, indent=2, default=str)
     return json.dumps(
         {
@@ -4097,6 +4100,10 @@ async def chunk_vdb_search(query_text: str, dataset_name: str,
             for chunk_id, items in (enriched.get("entity_candidates_by_chunk") or {}).items()
             if isinstance(items, list)
         }
+        compact_candidates = [
+            {"entity_id": c.get("entity_id", ""), "type": c.get("coarse_type", ""), "score": c.get("candidate_score", 0)}
+            for c in enriched.get("entity_candidates", [])
+        ]
         return json.dumps(
             {
                 "resolved_dataset_name": resolved_dataset_name,
@@ -4107,9 +4114,7 @@ async def chunk_vdb_search(query_text: str, dataset_name: str,
                     if isinstance(entry, dict) and str(entry.get("evidence_ref") or "").strip()
                 ],
                 "resolved_graph_reference_id": enriched.get("resolved_graph_reference_id"),
-                "entity_candidates": enriched.get("entity_candidates", []),
-                "entity_candidates_by_chunk": compact_candidates_by_chunk,
-                "candidate_summary": enriched.get("candidate_summary", {}),
+                "entity_candidates": compact_candidates,
             },
             indent=2,
             default=str,
