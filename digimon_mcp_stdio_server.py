@@ -6018,6 +6018,16 @@ if BENCHMARK_MODE:
                 _normalize_answer_kind(plan.final_answer_kind)
                 or _infer_answer_kind(_current_question)
             )
+            # Auto-populate TODO list from plan atoms so the agent gets
+            # status reminders even if it doesn't call todo_write itself.
+            _todos.clear()
+            for atom in plan.atoms:
+                status = "in_progress" if atom.atom_id == plan.atoms[0].atom_id else "pending"
+                _todos.append({
+                    "id": atom.atom_id,
+                    "content": atom.sub_question,
+                    "status": status,
+                })
             return json.dumps(plan.model_dump(), indent=2)
         except Exception as e:
             # Deterministic fallback keeps behavior safe if planner LLM is unavailable.
