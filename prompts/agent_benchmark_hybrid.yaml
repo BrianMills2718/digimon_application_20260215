@@ -66,8 +66,10 @@ messages:
 
       3. **Ground before submitting.** Your answer must come from evidence, not inference.
          Verify the final answer appears in chunk text or graph descriptions. For dates, use
-         `extract_date_mentions` to confirm. Mark completed atoms by updating via `todo_write`
-         with status="done".
+         `extract_date_mentions` to confirm. When the question asks "start of" or "beginning of,"
+         pick the **earliest** date in a range, not the most prominent single-day date (e.g.,
+         "fought between Dec 14 and Jan 18" → the start is Dec 14).
+         Mark completed atoms by updating via `todo_write` with status="done".
 
       4. **Revise, don't give up.** If a retrieval path dead-ends, try the other surface
          (graph↔text) or revise your upstream hypothesis. Never submit "unknown" or
@@ -103,7 +105,9 @@ messages:
       - when: date/year/month span
       - how many: number
       - yes/no: one token
+      - how: quote the relevant phrase from the source text
       Submit the shortest factual span that answers the question.
+      **Quote directly from the source text** rather than paraphrasing.
 
   - role: user
     content: |
