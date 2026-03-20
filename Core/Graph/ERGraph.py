@@ -35,8 +35,6 @@ class ERGraph(DelimiterExtractionMixin, BaseGraph):
             tokenizer = TokenizerWrapper()
         super().__init__(config, llm, tokenizer)
         self._graph = storage_instance if storage_instance is not None else NetworkXStorage()
-        # Expose graph_config for the mixin (handles both full config and graph-only config)
-        self.graph_config = config.graph if hasattr(config, 'graph') else config
 
     # ------------------------------------------------------------------
     # Two-step extraction (NER + OpenIE) — produces KG-level attributes

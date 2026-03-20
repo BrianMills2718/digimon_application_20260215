@@ -15,8 +15,6 @@ class RKGraph(DelimiterExtractionMixin, BaseGraph):
 
         super().__init__(config, llm, tokenizer)  # Pass tokenizer instead of encoder
         self._graph = NetworkXStorage()
-        # Handle both full config and graph config
-        self.graph_config = config.graph if hasattr(config, 'graph') else config
         # Keep encoder for potential future use
         self.encoder = encoder
 
