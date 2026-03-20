@@ -44,6 +44,10 @@ os.chdir(str(Path(__file__).parent.parent))
 
 from eval.benchmark import exact_match, llm_judge, token_f1
 from eval.data_prep import load_question_ids_file, load_questions
+from eval.graph_manifest import (
+    filter_tool_names_by_graph_manifest,
+    load_required_graph_manifest,
+)
 from llm_client import MCPAgentResult
 from llm_client import (
     activate_feature_profile as llm_activate_feature_profile,
@@ -964,6 +968,30 @@ async def _init_direct_tools(dataset_name: str, disable_embedding_tools: bool = 
     # Dynamic filtering: only include tools whose prerequisites exist
     ctx = dms._state.get("context")
     if ctx:
+        main_config = dms._state.get("config")
+        graph_type = getattr(getattr(main_config, "graph", None), "type", "er_graph")
+        working_dir = str(getattr(main_config, "working_dir", "./results"))
+        manifest = load_required_graph_manifest(
+            dataset_name=dataset_name,
+            graph_type=graph_type,
+            working_dir=working_dir,
+        )
+        manifest_allowed_tool_names = set(
+            filter_tool_names_by_graph_manifest(
+                (tool.__name__ for tool in _BENCHMARK_TOOLS),
+                manifest,
+            )
+        )
+        _BENCHMARK_TOOLS = [
+            tool for tool in _BENCHMARK_TOOLS if tool.__name__ in manifest_allowed_tool_names
+        ]
+        print(
+            "Direct backend: graph manifest "
+            f"{manifest.graph_type}/{manifest.graph_profile.value} filtered tools to "
+            f"{len(_BENCHMARK_TOOLS)} entries",
+            file=sys.stderr,
+        )
+
         vdbs = ctx.list_vdbs() if hasattr(ctx, "list_vdbs") else []
         vdb_names = " ".join(vdbs)
 
