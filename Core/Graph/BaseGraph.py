@@ -1,6 +1,10 @@
+"""Shared graph-building and graph-capability logic for DIGIMON graph types."""
+
 import asyncio
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from typing import Any, TYPE_CHECKING, List, cast
+
 import igraph as ig
 import numpy as np
 from lazy_object_proxy.utils import await_
@@ -8,7 +12,6 @@ from scipy.sparse import csr_matrix
 
 from Core.Common.Logger import logger
 from Core.Common.entity_name_hygiene import classify_entity_name
-from typing import List
 from Core.Common.Constants import GRAPH_FIELD_SEP
 from Core.Common.Memory import Memory
 from Core.Prompt import GraphPrompt
@@ -18,8 +21,33 @@ from Core.Common.Utils import (clean_str, build_data_for_merge, csr_from_indices
 from Core.Storage.NetworkXStorage import NetworkXStorage
 from Core.Utils.MergeER import MergeEntity, MergeRelationship
 
+if TYPE_CHECKING:
+    from Config.GraphConfig import GraphConfig
+
 
 class BaseGraph(ABC):
+    """Abstract base class for graph construction, persistence, and retrieval metadata.
+
+    Concrete graph types inherit the shared merge/upsert behavior, storage wiring,
+    and capability reporting defined here. This class also normalizes access to the
+    graph-specific configuration because some call sites still pass a root config
+    object while others pass `GraphConfig` directly.
+    """
+
+    @property
+    def graph_config(self) -> "GraphConfig":
+        """Return the normalized graph-build config for this graph instance.
+
+        Some call sites pass the full project config while others pass the
+        nested graph config directly. Centralizing that normalization avoids
+        stringly-typed `getattr(..., "field")` checks and lets capability code
+        use typed attribute access against the real `GraphConfig` schema.
+        """
+
+        nested_graph_config = getattr(self.config, "graph", None)
+        if nested_graph_config is not None:
+            return cast("GraphConfig", nested_graph_config)
+        return cast("GraphConfig", self.config)
 
     @property
     def capabilities(self):
@@ -29,12 +57,11 @@ class BaseGraph(ABC):
         # All graphs support basic subgraph operations
         caps.add(GraphCapability.SUPPORTS_SUBGRAPH)
         # Check config flags for capabilities
-        cfg = self.config if self.config else None
-        if cfg:
-            if getattr(cfg, "enable_entity_types", False) or getattr(cfg, "extract_two_step", True) is False:
-                caps.add(GraphCapability.HAS_ENTITY_TYPES)
-            if getattr(cfg, "enable_edge_keywords", False):
-                caps.add(GraphCapability.HAS_EDGE_KEYWORDS)
+        cfg = self.graph_config
+        if cfg.enable_entity_type:
+            caps.add(GraphCapability.HAS_ENTITY_TYPES)
+        if cfg.enable_edge_keywords:
+            caps.add(GraphCapability.HAS_EDGE_KEYWORDS)
         # All non-tree graphs have descriptions and support PPR
         if not getattr(self, "_is_tree_graph", False):
             caps.add(GraphCapability.HAS_DESCRIPTIONS)
@@ -61,9 +88,16 @@ class BaseGraph(ABC):
         return await self._graph.load_graph(force)
 
 
-    def __init__(self, config, llm, encoder):
+    def __init__(self, config: Any, llm: Any, encoder: Any):
+        """Initialize the graph with config, LLM services, and embedding encoder.
+
+        The config may be either the root project config or the nested graph config.
+        `graph_config` is responsible for normalizing that difference for the rest
+        of the class so capability logic can remain typed and consistent.
+        """
+
         self.working_memory: Memory = Memory()  # Working memory
-        self.config = config  # Build graph config
+        self.config: Any = config  # Build graph config
         self.llm = llm  # LLM instance
         self.ENCODER = encoder  # Encoder
         self._graph = None
