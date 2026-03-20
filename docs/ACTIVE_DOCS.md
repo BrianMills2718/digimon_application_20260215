@@ -10,6 +10,10 @@ Use this file to find the current, supported documentation set.
   Supported workflow and explicit non-goals.
 - `docs/SYSTEM_OVERVIEW.md`
   Architecture, storage model, and benchmark caveats.
+- `docs/GRAPH_ATTRIBUTE_MODEL.md`
+  Canonical graph schema, JayLZhou mapping, and projection strategy.
+- `docs/TOOL_CAPABILITY_MATRIX.md`
+  Which tools apply to which graph builds, attributes, and artifacts.
 - `docs/COMPETITIVE_ANALYSIS.md`
   Baselines, current evidence, and open thesis.
 - `docs/plans/CLAUDE.md`
