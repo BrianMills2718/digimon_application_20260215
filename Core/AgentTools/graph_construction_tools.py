@@ -14,6 +14,7 @@ from Core.AgentSchema.graph_construction_tool_contracts import (
 from Core.Graph.GraphFactory import get_graph
 from Option.Config2 import Config
 from Core.Common.Logger import logger
+from Core.Schema.GraphBuildManifest import write_graph_build_manifest
 # Helper: Apply config overrides to a config object
 # This mutates the config_copy in-place
 
@@ -140,6 +141,14 @@ async def build_er_graph(
         logger.info(f"build_er_graph tool: er_graph_instance.build_graph succeeded for {tool_input.target_dataset_name}")
         counts = await get_graph_counts(er_graph_instance)
         artifact_p = get_artifact_path(er_graph_instance)
+        if artifact_p is None:
+            raise ValueError("ERGraph build succeeded but did not produce an artifact path")
+        write_graph_build_manifest(
+            dataset_name=tool_input.target_dataset_name,
+            graph_type="er_graph",
+            graph_config=current_graph_config,
+            artifact_path=artifact_p,
+        )
         
         # Log the artifact path for debugging
         logger.info(f"build_er_graph artifact path: {artifact_p}")
@@ -195,6 +204,14 @@ async def build_rk_graph(
         await rk_graph_instance.build_graph(chunks=input_chunks, force=tool_input.force_rebuild)
         counts = await get_graph_counts(rk_graph_instance)
         artifact_p = get_artifact_path(rk_graph_instance)
+        if artifact_p is None:
+            raise ValueError("RKGraph build succeeded but did not produce an artifact path")
+        write_graph_build_manifest(
+            dataset_name=tool_input.target_dataset_name,
+            graph_type="rkg_graph",
+            graph_config=current_graph_config,
+            artifact_path=artifact_p,
+        )
         return BuildRKGraphOutputs(
             graph_id=f"{tool_input.target_dataset_name}_RKGraph",
             status="success",
@@ -245,6 +262,14 @@ async def build_tree_graph(
         await tree_graph_instance.build_graph(chunks=input_chunks, force=tool_input.force_rebuild)
         counts = await get_graph_counts(tree_graph_instance)
         artifact_p = get_artifact_path(tree_graph_instance)
+        if artifact_p is None:
+            raise ValueError("TreeGraph build succeeded but did not produce an artifact path")
+        write_graph_build_manifest(
+            dataset_name=tool_input.target_dataset_name,
+            graph_type="tree_graph",
+            graph_config=current_graph_config,
+            artifact_path=artifact_p,
+        )
         return BuildTreeGraphOutputs(
             graph_id=f"{tool_input.target_dataset_name}_TreeGraph",
             status="success",
@@ -295,6 +320,14 @@ async def build_tree_graph_balanced(
         await tree_graph_balanced_instance.build_graph(chunks=input_chunks, force=tool_input.force_rebuild)
         counts = await get_graph_counts(tree_graph_balanced_instance)
         artifact_p = get_artifact_path(tree_graph_balanced_instance)
+        if artifact_p is None:
+            raise ValueError("TreeGraphBalanced build succeeded but did not produce an artifact path")
+        write_graph_build_manifest(
+            dataset_name=tool_input.target_dataset_name,
+            graph_type="tree_graph_balanced",
+            graph_config=current_graph_config,
+            artifact_path=artifact_p,
+        )
         return BuildTreeGraphBalancedOutputs(
             graph_id=f"{tool_input.target_dataset_name}_TreeGraphBalanced",
             status="success",
@@ -345,6 +378,14 @@ async def build_passage_graph(
         await passage_graph_instance.build_graph(chunks=input_chunks, force=tool_input.force_rebuild)
         counts = await get_graph_counts(passage_graph_instance)
         artifact_p = get_artifact_path(passage_graph_instance)
+        if artifact_p is None:
+            raise ValueError("PassageGraph build succeeded but did not produce an artifact path")
+        write_graph_build_manifest(
+            dataset_name=tool_input.target_dataset_name,
+            graph_type="passage_graph",
+            graph_config=current_graph_config,
+            artifact_path=artifact_p,
+        )
         return BuildPassageGraphOutputs(
             graph_id=f"{tool_input.target_dataset_name}_PassageGraph",
             status="success",
