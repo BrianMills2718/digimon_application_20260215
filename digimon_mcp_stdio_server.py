@@ -2352,6 +2352,26 @@ async def entity_neighborhood(
                 seeds_found.append(normalized)
                 seed_node_ids.add(normalized)
 
+    # Expand seeds with common abbreviation aliases (saint↔st, mount↔mt, etc.)
+    _ALIAS_PAIRS = [("saint", "st"), ("mount", "mt"), ("fort", "ft"), ("doctor", "dr")]
+    alias_seeds = set()
+    for seed in list(seed_node_ids):
+        seed_lower = seed.lower()
+        for long_form, short_form in _ALIAS_PAIRS:
+            if f" {long_form} " in f" {seed_lower} " or seed_lower.startswith(f"{long_form} "):
+                variant = _re.sub(rf'\b{long_form}\b', short_form, seed_lower)
+                for v in [variant, variant.replace(f"{short_form} ", f"{short_form}  ")]:
+                    if G.has_node(v) and v not in seed_node_ids:
+                        alias_seeds.add(v)
+            elif f" {short_form} " in f" {seed_lower} " or seed_lower.startswith(f"{short_form} "):
+                variant = _re.sub(rf'\b{short_form}\b', long_form, seed_lower)
+                for v in [variant, variant.replace(f"{long_form} ", f"{long_form}  ")]:
+                    if G.has_node(v) and v not in seed_node_ids:
+                        alias_seeds.add(v)
+    if alias_seeds:
+        seed_node_ids.update(alias_seeds)
+        seeds_found.extend(sorted(alias_seeds))
+
     if not seed_node_ids:
         return json.dumps({
             "error": f"None of the entities {normalized_names} found in graph",
