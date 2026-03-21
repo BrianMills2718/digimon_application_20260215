@@ -616,12 +616,15 @@ def _compact_chunk_text_for_prompt(text: str, *, max_chars: int = 1200) -> tuple
 
 
 def _reset_chunk_dedup() -> None:
-    """Reset seen chunks — call between questions."""
+    """Reset seen chunks and per-question state — call between questions."""
     global _latest_entity_candidates_flat
     _seen_chunks.clear()
     _seen_chunk_text.clear()
     _latest_entity_candidates_by_chunk.clear()
     _latest_entity_candidates_flat = []
+    # Reset submit_answer warning flag for next question
+    if BENCHMARK_MODE and hasattr(globals().get("submit_answer", None), "_warned_once"):
+        submit_answer._warned_once = False  # type: ignore[attr-defined]
     _reset_todos()
     _clear_semantic_plan()
 
@@ -6377,18 +6380,23 @@ if BENCHMARK_MODE:
                 "Reasoning cannot be empty. Provide a concise evidence-grounded justification.",
             )
 
-        # Warn if there are unfinished TODOs — agent may be submitting prematurely
+        # Warn ONCE if there are unfinished TODOs — agent may be submitting prematurely.
+        # Second submit attempt is accepted to prevent the agent from second-guessing
+        # correct answers (traced: Ray Donovan had correct "12" but changed to "10"
+        # after repeated warnings).
         incomplete_todos = [
             t for t in _todos
             if t.get("status") in ("pending", "in_progress", "blocked")
         ]
-        if incomplete_todos:
+        if incomplete_todos and not getattr(submit_answer, "_warned_once", False):
+            submit_answer._warned_once = True  # type: ignore[attr-defined]
             todo_warning = (
                 f"WARNING: {len(incomplete_todos)} TODO(s) still incomplete: "
                 + ", ".join(t.get("content", t.get("id", "?"))[:40] for t in incomplete_todos[:3])
                 + ". Are you sure this is the FINAL answer to the original question, "
                 "not just an intermediate entity? If your answer is an intermediate "
-                "result, continue working on the remaining TODOs instead."
+                "result, continue working on the remaining TODOs instead. "
+                "If you are confident, submit again and it will be accepted."
             )
             _reset_chunk_dedup()
             return json.dumps(
