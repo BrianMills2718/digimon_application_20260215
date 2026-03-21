@@ -14,6 +14,7 @@ ADRs document significant architectural decisions.
 | 006 | Decide Open-TKG Grounded Entity Policy with Frozen Prompt-Eval Cases | Accepted | 2026-03-21 |
 | 007 | Require Entity-Relationship Closure in Extraction Output | Accepted | 2026-03-21 |
 | 008 | Require Pure-Lane Extraction for Decision-Grade Build Comparisons | Accepted | 2026-03-21 |
+| 009 | Prefer Two-Pass Extraction if One-Pass Completeness Remains Unstable | Proposed | 2026-03-21 |
 
 ## ADR Lifecycle
 

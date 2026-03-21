@@ -480,8 +480,9 @@ def build_entity_extraction_prompt(
         grounded_entity_block = """
 
 -Grounded Entity Preference-
-- prefer entities that are referential and groundable from the text, such as named people, organizations, locations, competitions, awards, diagnoses, titles, or concrete time periods
-- do not emit vague qualities, generic states, or common-noun abstractions as standalone entities unless the text clearly treats them as named or directly groundable concepts"""
+- prefer entities that can be independently pointed to from the text, such as named people, organizations, locations, competitions, awards, diagnoses, titles, works, or explicit dated events and time periods
+- if a phrase only summarizes other concrete entities, competitions, or outcomes already named in the text, keep that meaning in descriptions or relationships instead of promoting it to a standalone entity
+- do not emit broad achievement labels, umbrella competition classes, or generic category phrases as standalone entities unless the text presents them as formal named entities"""
 
     return f"""-Goal-
 Extract entities and relationships from the text to build a graph.

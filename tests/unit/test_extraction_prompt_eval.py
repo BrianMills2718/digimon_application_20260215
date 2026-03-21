@@ -61,10 +61,12 @@ def test_load_grounded_entity_smoke_cases_freezes_short_policy_slice() -> None:
     """The focused smoke fixture should contain only the short grounded-entity cases."""
 
     cases = load_extraction_prompt_eval_cases(GROUND_POLICY_SMOKE_CASES_PATH)
-    assert [case.source_doc_id for case in cases] == [1, 1, 5, 9]
+    assert [case.source_doc_id for case in cases] == [1, 1, 3, 3, 5, 9]
     assert [case.id for case in cases] == [
         "musique_doc_1_grounded_form_fitness",
         "musique_doc_1_grounded_copa_del_rey",
+        "musique_doc_3_grounded_european_club",
+        "musique_doc_3_grounded_treble_sextuple",
         "musique_doc_5_grounded_medical_leave",
         "musique_doc_9_grounded_silver_ball",
     ]
@@ -87,6 +89,7 @@ def test_build_prompt_variants_adds_grounded_entity_variant() -> None:
     assert "must also appear as an entity record elsewhere in the same output" in variants[0].messages[0]["content"]
     assert "-Grounded Entity Preference-" not in variants[0].messages[0]["content"]
     assert "-Grounded Entity Preference-" in variants[1].messages[0]["content"]
+    assert "keep that meaning in descriptions or relationships instead of promoting it to a standalone entity" in variants[1].messages[0]["content"]
 
 
 def test_extraction_output_evaluator_rewards_structurally_valid_tkg_output() -> None:

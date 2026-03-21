@@ -34,6 +34,51 @@
     }
   },
   {
+    "id": "musique_doc_3_grounded_european_club",
+    "source_doc_id": 3,
+    "title": "FC Barcelona",
+    "focus": "Grounded-entity policy should keep the named clubs and competition while dropping umbrella category phrases like European club and continental football.",
+    "content": "Barcelona is the only European club to have played continental football every season since 1955, and one of three clubs to have never been relegated from La Liga, along with Athletic Bilbao and Real Madrid.",
+    "expected": {
+      "min_valid_entities": 4,
+      "min_valid_relationships": 0,
+      "required_entity_names": [
+        "Barcelona",
+        "La Liga",
+        "Athletic Bilbao",
+        "Real Madrid"
+      ],
+      "forbidden_entity_names": [
+        "European club",
+        "continental football"
+      ]
+    }
+  },
+  {
+    "id": "musique_doc_3_grounded_treble_sextuple",
+    "source_doc_id": 3,
+    "title": "FC Barcelona",
+    "focus": "Grounded-entity policy should keep the named competitions while avoiding summary achievement labels like treble and sextuple as standalone nodes.",
+    "content": "In 2009, Barcelona became the first club in Spain to win the treble consisting of La Liga, Copa del Rey, and the Champions League. That same year, it also became the first football club ever to win six out of six competitions in a single year, thus completing the sextuple, comprising the aforementioned treble and the Spanish Super Cup, UEFA Super Cup and FIFA Club World Cup.",
+    "expected": {
+      "min_valid_entities": 6,
+      "min_valid_relationships": 0,
+      "required_entity_names": [
+        "Barcelona",
+        "La Liga",
+        "Copa del Rey",
+        "Champions League",
+        "Spanish Super Cup",
+        "UEFA Super Cup",
+        "FIFA Club World Cup"
+      ],
+      "forbidden_entity_names": [
+        "treble",
+        "sextuple"
+      ]
+    }
+  },
+  {
     "id": "musique_doc_5_grounded_medical_leave",
     "source_doc_id": 5,
     "title": "FC Barcelona",

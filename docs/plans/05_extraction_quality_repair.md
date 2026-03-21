@@ -81,6 +81,9 @@
 - 2026-03-21: Both live closure-aware smoke builds used mixed-model extraction because Gemini fell back to DeepSeek after provider policy blocks. That is a real experimental confound. The next live artifact comparison must run on a pure-lane/no-fallback build path before DIGIMON treats the result as decision-grade evidence.
 - 2026-03-21: Slice 6 added a dedicated pure-lane evaluation build path plus manifest runtime truth. `eval/prebuild_graph.py` can now run extraction with `--lane-policy pure`, and `graph_build_manifest.json` records the primary model, fallback models, and lane policy used for the build.
 - 2026-03-21: The 10-chunk closure-aware MuSiQue slice was rerun on that controlled path as `MuSiQue_TKG_smoke_closure_pure` (`93` nodes / `63` edges) and `MuSiQue_TKG_smoke_closure_grounded_pure` (`104` nodes / `79` edges). This corrected the earlier mixed-lane conclusion: the grounded pure-lane build preserved `silver ball`, but both pure-lane variants still missed `throat cancer`, and the grounded build introduced more conceptual nodes such as `european club`, `treble`, and `sextuple`.
+- 2026-03-21: The grounded-entity frozen-case fixture was expanded to cover the pure-lane conceptual-node question directly (`european club`, `continental football`, `treble`, `sextuple`) alongside the existing `medical leave`, `throat cancer`, and `Silver Ball` cases.
+- 2026-03-21: A live rerun on that expanded six-case fixture completed cleanly with the tightened grounded prompt (`gemini/gemini-2.5-flash-lite`, execution `467b91975b4c`). The grounded variant remained directionally better (`0.939` vs `0.915`) but not significantly so. The new conceptual-node cases scored cleanly, while the remaining failures stayed concentrated on entity-record completeness for named relationship endpoints such as `throat cancer` and `Silver Ball`.
+- 2026-03-21: A follow-up prompt-only completeness instruction was also tested on that same six-case fixture through `prompt_eval`, and it regressed. The grounded run dropped to `5/6` scored items (`run_id=8ccb490a9c03`), `musique_doc_5_grounded_medical_leave` hit a truncated `209786`-character response, and `musique_doc_3_grounded_european_club` regressed into malformed short tuples. That wording should not stay in the live prompt contract.
 
 ### Steps
 
@@ -151,6 +154,15 @@
    - Freeze new policy cases that test the remaining real-slice tradeoff: preserve medical diagnoses such as `throat cancer` while avoiding conceptual-node inflation such as `european club`, `treble`, and `sextuple`.
    - Judge prompt variants on those cases with `prompt_eval` before another live rebuild.
    - Do not promote the grounded policy into the default live path unless the frozen cases improve and the next pure-lane smoke rerun reflects the same direction.
+16. Strengthen entity-record completeness for named relationship endpoints.
+   - Prompt variants must do more than avoid low-value abstractions; they must also emit standalone entity records for named diagnoses, awards, and other relationship endpoints that survive groundedness filtering.
+   - Re-run the same six-case frozen fixture after each prompt change so the completeness tradeoff remains comparable.
+   - Do not return to live smoke rebuilds until the fixture shows `throat cancer` and `Silver Ball` as entity records instead of relationship-only endpoints.
+   - The first explicit completeness instruction caused output explosion on a short case and should be treated as a failed experiment, not a retained prompt improvement.
+17. If one-pass completeness remains unstable, prove a two-pass extraction alternative.
+   - Keep ADR-007 closure semantics: relationships may only refer to materialized entity records.
+   - Extract the entity inventory first, then extract relationships against that explicit inventory.
+   - Prove the two-pass contract on the same six-case frozen fixture before another live smoke rebuild.
 
 ---
 

@@ -275,6 +275,40 @@ The first live 10-chunk closure-aware smoke build
 by improving prompt completeness so named relationship endpoints are emitted as
 entity records before another larger rebuild or graph-quality claim.
 
+**Update:** 2026-03-21 (expanded grounded prompt-eval policy slice)
+
+The expanded six-case grounded-entity `prompt_eval` rerun
+(`execution_id=467b91975b4c`) tightened this issue further:
+
+- the refined grounded prompt stayed directionally better overall
+  (`0.939` vs `0.915` mean score), but not significantly
+- the added `european club` and `treble/sextuple` cases scored cleanly, so the
+  focused prompt tweak can suppress broad category labels on short cases
+- the remaining failures are still completeness failures, not abstraction
+  policy failures:
+  - `throat cancer` remained a relationship endpoint without its own entity
+    record
+  - `Silver Ball` still appeared only through a relationship endpoint
+
+So the next prompt iteration target is no longer generic groundedness. It is
+entity-record completeness for named relationship endpoints.
+
+**Update:** 2026-03-21 (follow-up completeness prompt regression)
+
+A direct prompt-only attempt to force named relationship endpoints into
+standalone entity records did not hold up on the same six-case fixture:
+
+- the grounded run regressed from `6/6` scored items to `5/6`
+- `musique_doc_5_grounded_medical_leave` failed with a truncated response
+  (`209786` chars)
+- `musique_doc_3_grounded_european_club` also regressed into malformed short
+  tuples (`entity_record_too_short`, `relationship_record_too_short`)
+
+So prompt-only completeness pressure is currently brittle. DIGIMON should keep
+the stable groundedness improvement that suppresses broad category labels, but
+it should not keep the extra completeness instruction that caused output
+explosion on a short case.
+
 ### ISSUE-008: Live extraction smoke builds still use mixed-model fallbacks
 
 **Observed:** 2026-03-21  
