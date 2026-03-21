@@ -2102,6 +2102,8 @@ async def main() -> None:
                         help="Prompt mode. 'hybrid' is canonical. 'baseline' uses no graph tools. 'fixed_graph' uses deterministic graph pipeline.")
     parser.add_argument("--condition", type=str, default=None,
                         help="Condition ID for experiment tracking (e.g. 'multi_query_v1', 'baseline'). Enables cohort comparison.")
+    parser.add_argument("--question-delay", type=float, default=2.0,
+                        help="Seconds to wait between questions to avoid rate limiting (default: 2.0).")
     parser.add_argument("--tag", type=str, default=None,
                         help="Free-form tag for this run (stored in provenance, queryable).")
     parser.add_argument("--questions", type=str, default=None,
@@ -3131,7 +3133,10 @@ async def main() -> None:
     try:
         if args.backend == "direct":
             # --- Direct path: no MCP servers, no session pool ---
-            for q in pending:
+            question_delay = getattr(args, "question_delay", 2.0)
+            for qi, q in enumerate(pending):
+                if qi > 0 and question_delay > 0:
+                    await asyncio.sleep(question_delay)
                 await _process_question(q, None)
         elif parallel <= 1:
             # --- Sequential path (original behavior) ---
