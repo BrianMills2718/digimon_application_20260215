@@ -1,0 +1,105 @@
+"""Regression tests for the profile-aware prebuild graph CLI."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from Core.Schema.GraphBuildTypes import GraphProfile, GraphSchemaMode
+from eval.prebuild_graph import (
+    build_er_config_overrides,
+    build_requires_fresh_graph,
+    ensure_existing_graph_can_be_reused,
+    parse_args,
+)
+
+
+def test_parse_args_accepts_profile_schema_and_chunk_limit() -> None:
+    """CLI parsing should preserve the requested build contract fields."""
+
+    args = parse_args(
+        [
+            "MuSiQue",
+            "--graph-profile",
+            "tkg",
+            "--schema-mode",
+            "guided",
+            "--schema-entity-type",
+            "person",
+            "--schema-relation-type",
+            "located_in",
+            "--chunk-limit",
+            "25",
+        ]
+    )
+
+    assert args.dataset == "MuSiQue"
+    assert args.graph_profile == "tkg"
+    assert args.schema_mode == "guided"
+    assert args.schema_entity_type == ["person"]
+    assert args.schema_relation_type == ["located_in"]
+    assert args.chunk_limit == 25
+
+
+def test_build_er_config_overrides_requires_schema_mode_for_schema_lists() -> None:
+    """Schema lists without an extraction mode should fail loudly."""
+
+    args = parse_args(["MuSiQue", "--schema-entity-type", "person"])
+
+    with pytest.raises(ValueError, match="Schema types require --schema-mode"):
+        build_er_config_overrides(args)
+
+
+def test_build_er_config_overrides_converts_cli_strings_to_enums() -> None:
+    """Override construction should produce typed values for downstream config models."""
+
+    args = parse_args(
+        [
+            "MuSiQue",
+            "--graph-profile",
+            "rkg",
+            "--schema-mode",
+            "closed",
+            "--schema-entity-type",
+            "person",
+            "--schema-relation-type",
+            "works_for",
+        ]
+    )
+
+    overrides = build_er_config_overrides(args)
+
+    assert overrides["graph_profile"] is GraphProfile.RKG
+    assert overrides["schema_mode"] is GraphSchemaMode.CLOSED
+    assert overrides["schema_entity_types"] == ["person"]
+    assert overrides["schema_relation_types"] == ["works_for"]
+
+
+def test_build_requires_fresh_graph_for_explicit_contract() -> None:
+    """Explicit profile/schema/slice requests should not silently reuse old builds."""
+
+    args = parse_args(["MuSiQue", "--chunk-limit", "10"])
+
+    assert build_requires_fresh_graph(args) is True
+
+
+def test_ensure_existing_graph_can_be_reused_rejects_stale_graph(tmp_path: Path) -> None:
+    """Existing graphs should not be reused when the caller requested a new contract."""
+
+    args = parse_args(["MuSiQue", "--graph-profile", "tkg"])
+    graph_path = tmp_path / "existing.graphml"
+    graph_path.write_text("placeholder", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Re-run with --force-rebuild"):
+        ensure_existing_graph_can_be_reused(args, graph_path)
+
+
+def test_ensure_existing_graph_can_be_reused_allows_default_reuse(tmp_path: Path) -> None:
+    """The default legacy path may still reuse an existing graph."""
+
+    args = parse_args(["MuSiQue"])
+    graph_path = tmp_path / "existing.graphml"
+    graph_path.write_text("placeholder", encoding="utf-8")
+
+    ensure_existing_graph_can_be_reused(args, graph_path)

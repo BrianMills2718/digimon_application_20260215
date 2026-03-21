@@ -99,6 +99,11 @@ class BuildERGraphInputs(BaseModel):
 
     target_dataset_name: str = Field(description="Name of the dataset for input chunks and namespacing artifacts.")
     force_rebuild: bool = Field(default=False, description="If True, forces a rebuild even if artifacts exist.")
+    chunk_limit: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Optional cap on how many prepared chunks to include in this graph build.",
+    )
     config_overrides: Optional[ERGraphConfigOverrides] = Field(default=None, description="Specific configuration overrides for ERGraph building.")
 
 class BuildERGraphOutputs(BaseGraphBuildOutputs):

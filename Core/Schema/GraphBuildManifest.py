@@ -68,6 +68,9 @@ class GraphBuildManifest(BaseModel):
     artifacts: GraphArtifactFlags = Field(default_factory=GraphArtifactFlags)
     schema_contract: GraphSchemaContract = Field(default_factory=GraphSchemaContract)
     config_flags: GraphConfigSnapshot
+    available_input_chunk_count: int | None = None
+    selected_input_chunk_count: int | None = None
+    requested_input_chunk_limit: int | None = None
     generated_at_utc: str
 
     @classmethod
@@ -77,6 +80,9 @@ class GraphBuildManifest(BaseModel):
         dataset_name: str,
         graph_type: str,
         graph_config: GraphConfig,
+        available_input_chunk_count: int | None = None,
+        selected_input_chunk_count: int | None = None,
+        requested_input_chunk_limit: int | None = None,
     ) -> "GraphBuildManifest":
         """Derive a manifest from the configured graph type and build flags."""
 
@@ -112,6 +118,9 @@ class GraphBuildManifest(BaseModel):
                 enable_chunk_cooccurrence=graph_config.enable_chunk_cooccurrence,
                 use_community=graph_config.use_community,
             ),
+            available_input_chunk_count=available_input_chunk_count,
+            selected_input_chunk_count=selected_input_chunk_count,
+            requested_input_chunk_limit=requested_input_chunk_limit,
             generated_at_utc=datetime.now(timezone.utc).isoformat(),
         )
 
@@ -149,6 +158,9 @@ def write_graph_build_manifest(
     graph_type: str,
     graph_config: GraphConfig,
     artifact_path: str,
+    available_input_chunk_count: int | None = None,
+    selected_input_chunk_count: int | None = None,
+    requested_input_chunk_limit: int | None = None,
 ) -> str:
     """Persist a graph build manifest beside successful graph artifacts.
 
@@ -161,6 +173,9 @@ def write_graph_build_manifest(
         dataset_name=dataset_name,
         graph_type=graph_type,
         graph_config=graph_config,
+        available_input_chunk_count=available_input_chunk_count,
+        selected_input_chunk_count=selected_input_chunk_count,
+        requested_input_chunk_limit=requested_input_chunk_limit,
     )
     manifest_path = manifest.save_to_dir(artifact_path)
     return str(manifest_path)
