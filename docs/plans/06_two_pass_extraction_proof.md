@@ -88,6 +88,27 @@ change that can address that without more one-pass prompt sprawl.
   completeness-proven. The next step is not another ad hoc live rebuild. It is
   `prompt_eval`-driven iteration on the two-pass prompts against the same
   frozen completeness cases.
+- 2026-03-21: `prompt_eval` itself only supports static single-call prompt
+  variants, so it cannot represent the full two-call two-pass flow directly.
+  The next truthful integration point is therefore the pass-1
+  entity-inventory prompt on the same frozen completeness cases, with
+  relationship expectations neutralized for that evaluation slice.
+- 2026-03-21: That entity-inventory `prompt_eval` slice is now live too
+  (`gemini/gemini-2.5-flash`, execution `7c95be33d37a`) on the six-case short
+  grounded fixture. The grounded two-pass inventory prompt remained only
+  directionally better overall (`0.821` vs `0.775`, not significant), and the
+  target cases are still unresolved:
+  - `musique_doc_5_grounded_medical_leave`: neither variant materialized
+    `throat cancer`; the grounded variant improved over the strict variant, but
+    still promoted date nodes with invalid empty types instead of the diagnosis.
+  - `musique_doc_9_grounded_silver_ball`: the strict two-pass inventory prompt
+    recovered `Silver Ball` cleanly, while the grounded variant regressed into
+    malformed entity tuples.
+- 2026-03-21: This narrows the next design question. DIGIMON now has a
+  verified two-pass evaluation surface, but the remaining completeness blocker
+  looks less like "need more grounding wording" and more like "the default
+  open-TKG type palette is too narrow and pushes the model toward event/date
+  substitutions instead of diagnoses and awards."
 
 ### Steps
 
@@ -121,8 +142,9 @@ change that can address that without more one-pass prompt sprawl.
 6. If the first live two-pass proof is structurally clean but still incomplete,
    move two-pass prompt iteration onto the frozen `prompt_eval` fixture before
    another live rebuild.
-   - Compare the current two-pass prompts on the same completeness-focused
-     cases that already exposed `throat cancer` and `Silver Ball`.
+   - Compare the current two-pass entity-inventory prompts on the same
+     completeness-focused cases that already exposed `throat cancer` and
+     `Silver Ball`.
    - Do not treat structural success alone as proof that two-pass solved the
      completeness problem.
 

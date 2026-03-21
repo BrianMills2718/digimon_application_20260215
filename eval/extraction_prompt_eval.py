@@ -55,6 +55,8 @@ DEFAULT_CASES_PATH = Path(__file__).with_name("fixtures") / "musique_tkg_extract
 DEFAULT_DATASET_NAME = "musique_tkg_extraction_prompt_eval"
 DEFAULT_PROJECT_NAME = "Digimon_for_KG_application"
 _RECORD_PATTERN = re.compile(r"\((.*)\)")
+PROMPT_FAMILY_ONE_PASS = "one_pass"
+PROMPT_FAMILY_TWO_PASS_ENTITY_INVENTORY = "two_pass_entity_inventory"
 
 
 class ExtractionPromptEvalExpectation(BaseModel):
@@ -126,6 +128,7 @@ def build_prompt_variants(
     subject_model: str,
     llm_task: str,
     max_budget: float,
+    prompt_family: str = PROMPT_FAMILY_ONE_PASS,
 ) -> list[PromptVariant]:
     """Build the prompt variants for the extraction prompt experiment."""
 
@@ -135,8 +138,14 @@ def build_prompt_variants(
     grounded_graph_config = strict_graph_config.model_copy(
         update={"prefer_grounded_named_entities": True}
     )
-    strict_prompt = _build_prompt_from_graph_config(strict_graph_config)
-    grounded_prompt = _build_prompt_from_graph_config(grounded_graph_config)
+    strict_prompt = _build_prompt_from_graph_config(
+        strict_graph_config,
+        prompt_family=prompt_family,
+    )
+    grounded_prompt = _build_prompt_from_graph_config(
+        grounded_graph_config,
+        prompt_family=prompt_family,
+    )
     shared_kwargs: dict[str, Any] = {"task": llm_task, "max_budget": max_budget}
     return [
         PromptVariant(
@@ -164,6 +173,7 @@ def build_extraction_prompt_experiment(
     llm_task: str,
     max_budget: float,
     n_runs: int,
+    prompt_family: str = PROMPT_FAMILY_ONE_PASS,
 ) -> Experiment:
     """Build a prompt_eval experiment over the frozen extraction cases."""
 
@@ -171,7 +181,10 @@ def build_extraction_prompt_experiment(
         ExperimentInput(
             id=case.id,
             content=case.content,
-            expected=case.expected.model_dump(),
+            expected=_normalize_expectation_for_prompt_family(
+                case.expected,
+                prompt_family=prompt_family,
+            ).model_dump(),
         )
         for case in cases
     ]
@@ -182,6 +195,7 @@ def build_extraction_prompt_experiment(
             subject_model=subject_model,
             llm_task=llm_task,
             max_budget=max_budget,
+            prompt_family=prompt_family,
         ),
         inputs=inputs,
         n_runs=n_runs,
@@ -229,6 +243,15 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=DEFAULT_CASES_PATH,
         help="JSON file containing frozen extraction prompt-eval cases.",
+    )
+    parser.add_argument(
+        "--prompt-family",
+        choices=[PROMPT_FAMILY_ONE_PASS, PROMPT_FAMILY_TWO_PASS_ENTITY_INVENTORY],
+        default=PROMPT_FAMILY_ONE_PASS,
+        help=(
+            "Prompt family to evaluate. two_pass_entity_inventory isolates the "
+            "first-pass entity inventory prompt and neutralizes relationship expectations."
+        ),
     )
     parser.add_argument(
         "--graph-profile",
@@ -322,6 +345,7 @@ async def run_cli(args: argparse.Namespace) -> int:
         llm_task=args.llm_task,
         max_budget=args.max_budget,
         n_runs=args.n_runs,
+        prompt_family=args.prompt_family,
     )
     observability: bool | PromptEvalObservabilityConfig
     if args.disable_observability:
@@ -345,9 +369,15 @@ async def run_cli(args: argparse.Namespace) -> int:
             method=args.comparison_method,
             comparison_mode="paired_by_input",
         )
-    _print_summary(result, comparison, subject_model=subject_model)
+    _print_summary(
+        result,
+        comparison,
+        subject_model=subject_model,
+        prompt_family=args.prompt_family,
+    )
     if args.output_json is not None:
         payload = {
+            "prompt_family": args.prompt_family,
             "experiment": result.model_dump(mode="json"),
             "comparison": None if comparison is None else comparison.__dict__,
         }
@@ -362,7 +392,7 @@ def main() -> int:
     return asyncio.run(run_cli(parse_args()))
 
 
-def _build_prompt_from_graph_config(graph_config: GraphConfig) -> str:
+def _build_prompt_from_graph_config(graph_config: GraphConfig, *, prompt_family: str) -> str:
     """Render the extraction prompt corresponding to one graph-config contract."""
 
     entity_types = resolve_entity_type_names(graph_config)
@@ -372,19 +402,50 @@ def _build_prompt_from_graph_config(graph_config: GraphConfig) -> str:
         entity_types=entity_types,
         relation_types=relation_types,
     )
-    return GraphPrompt.build_entity_extraction_prompt(
-        input_text="{input}",
-        entity_types=entity_types,
-        relation_types=relation_types,
-        tuple_delimiter=DEFAULT_TUPLE_DELIMITER,
-        record_delimiter=DEFAULT_RECORD_DELIMITER,
-        completion_delimiter=DEFAULT_COMPLETION_DELIMITER,
-        include_relation_name=graph_config.enable_edge_name,
-        include_relation_keywords=graph_config.enable_edge_keywords,
-        include_slot_discipline=graph_config.strict_extraction_slot_discipline,
-        include_grounded_entity_preference=graph_config.prefer_grounded_named_entities,
-        schema_guidance=schema_guidance,
-    )
+    if prompt_family == PROMPT_FAMILY_ONE_PASS:
+        return GraphPrompt.build_entity_extraction_prompt(
+            input_text="{input}",
+            entity_types=entity_types,
+            relation_types=relation_types,
+            tuple_delimiter=DEFAULT_TUPLE_DELIMITER,
+            record_delimiter=DEFAULT_RECORD_DELIMITER,
+            completion_delimiter=DEFAULT_COMPLETION_DELIMITER,
+            include_relation_name=graph_config.enable_edge_name,
+            include_relation_keywords=graph_config.enable_edge_keywords,
+            include_slot_discipline=graph_config.strict_extraction_slot_discipline,
+            include_grounded_entity_preference=graph_config.prefer_grounded_named_entities,
+            schema_guidance=schema_guidance,
+        )
+    if prompt_family == PROMPT_FAMILY_TWO_PASS_ENTITY_INVENTORY:
+        return GraphPrompt.build_entity_inventory_extraction_prompt(
+            input_text="{input}",
+            entity_types=entity_types,
+            tuple_delimiter=DEFAULT_TUPLE_DELIMITER,
+            record_delimiter=DEFAULT_RECORD_DELIMITER,
+            completion_delimiter=DEFAULT_COMPLETION_DELIMITER,
+            include_slot_discipline=graph_config.strict_extraction_slot_discipline,
+            include_grounded_entity_preference=graph_config.prefer_grounded_named_entities,
+            schema_guidance=schema_guidance,
+        )
+    raise ValueError(f"Unsupported prompt family: {prompt_family}")
+
+
+def _normalize_expectation_for_prompt_family(
+    expectation: ExtractionPromptEvalExpectation,
+    *,
+    prompt_family: str,
+) -> ExtractionPromptEvalExpectation:
+    """Adapt frozen-case expectations to the prompt family under evaluation.
+
+    The two-pass entity-inventory slice only evaluates pass-1 entity extraction,
+    so relationship minimums must be treated as neutral rather than as missing
+    evidence. Entity keep/drop requirements remain part of the contract.
+    """
+
+    normalized = expectation.model_copy(deep=True)
+    if prompt_family == PROMPT_FAMILY_TWO_PASS_ENTITY_INVENTORY:
+        normalized.min_valid_relationships = 0
+    return normalized
 
 
 def _score_extraction_output(output: str, graph_config: GraphConfig) -> _ExtractionScoreState:
@@ -613,10 +674,17 @@ def _apply_entity_relationship_closure(state: _ExtractionScoreState) -> None:
     state.valid_relationships = valid_relationships
 
 
-def _print_summary(result: Any, comparison: Any, *, subject_model: str) -> None:
+def _print_summary(
+    result: Any,
+    comparison: Any,
+    *,
+    subject_model: str,
+    prompt_family: str,
+) -> None:
     """Print a compact human-readable prompt_eval summary."""
 
     print(f"Model: {subject_model}")
+    print(f"Prompt family: {prompt_family}")
     print(f"Execution ID: {result.execution_id}")
     for variant_name in result.variants:
         summary = result.summary[variant_name]

@@ -332,6 +332,59 @@ the motivating named-endpoint completeness problem. The next step should be
 `prompt_eval`-driven iteration on the two-pass prompts over the same frozen
 completeness cases, not another ad hoc live rebuild.
 
+**Update:** 2026-03-21 (two-pass entity-inventory prompt_eval)
+
+That follow-up prompt-eval slice now exists too (`gemini/gemini-2.5-flash`,
+execution `7c95be33d37a`) on the six-case short grounded fixture, using the
+two-pass entity-inventory prompt family:
+
+- overall, the grounded two-pass inventory prompt was only directionally better
+  than the strict inventory prompt (`0.821` vs `0.775`, not significant)
+- `musique_doc_5_grounded_medical_leave` is still unresolved:
+  - neither variant emitted `throat cancer`
+  - the grounded variant improved over the strict variant, but it still
+    promoted date nodes with invalid empty types instead of the diagnosis
+- `musique_doc_9_grounded_silver_ball` split the two variants sharply:
+  - the strict inventory prompt recovered `Silver Ball` cleanly
+  - the grounded inventory prompt regressed into malformed entity tuples
+
+So the remaining completeness blocker is no longer best described as a generic
+"grounding prompt" problem. It now looks like DIGIMON's default open-TKG
+entity type surface may be too narrow for diagnoses, awards, and similar named
+endpoint categories, which pushes the model toward weaker event/date
+substitutions.
+
+**Next step:** define a plan for the open-TKG type palette or schema-guided
+entity inventory surface before more prompt-only iteration.
+
+### ISSUE-009: Default open-TKG entity types appear too narrow for completeness-critical categories
+
+**Observed:** 2026-03-21  
+**Status:** `confirmed`
+
+The latest two-pass entity-inventory prompt-eval run suggests the current
+default type surface is steering extraction toward the wrong node classes:
+
+- DIGIMON's open TKG prompts currently derive types from a small default set
+  (`organization`, `person`, `geo`, `event`) when no explicit schema is
+  provided
+- on `musique_doc_5_grounded_medical_leave`, neither strict nor grounded
+  two-pass inventory extraction emitted `throat cancer`, and the grounded
+  variant instead promoted date nodes with empty types
+- on `musique_doc_9_grounded_silver_ball`, the strict inventory prompt did
+  recover `Silver Ball`, but as an `event`; the grounded variant regressed into
+  malformed tuples rather than producing a clean award/entity category
+
+This matters because DIGIMON is supposed to be a controlled GraphRAG lab that
+can reproduce richer graph-build strategies. If the default open-TKG contract
+cannot represent diagnoses, awards, competitions, works, titles, or other
+named endpoint categories cleanly, prompt iteration alone will keep fighting
+the schema instead of benefiting from it.
+
+**Next step:** create a focused plan for a broader open-TKG type palette or a
+schema-guided entity-inventory mode, then rerun the same frozen completeness
+cases before another live rebuild.
+
 ### ISSUE-008: Live extraction smoke builds still use mixed-model fallbacks
 
 **Observed:** 2026-03-21  
