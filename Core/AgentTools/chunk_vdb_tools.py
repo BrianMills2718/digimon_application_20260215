@@ -24,6 +24,7 @@ _hype_logger = logging.getLogger(__name__)
 
 
 async def _generate_hypothetical_questions(
+    chunk_id: str,
     chunk_text: str,
     n_questions: int,
     model: str,
@@ -34,20 +35,29 @@ async def _generate_hypothetical_questions(
     to user queries about the same topic, bridging vocabulary gaps.
     """
     from llm_client import acall_llm
+    from llm_client import render_prompt
 
-    prompt = (
-        f"Given this text passage, generate exactly {n_questions} diverse questions "
-        f"that this passage directly answers. Each question should use different "
-        f"vocabulary and phrasing. Return only the questions, one per line.\n\n"
-        f"Passage:\n{chunk_text[:1500]}"
-    )
+    try:
+        messages = render_prompt(
+            "prompts/hype_generate_questions.yaml",
+            passage=chunk_text[:1500],
+            n_questions=n_questions,
+        )
+    except Exception:
+        # Fallback if prompt template doesn't exist yet
+        messages = [{"role": "user", "content": (
+            f"Given this text passage, generate exactly {n_questions} diverse questions "
+            f"that this passage directly answers. Each question should use different "
+            f"vocabulary and phrasing. Return only the questions, one per line.\n\n"
+            f"Passage:\n{chunk_text[:1500]}"
+        )}]
 
     try:
         result = await acall_llm(
             model,
-            [{"role": "user", "content": prompt}],
+            messages,
             task="digimon.hype.generate_questions",
-            trace_id=f"hype.{id(chunk_text)}",
+            trace_id=f"hype.{chunk_id}",
             max_budget=0,
         )
         lines = [
@@ -57,8 +67,37 @@ async def _generate_hypothetical_questions(
         ]
         return lines[:n_questions]
     except Exception as e:
-        _hype_logger.warning("HyPE question generation failed: %s", e)
+        _hype_logger.warning("HyPE question generation failed for %s: %s", chunk_id, e)
         return []
+
+
+def _load_cached_questions(cache_path: str) -> dict[str, list[str]] | None:
+    """Load previously generated questions from cache file."""
+    import json
+    from pathlib import Path
+    p = Path(cache_path)
+    if not p.exists():
+        return None
+    try:
+        with open(p) as f:
+            return json.load(f)
+    except Exception as e:
+        _hype_logger.warning("Failed to load HyPE cache %s: %s", cache_path, e)
+        return None
+
+
+def _save_cached_questions(cache_path: str, questions: dict[str, list[str]]) -> None:
+    """Save generated questions to cache file for reuse."""
+    import json
+    from pathlib import Path
+    p = Path(cache_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(p, "w") as f:
+            json.dump(questions, f, indent=2)
+        _hype_logger.info("Saved HyPE cache: %d chunks → %s", len(questions), cache_path)
+    except Exception as e:
+        _hype_logger.warning("Failed to save HyPE cache %s: %s", cache_path, e)
 
 
 async def _generate_questions_batch(
@@ -66,29 +105,63 @@ async def _generate_questions_batch(
     n_questions: int,
     model: str,
     max_concurrent: int = 10,
+    cache_path: str | None = None,
 ) -> dict[str, list[str]]:
-    """Generate hypothetical questions for a batch of chunks with concurrency control."""
+    """Generate hypothetical questions for a batch of chunks with concurrency control.
+
+    If cache_path is provided, loads cached questions for chunks that were
+    previously processed and only generates for new ones.
+    """
+    # Load cache if available
+    cached = _load_cached_questions(cache_path) if cache_path else None
+    results: dict[str, list[str]] = dict(cached) if cached else {}
+
+    # Filter to chunks that need generation
+    to_generate = [c for c in chunks if c.get("content", "").strip() and c["chunk_id"] not in results]
+    if cached:
+        _hype_logger.info(
+            "HyPE cache hit: %d/%d chunks cached, %d to generate",
+            len(chunks) - len(to_generate), len(chunks), len(to_generate),
+        )
+
+    if not to_generate:
+        return results
+
     semaphore = asyncio.Semaphore(max_concurrent)
-    results: dict[str, list[str]] = {}
+    failed_chunks: list[str] = []
 
     async def _process(chunk: dict[str, Any]) -> None:
         async with semaphore:
             chunk_id = chunk["chunk_id"]
             questions = await _generate_hypothetical_questions(
-                chunk["content"], n_questions, model,
+                chunk_id, chunk["content"], n_questions, model,
             )
-            results[chunk_id] = questions
+            if questions:
+                results[chunk_id] = questions
+            else:
+                failed_chunks.append(chunk_id)
 
-    tasks = [_process(c) for c in chunks if c.get("content", "").strip()]
+    tasks = [_process(c) for c in to_generate]
     total = len(tasks)
 
-    # Process in batches to show progress
+    # Process in batches with progress logging and periodic cache saves
     batch_size = 50
     for i in range(0, total, batch_size):
         batch = tasks[i:i + batch_size]
-        await asyncio.gather(*batch, return_exceptions=True)
+        await asyncio.gather(*batch)
         done = min(i + batch_size, total)
         _hype_logger.info("HyPE question generation: %d/%d chunks", done, total)
+
+        # Checkpoint cache every 200 chunks
+        if cache_path and done % 200 == 0:
+            _save_cached_questions(cache_path, results)
+
+    if failed_chunks:
+        _hype_logger.warning("HyPE: %d chunks failed question generation", len(failed_chunks))
+
+    # Final cache save
+    if cache_path:
+        _save_cached_questions(cache_path, results)
 
     return results
 
@@ -206,14 +279,17 @@ async def chunk_vdb_build_tool(
             f"Generating hypothetical questions for {len(base_elements)} chunks "
             f"(mode={mode}, n_questions={n_questions}, model={q_model})"
         )
+        cache_path = f"storage/vdb/{vdb_id}_hype_questions.json"
         questions_by_chunk = await _generate_questions_batch(
             base_elements, n_questions, q_model,
+            cache_path=cache_path,
         )
         n_questions_generated = sum(len(qs) for qs in questions_by_chunk.values())
         logger.info(f"Generated {n_questions_generated} hypothetical questions")
 
         if mode == "questions_only":
-            # Each question becomes a separate element pointing to the parent chunk
+            # Each question becomes a separate element pointing to the parent chunk.
+            # original_text stores the source chunk so search can return it.
             for elem in base_elements:
                 cid = elem["chunk_id"]
                 for i, question in enumerate(questions_by_chunk.get(cid, [])):
@@ -221,6 +297,7 @@ async def chunk_vdb_build_tool(
                         "id": f"{cid}_q{i}",
                         "content": question,
                         "chunk_id": cid,
+                        "original_text": elem["content"],
                         "doc_id": elem.get("doc_id", ""),
                         "title": elem.get("title", ""),
                     })
@@ -234,6 +311,7 @@ async def chunk_vdb_build_tool(
                         "id": f"{cid}_q{i}",
                         "content": question,
                         "chunk_id": cid,
+                        "original_text": elem["content"],
                         "doc_id": elem.get("doc_id", ""),
                         "title": elem.get("title", ""),
                     })
@@ -257,7 +335,7 @@ async def chunk_vdb_build_tool(
 
     await chunk_vdb.build_index(
         elements=elements,
-        meta_data=["id", "content", "chunk_id", "doc_id", "title"],
+        meta_data=["id", "content", "chunk_id", "doc_id", "title", "original_text"],
         force=force_rebuild,
     )
 

@@ -37,17 +37,32 @@ async def chunk_vdb(
     if not results:
         return {"chunks": SlotValue(kind=SlotKind.CHUNK_SET, data=[], producer="chunk.vdb")}
 
-    records = []
+    # Deduplicate by chunk_id — multiple question embeddings may match the same chunk.
+    # Keep the highest-scoring match per chunk.
+    best_by_chunk: dict[str, tuple[float, Any]] = {}
     for r in results:
         meta = r.metadata if hasattr(r, "metadata") else {}
-        chunk_id = meta.get("chunk_id", meta.get("id", ""))
-        text = r.text if hasattr(r, "text") else meta.get("content", "")
-        score = r.score if hasattr(r, "score") else None
+        chunk_id = str(meta.get("chunk_id", meta.get("id", "")))
+        score = float(r.score) if hasattr(r, "score") and r.score is not None else 0.0
+        prev = best_by_chunk.get(chunk_id)
+        if prev is None or score > prev[0]:
+            best_by_chunk[chunk_id] = (score, r)
 
+    records = []
+    for chunk_id, (score, r) in sorted(best_by_chunk.items(), key=lambda x: -x[1][0]):
+        meta = r.metadata if hasattr(r, "metadata") else {}
+        # For HyPE question elements, r.text is the generated question, not
+        # the chunk. Prefer original_text (the source chunk) over content
+        # (which is the question text for question elements).
+        text = (
+            meta.get("original_text", "")
+            or meta.get("content", "")
+            or (r.text if hasattr(r, "text") else "")
+        )
         records.append(ChunkRecord(
-            chunk_id=str(chunk_id),
+            chunk_id=chunk_id,
             text=text,
-            score=float(score) if score is not None else None,
+            score=score,
             extra={"doc_id": meta.get("doc_id", ""), "title": meta.get("title", "")},
         ))
 

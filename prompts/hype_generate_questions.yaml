@@ -1,0 +1,15 @@
+name: hype_generate_questions
+version: "1.0"
+description: "Generate hypothetical questions a text passage would answer (HyPE pattern)."
+messages:
+  - role: user
+    content: |
+      Given this text passage, generate exactly {{ n_questions }} diverse questions
+      that this passage directly answers. Requirements:
+      - Each question should use different vocabulary and phrasing
+      - Include questions that someone might ask using synonyms or related terms
+      - Cover the key facts, entities, dates, and relationships in the passage
+      - Return only the questions, one per line, no numbering
+
+      Passage:
+      {{ passage }}
