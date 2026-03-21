@@ -9,7 +9,7 @@ ADRs document significant architectural decisions.
 | 001 | Agent Orchestration Architecture | Accepted | 2026-02-15 |
 | 002 | Universal Graph Schema and Configurable Extraction | Proposed | 2026-02-16 |
 | 003 | Three Graph Tool Suites — Creation, Retrieval, Mutation | Proposed | 2026-02-16 |
-| 004 | Rebuild DIGIMON Around a Canonical Entity-Graph Architecture | Proposed | 2026-03-21 |
+| 004 | Rebuild DIGIMON Around a Canonical Entity-Graph Architecture | Accepted | 2026-03-21 |
 
 ## ADR Lifecycle
 

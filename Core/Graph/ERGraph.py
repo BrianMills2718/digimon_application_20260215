@@ -1,3 +1,12 @@
+"""Entity-graph builder supporting both two-step KG extraction and richer delimiter extraction.
+
+The class now sits on top of an explicit build contract: graph profile,
+schema-guided extraction, and persisted manifest truth. The first rebuild slice
+still preserves the two existing extraction strategies, but routes both through
+the same schema/profile intent so later benchmarks can reproduce what was
+actually built.
+"""
+
 import asyncio
 import json
 import os
@@ -5,6 +14,7 @@ from collections import defaultdict
 from typing import Any, List
 from Core.Graph.BaseGraph import BaseGraph
 from Core.Graph.DelimiterExtraction import DelimiterExtractionMixin
+from Core.Common.graph_schema_guidance import resolve_entity_type_names, resolve_relation_type_names
 from Core.Common.entity_name_hygiene import classify_entity_name
 from Core.Common.Logger import logger
 from Core.Common.Utils import (
@@ -18,6 +28,7 @@ from Core.Storage.NetworkXStorage import NetworkXStorage
 
 
 class ERGraph(DelimiterExtractionMixin, BaseGraph):
+    """Build entity-relation graphs from chunks using one of two extraction modes."""
 
     def __init__(self, config, llm, encoder, storage_instance=None):
         """
@@ -40,6 +51,31 @@ class ERGraph(DelimiterExtractionMixin, BaseGraph):
     # Two-step extraction (NER + OpenIE) — produces KG-level attributes
     # ------------------------------------------------------------------
 
+    def _build_ner_guidance(self) -> str:
+        """Return optional entity-type guidance text for the NER prompt."""
+
+        entity_types = resolve_entity_type_names(self.config)
+        if not entity_types:
+            return ""
+        return "\n\nFocus on extracting these entity types when applicable:\n" + "\n".join(
+            f"- {entity_type}" for entity_type in entity_types
+        )
+
+    def _build_openie_guidance(self) -> str:
+        """Return optional relation-type guidance text for the OpenIE prompt."""
+
+        relation_types = resolve_relation_type_names(self.config)
+        if not relation_types:
+            return ""
+
+        schema_mode = getattr(self.config, "schema_mode", "open")
+        if getattr(schema_mode, "value", schema_mode) == "closed":
+            intro = "IMPORTANT: Only use these relationship types:"
+        else:
+            intro = "IMPORTANT: Prefer these relationship types when applicable:"
+
+        return "\n\n" + intro + "\n" + "\n".join(f"- {relation_type}" for relation_type in relation_types)
+
     async def _named_entity_recognition(self, passage: str):
         from Core.Common.TokenBudgetManager import TokenBudgetManager
 
@@ -48,21 +84,7 @@ class ERGraph(DelimiterExtractionMixin, BaseGraph):
             logger.warning(f"Passage too long ({len(passage)} chars), truncating for NER")
             passage = passage[:3000] + "...[truncated]"
 
-        # Get custom ontology if available
-        custom_ontology = getattr(self.config, 'loaded_custom_ontology', None)
-        entity_type_guidance = ""
-
-        if custom_ontology and custom_ontology.get('entities'):
-            entity_types = []
-            for entity_def in custom_ontology['entities']:
-                ent_name = entity_def.get('name', '')
-                ent_desc = entity_def.get('description', '')
-                if ent_name:
-                    entity_types.append(f"- {ent_name}: {ent_desc}" if ent_desc else f"- {ent_name}")
-            if entity_types:
-                entity_type_guidance = "\n\nFocus on extracting these specific entity types:\n" + "\n".join(entity_types)
-
-        ner_messages = GraphPrompt.NER.format(user_input=passage) + entity_type_guidance
+        ner_messages = GraphPrompt.NER.format(user_input=passage) + self._build_ner_guidance()
         llm_output_str = await self.llm.aask(ner_messages, format="json")
 
         parsed_output = None
@@ -92,23 +114,10 @@ class ERGraph(DelimiterExtractionMixin, BaseGraph):
 
         named_entity_json = {"named_entities": entities}
 
-        custom_ontology = getattr(self.config, 'loaded_custom_ontology', None)
-        ontology_guidance = ""
-
-        if custom_ontology and custom_ontology.get('relations'):
-            relation_types = []
-            for relation_def in custom_ontology['relations']:
-                rel_name = relation_def.get('name', '')
-                rel_desc = relation_def.get('description', '')
-                if rel_name:
-                    relation_types.append(f"- {rel_name}: {rel_desc}" if rel_desc else f"- {rel_name}")
-            if relation_types:
-                ontology_guidance = "\n\nIMPORTANT: When extracting relationships, use these specific relationship types when applicable:\n" + "\n".join(relation_types) + "\n\nOnly use generic relationship types if none of the above are suitable."
-
         prompt_with_ontology = GraphPrompt.OPENIE_POST_NET.format(
             passage=chunk,
             named_entity_json=json.dumps(named_entity_json)
-        ) + ontology_guidance
+        ) + self._build_openie_guidance()
 
         llm_output_str = await self.llm.aask(prompt_with_ontology, format="json")
 

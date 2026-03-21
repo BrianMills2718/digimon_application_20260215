@@ -76,7 +76,15 @@ class _ExtractionHarness(DelimiterExtractionMixin):
     """Minimal host object for delimiter extraction helper tests."""
 
     def __init__(self) -> None:
-        self.config = SimpleNamespace()
+        self.config = SimpleNamespace(
+            enable_edge_name=False,
+            enable_edge_keywords=False,
+            schema_entity_types=[],
+            schema_relation_types=[],
+            schema_mode="open",
+            loaded_custom_ontology=None,
+            max_gleaning=1,
+        )
         self.graph_config = self.config
 
 
@@ -126,3 +134,52 @@ def test_delimiter_extraction_skips_invalid_single_letter_entities() -> None:
     )
 
     assert result is None
+
+
+def test_delimiter_extraction_parses_relation_name_when_enabled() -> None:
+    """Delimiter extraction should preserve explicit relation names for richer profiles."""
+
+    extractor = _ExtractionHarness()
+    extractor.config.enable_edge_name = True
+
+    result = asyncio.run(
+        extractor._handle_single_relationship_extraction(
+            ['"relationship"', "Paris", "France", "capital_of", "Paris is the capital of France", "0.9"],
+            chunk_key="chunk-1",
+        )
+    )
+
+    assert result is not None
+    assert result.relation_name == "capital of"
+    assert result.description == "paris is the capital of france"
+    assert result.keywords == ""
+    assert result.weight == 0.9
+
+
+def test_delimiter_extraction_parses_relation_keywords_when_enabled() -> None:
+    """Delimiter extraction should preserve both relation names and keywords in RKG mode."""
+
+    extractor = _ExtractionHarness()
+    extractor.config.enable_edge_name = True
+    extractor.config.enable_edge_keywords = True
+
+    result = asyncio.run(
+        extractor._handle_single_relationship_extraction(
+            [
+                '"relationship"',
+                "Paris",
+                "France",
+                "capital_of",
+                "Paris is the capital of France",
+                "government, geography",
+                "0.9",
+            ],
+            chunk_key="chunk-1",
+        )
+    )
+
+    assert result is not None
+    assert result.relation_name == "capital of"
+    assert result.description == "paris is the capital of france"
+    assert result.keywords == "government geography"
+    assert result.weight == 0.9

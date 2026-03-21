@@ -2,8 +2,11 @@
 Pydantic contracts for agent tools that construct various types of knowledge graphs.
 Each tool has an input and output schema, with config overrides for graph-specific parameters.
 """
-from pydantic import BaseModel, Field, AliasChoices
-from typing import Optional, Any
+from typing import Any, Optional
+
+from pydantic import AliasChoices, BaseModel, Field
+
+from Core.Schema.GraphBuildTypes import GraphProfile, GraphSchemaMode
 
 # =========================
 # Base Output Schema
@@ -26,6 +29,28 @@ class BaseGraphBuildOutputs(BaseModel):
 # ERGraph
 # =========================
 class ERGraphConfigOverrides(BaseModel):
+    """Config overrides specific to entity-relationship graph builds."""
+
+    graph_profile: Optional[GraphProfile] = Field(
+        default=None,
+        validation_alias=AliasChoices("graph_profile", "profile"),
+        description="Explicit entity-graph profile such as KG, TKG, or RKG.",
+    )
+    schema_mode: Optional[GraphSchemaMode] = Field(
+        default=None,
+        validation_alias=AliasChoices("schema_mode", "extraction_schema_mode"),
+        description="Schema guidance mode: open, guided, or closed.",
+    )
+    schema_entity_types: Optional[list[str]] = Field(
+        default=None,
+        validation_alias=AliasChoices("schema_entity_types", "guided_entity_types", "allowed_entity_types"),
+        description="Entity types to use for guided or closed extraction.",
+    )
+    schema_relation_types: Optional[list[str]] = Field(
+        default=None,
+        validation_alias=AliasChoices("schema_relation_types", "guided_relation_types", "allowed_relation_types"),
+        description="Relation types to use for guided or closed extraction.",
+    )
     extract_two_step: Optional[bool] = Field(
         default=None,
         validation_alias=AliasChoices('extract_two_step', 'two_step_extraction', 'extraction_strategy', 'extraction_mode'),
@@ -70,17 +95,37 @@ class ERGraphConfigOverrides(BaseModel):
         populate_by_name = True  # Allows use of alias as field name
 
 class BuildERGraphInputs(BaseModel):
+    """Inputs for the ER graph build tool."""
+
     target_dataset_name: str = Field(description="Name of the dataset for input chunks and namespacing artifacts.")
     force_rebuild: bool = Field(default=False, description="If True, forces a rebuild even if artifacts exist.")
     config_overrides: Optional[ERGraphConfigOverrides] = Field(default=None, description="Specific configuration overrides for ERGraph building.")
 
 class BuildERGraphOutputs(BaseGraphBuildOutputs):
-    pass
+    """Outputs for the ER graph build tool."""
 
 # =========================
 # RKGraph
 # =========================
 class RKGraphConfigOverrides(BaseModel):
+    """Config overrides specific to rich-keyword graph builds."""
+
+    graph_profile: Optional[GraphProfile] = Field(
+        default=None,
+        description="Explicit entity-graph profile such as TKG or RKG.",
+    )
+    schema_mode: Optional[GraphSchemaMode] = Field(
+        default=None,
+        description="Schema guidance mode: open, guided, or closed.",
+    )
+    schema_entity_types: Optional[list[str]] = Field(
+        default=None,
+        description="Entity types to use for guided or closed extraction.",
+    )
+    schema_relation_types: Optional[list[str]] = Field(
+        default=None,
+        description="Relation types to use for guided or closed extraction.",
+    )
     enable_edge_keywords: Optional[bool] = Field(default=None, description="Selects between ENTITY_EXTRACTION and ENTITY_EXTRACTION_KEYWORD prompts.")
     max_gleaning: Optional[int] = Field(default=None, description="Maximum number of gleaning iterations or items.")
     enable_chunk_cooccurrence: Optional[bool] = Field(default=None, description="Add implicit edges between entities that co-occur in the same source chunk.")
@@ -88,17 +133,21 @@ class RKGraphConfigOverrides(BaseModel):
     enable_entity_description: Optional[bool] = Field(default=None, description="Override for enabling entity descriptions (if applicable).")
 
 class BuildRKGraphInputs(BaseModel):
+    """Inputs for the RK graph build tool."""
+
     target_dataset_name: str = Field(description="Name of the dataset for input chunks and namespacing artifacts.")
     force_rebuild: bool = Field(default=False, description="If True, forces a rebuild even if artifacts exist.")
     config_overrides: Optional[RKGraphConfigOverrides] = Field(default=None, description="Specific configuration overrides for RKGraph building.")
 
 class BuildRKGraphOutputs(BaseGraphBuildOutputs):
-    pass
+    """Outputs for the RK graph build tool."""
 
 # =========================
 # TreeGraph
 # =========================
 class TreeGraphConfigOverrides(BaseModel):
+    """Config overrides specific to hierarchical tree graph builds."""
+
     build_tree_from_leaves: Optional[bool] = Field(default=None, description="If True, build tree from leaves upward.")
     num_layers: Optional[int] = Field(default=None, description="Number of layers in the tree.")
     reduction_dimension: Optional[int] = Field(default=None, description="UMAP reduction dimension.")
@@ -109,17 +158,21 @@ class TreeGraphConfigOverrides(BaseModel):
     random_seed: Optional[int] = Field(default=None, description="Random seed for reproducibility.")
 
 class BuildTreeGraphInputs(BaseModel):
+    """Inputs for the tree graph build tool."""
+
     target_dataset_name: str = Field(description="Name of the dataset for input chunks and namespacing artifacts.")
     force_rebuild: bool = Field(default=False, description="If True, forces a rebuild even if artifacts exist.")
     config_overrides: Optional[TreeGraphConfigOverrides] = Field(default=None, description="Specific configuration overrides for TreeGraph building.")
 
 class BuildTreeGraphOutputs(BaseGraphBuildOutputs):
-    pass
+    """Outputs for the tree graph build tool."""
 
 # =========================
 # TreeGraphBalanced
 # =========================
 class TreeGraphBalancedConfigOverrides(BaseModel):
+    """Config overrides specific to balanced tree graph builds."""
+
     build_tree_from_leaves: Optional[bool] = Field(default=None, description="If True, build tree from leaves upward.")
     num_layers: Optional[int] = Field(default=None, description="Number of layers in the tree.")
     summarization_length: Optional[int] = Field(default=None, description="Max tokens for LLM summary.")
@@ -130,24 +183,30 @@ class TreeGraphBalancedConfigOverrides(BaseModel):
     random_seed: Optional[int] = Field(default=None, description="Random seed for reproducibility.")
 
 class BuildTreeGraphBalancedInputs(BaseModel):
+    """Inputs for the balanced tree graph build tool."""
+
     target_dataset_name: str = Field(description="Name of the dataset for input chunks and namespacing artifacts.")
     force_rebuild: bool = Field(default=False, description="If True, forces a rebuild even if artifacts exist.")
     config_overrides: Optional[TreeGraphBalancedConfigOverrides] = Field(default=None, description="Specific configuration overrides for TreeGraphBalanced building.")
 
 class BuildTreeGraphBalancedOutputs(BaseGraphBuildOutputs):
-    pass
+    """Outputs for the balanced tree graph build tool."""
 
 # =========================
 # PassageGraph
 # =========================
 class PassageGraphConfigOverrides(BaseModel):
+    """Config overrides specific to passage graph builds."""
+
     prior_prob: Optional[float] = Field(default=None, description="Threshold for WAT entity annotations.")
     custom_ontology_path_override: Optional[str] = Field(default=None, description="Path to a custom ontology JSON file to use for this build.")
 
 class BuildPassageGraphInputs(BaseModel):
+    """Inputs for the passage graph build tool."""
+
     target_dataset_name: str = Field(description="Name of the dataset for input chunks and namespacing artifacts.")
     force_rebuild: bool = Field(default=False, description="If True, forces a rebuild even if artifacts exist.")
     config_overrides: Optional[PassageGraphConfigOverrides] = Field(default=None, description="Specific configuration overrides for PassageGraph building.")
 
 class BuildPassageGraphOutputs(BaseGraphBuildOutputs):
-    pass
+    """Outputs for the passage graph build tool."""

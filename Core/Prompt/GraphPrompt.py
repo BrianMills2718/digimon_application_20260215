@@ -409,3 +409,83 @@ Input:
 {task}
 
 """
+
+
+def build_entity_extraction_prompt(
+    *,
+    input_text: str,
+    entity_types: list[str],
+    relation_types: list[str],
+    tuple_delimiter: str,
+    record_delimiter: str,
+    completion_delimiter: str,
+    include_relation_name: bool,
+    include_relation_keywords: bool,
+    schema_guidance: str,
+) -> str:
+    """Build a profile-aware delimiter extraction prompt.
+
+    The legacy constant prompts are long and example-heavy. This helper creates
+    a smaller contract that can adapt to explicit graph profiles, relation-name
+    extraction, relation keywords, and schema-guided extraction without
+    multiplying prompt variants.
+    """
+
+    relationship_fields = []
+    relationship_format_fields = [
+        "<source_entity>",
+        "<target_entity>",
+    ]
+
+    if include_relation_name:
+        relationship_fields.append(
+            "- relation_name: concise normalized label for the relationship, such as employed by or located in"
+        )
+        relationship_format_fields.append("<relation_name>")
+
+    relationship_fields.append(
+        "- relationship_description: concise explanation of why the source and target are related"
+    )
+    relationship_format_fields.append("<relationship_description>")
+
+    if include_relation_keywords:
+        relationship_fields.append(
+            "- relationship_keywords: comma-separated high-level keywords describing the relationship"
+        )
+        relationship_format_fields.append("<relationship_keywords>")
+
+    relationship_fields.append(
+        "- relationship_strength: numeric score indicating how strong the relationship is"
+    )
+    relationship_format_fields.append("<relationship_strength>")
+
+    entity_type_text = ", ".join(entity_types)
+    relation_type_text = ", ".join(relation_types) if relation_types else "any appropriate relation type"
+    relationship_fields_text = "\n".join(relationship_fields)
+    relationship_format = tuple_delimiter.join(relationship_format_fields)
+    schema_block = f"\n\n{schema_guidance}" if schema_guidance else ""
+
+    return f"""-Goal-
+Extract entities and relationships from the text to build a graph.
+
+-Entity Contract-
+- entity_name: Name of the entity, capitalized when appropriate
+- entity_type: One of the following types when applicable: [{entity_type_text}]
+- entity_description: concise description of the entity
+Format each entity as ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>)
+
+-Relationship Contract-
+Use relation names from this set when applicable: [{relation_type_text}]
+{relationship_fields_text}
+Format each relationship as ("relationship"{tuple_delimiter}{relationship_format})
+
+-Output Rules-
+1. Return output in English as one flat list.
+2. Use {record_delimiter} between records.
+3. When finished, output {completion_delimiter}.{schema_block}
+
+-Text-
+{input_text}
+
+Output:
+"""

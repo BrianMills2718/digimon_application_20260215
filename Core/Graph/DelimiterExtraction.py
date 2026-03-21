@@ -6,19 +6,23 @@ The extraction calls the LLM with ENTITY_EXTRACTION or ENTITY_EXTRACTION_KEYWORD
 and parses the delimiter-separated records into Entity and Relationship objects.
 """
 
-import re
 import json
+import re
 from collections import defaultdict
 from typing import Any, List, Optional, Tuple
 
 from Core.Common.Logger import logger
+from Core.Common.graph_schema_guidance import (
+    build_schema_guidance_text,
+    resolve_entity_type_names,
+    resolve_relation_type_names,
+)
 from Core.Common.entity_name_hygiene import classify_entity_name
 from Core.Common.Utils import clean_str, split_string_by_multi_markers, is_float_regex
 from Core.Common.Constants import (
     DEFAULT_RECORD_DELIMITER,
     DEFAULT_COMPLETION_DELIMITER,
     DEFAULT_TUPLE_DELIMITER,
-    DEFAULT_ENTITY_TYPES,
 )
 from Core.Common.Memory import Memory
 from Core.Prompt import GraphPrompt
@@ -43,12 +47,13 @@ class DelimiterExtractionMixin:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _build_context_for_entity_extraction(content: str) -> dict:
+    def _build_context_for_entity_extraction(content: str) -> dict[str, str]:
+        """Return the common delimiter/context values used by extraction prompts."""
+
         return dict(
             tuple_delimiter=DEFAULT_TUPLE_DELIMITER,
             record_delimiter=DEFAULT_RECORD_DELIMITER,
             completion_delimiter=DEFAULT_COMPLETION_DELIMITER,
-            entity_types=",".join(DEFAULT_ENTITY_TYPES),
             input_text=content,
         )
 
@@ -64,12 +69,24 @@ class DelimiterExtractionMixin:
         graph_cfg = getattr(self, "graph_config", self.config)
 
         context = self._build_context_for_entity_extraction(chunk_info.content)
-        prompt_template = (
-            GraphPrompt.ENTITY_EXTRACTION_KEYWORD
-            if getattr(graph_cfg, "enable_edge_keywords", False)
-            else GraphPrompt.ENTITY_EXTRACTION
+        entity_types = resolve_entity_type_names(graph_cfg)
+        relation_types = resolve_relation_type_names(graph_cfg)
+        schema_guidance = build_schema_guidance_text(
+            graph_config=graph_cfg,
+            entity_types=entity_types,
+            relation_types=relation_types,
         )
-        prompt = prompt_template.format(**context)
+        prompt = GraphPrompt.build_entity_extraction_prompt(
+            input_text=context["input_text"],
+            entity_types=entity_types,
+            relation_types=relation_types,
+            tuple_delimiter=context["tuple_delimiter"],
+            record_delimiter=context["record_delimiter"],
+            completion_delimiter=context["completion_delimiter"],
+            include_relation_name=getattr(graph_cfg, "enable_edge_name", False),
+            include_relation_keywords=getattr(graph_cfg, "enable_edge_keywords", False),
+            schema_guidance=schema_guidance,
+        )
 
         working_memory = Memory()
         working_memory.add(Message(content=prompt, role="user"))
@@ -201,7 +218,29 @@ class DelimiterExtractionMixin:
         graph_cfg = getattr(self, "graph_config", self.config)
         custom_ontology = getattr(graph_cfg, "loaded_custom_ontology", None)
         relation_attributes: dict = {}
-        final_relation_name = clean_str(record_attributes[0])
+        enable_relation_name = getattr(graph_cfg, "enable_edge_name", False)
+        enable_keywords = getattr(graph_cfg, "enable_edge_keywords", False)
+
+        relation_name = ""
+        description_index = 3
+        keywords_index: int | None = None
+        weight_index = len(record_attributes) - 1
+
+        if enable_relation_name:
+            if len(record_attributes) < 6:
+                return None
+            relation_name = clean_str(record_attributes[3])
+            description_index = 4
+            if enable_keywords:
+                if len(record_attributes) < 7:
+                    return None
+                keywords_index = 5
+        elif enable_keywords:
+            if len(record_attributes) < 6:
+                return None
+            keywords_index = 4
+
+        final_relation_name = relation_name
 
         if custom_ontology and custom_ontology.get("relations"):
             for relation_def in custom_ontology["relations"]:
@@ -216,15 +255,13 @@ class DelimiterExtractionMixin:
                                     relation_attributes[prop_name] = record_attributes[idx + 1]
                     break
 
-        enable_keywords = getattr(graph_cfg, "enable_edge_keywords", False)
-
         return Relationship(
             src_id=clean_str(record_attributes[1]),
             tgt_id=clean_str(record_attributes[2]),
-            weight=float(record_attributes[-1]) if is_float_regex(record_attributes[-1]) else 1.0,
-            description=clean_str(record_attributes[3]),
+            weight=float(record_attributes[weight_index]) if is_float_regex(record_attributes[weight_index]) else 1.0,
+            description=clean_str(record_attributes[description_index]),
             source_id=chunk_key,
-            keywords=clean_str(record_attributes[4]) if enable_keywords else "",
+            keywords=" ".join(clean_str(record_attributes[keywords_index]).split()) if keywords_index is not None else "",
             relation_name=final_relation_name,
             attributes=relation_attributes,
         )

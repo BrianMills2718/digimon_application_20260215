@@ -1,0 +1,60 @@
+"""Unit tests for graph profile and schema-mode behavior in GraphConfig."""
+
+from __future__ import annotations
+
+import pytest
+
+from Config.GraphConfig import GraphConfig
+from Core.Schema.GraphBuildTypes import GraphProfile, GraphSchemaMode
+
+
+def test_kg_profile_locks_minimal_two_step_entity_graph_contract() -> None:
+    """KG profile should normalize the config to the current minimal KG build path."""
+
+    config = GraphConfig(graph_profile=GraphProfile.KG)
+
+    assert config.extract_two_step is True
+    assert config.enable_entity_type is False
+    assert config.enable_entity_description is False
+    assert config.enable_edge_name is True
+    assert config.enable_edge_description is False
+    assert config.enable_edge_keywords is False
+
+
+def test_rkg_profile_locks_rich_delimiter_entity_graph_contract() -> None:
+    """RKG profile should normalize the config to the richest current delimiter path."""
+
+    config = GraphConfig(
+        graph_profile=GraphProfile.RKG,
+        schema_mode=GraphSchemaMode.GUIDED,
+        schema_entity_types=["person"],
+        schema_relation_types=["located_in"],
+    )
+
+    assert config.extract_two_step is False
+    assert config.enable_entity_type is True
+    assert config.enable_entity_description is True
+    assert config.enable_edge_name is True
+    assert config.enable_edge_description is True
+    assert config.enable_edge_keywords is True
+    assert config.schema_mode is GraphSchemaMode.GUIDED
+
+
+def test_profile_assignment_revalidates_existing_config() -> None:
+    """Validated assignment should apply profile defaults during tool-style overrides."""
+
+    config = GraphConfig()
+    config.graph_profile = GraphProfile.TKG
+
+    assert config.extract_two_step is False
+    assert config.enable_entity_type is True
+    assert config.enable_entity_description is True
+    assert config.enable_edge_name is True
+    assert config.enable_edge_description is True
+
+
+def test_entity_graph_rejects_tree_profile() -> None:
+    """Entity graph configs should fail loudly on topology/profile mismatches."""
+
+    with pytest.raises(ValueError, match="Entity-graph builds must not use"):
+        GraphConfig(type="er_graph", graph_profile=GraphProfile.TREE)

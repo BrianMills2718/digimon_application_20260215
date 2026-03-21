@@ -1,6 +1,6 @@
 # Plan #4: Graph Build Rearchitecture
 
-**Status:** Planned
+**Status:** In Progress
 **Type:** design
 **Priority:** High
 **Blocked By:** None
@@ -48,6 +48,10 @@
 ---
 
 ## Plan
+
+## Progress
+
+- 2026-03-21: Phase 1/3 foundation landed. Graph builds now support explicit profile/schema contract fields, richer manifest schema metadata, and relation-name-aware delimiter extraction. See the current implementation milestone commit for code details and tests.
 
 ### Phase 0: SOTA Grounding
 

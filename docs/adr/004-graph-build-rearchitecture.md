@@ -1,6 +1,6 @@
 # ADR-004: Rebuild DIGIMON Around a Canonical Entity-Graph Architecture
 
-**Status**: Proposed
+**Status**: Accepted
 **Date**: 2026-03-21
 
 ## Context

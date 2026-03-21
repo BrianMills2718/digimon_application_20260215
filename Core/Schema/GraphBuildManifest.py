@@ -9,33 +9,15 @@ not have to guess from filenames or loosely-coupled config flags.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from enum import Enum
 import json
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
 from Config.GraphConfig import GraphConfig
+from Core.Schema.GraphBuildTypes import GraphProfile, GraphSchemaMode, GraphTopologyKind
 
 MANIFEST_FILE_NAME = "graph_build_manifest.json"
-
-
-class GraphTopologyKind(str, Enum):
-    """Top-level graph topology families supported by DIGIMON."""
-
-    ENTITY = "entity_graph"
-    PASSAGE = "passage_graph"
-    TREE = "tree_graph"
-
-
-class GraphProfile(str, Enum):
-    """Named attribute profiles for graph builds."""
-
-    KG = "KG"
-    TKG = "TKG"
-    RKG = "RKG"
-    PASSAGE = "PASSAGE"
-    TREE = "TREE"
 
 
 class GraphArtifactFlags(BaseModel):
@@ -65,10 +47,18 @@ class GraphConfigSnapshot(BaseModel):
     use_community: bool
 
 
+class GraphSchemaContract(BaseModel):
+    """Declared schema contract used to guide extraction for a graph build."""
+
+    mode: GraphSchemaMode = GraphSchemaMode.OPEN
+    entity_types: list[str] = Field(default_factory=list)
+    relation_types: list[str] = Field(default_factory=list)
+
+
 class GraphBuildManifest(BaseModel):
     """Persisted description of one graph build and its available capabilities."""
 
-    manifest_version: int = 1
+    manifest_version: int = 2
     dataset_name: str
     graph_type: str
     topology_kind: GraphTopologyKind
@@ -76,6 +66,7 @@ class GraphBuildManifest(BaseModel):
     node_fields: list[str] = Field(default_factory=list)
     edge_fields: list[str] = Field(default_factory=list)
     artifacts: GraphArtifactFlags = Field(default_factory=GraphArtifactFlags)
+    schema_contract: GraphSchemaContract = Field(default_factory=GraphSchemaContract)
     config_flags: GraphConfigSnapshot
     generated_at_utc: str
 
@@ -90,7 +81,10 @@ class GraphBuildManifest(BaseModel):
         """Derive a manifest from the configured graph type and build flags."""
 
         topology_kind = _infer_topology_kind(graph_type)
-        graph_profile = _infer_graph_profile(topology_kind=topology_kind, graph_config=graph_config)
+        graph_profile = graph_config.graph_profile or _infer_graph_profile(
+            topology_kind=topology_kind,
+            graph_config=graph_config,
+        )
         node_fields = _infer_node_fields(topology_kind=topology_kind, graph_config=graph_config)
         edge_fields = _infer_edge_fields(topology_kind=topology_kind, graph_config=graph_config)
         artifacts = _infer_artifacts(topology_kind=topology_kind, graph_config=graph_config)
@@ -103,6 +97,11 @@ class GraphBuildManifest(BaseModel):
             node_fields=node_fields,
             edge_fields=edge_fields,
             artifacts=artifacts,
+            schema_contract=GraphSchemaContract(
+                mode=graph_config.schema_mode,
+                entity_types=list(graph_config.schema_entity_types),
+                relation_types=list(graph_config.schema_relation_types),
+            ),
             config_flags=GraphConfigSnapshot(
                 extract_two_step=graph_config.extract_two_step,
                 enable_entity_type=graph_config.enable_entity_type,
@@ -231,7 +230,7 @@ def _infer_edge_fields(
 
     if topology_kind is GraphTopologyKind.ENTITY:
         fields = ["src_id", "tgt_id", "weight", "source_id"]
-        if graph_config.enable_edge_name:
+        if graph_config.extract_two_step or graph_config.enable_edge_name:
             fields.append("relation_name")
         if graph_config.enable_edge_description:
             fields.append("description")

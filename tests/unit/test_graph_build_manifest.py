@@ -9,14 +9,13 @@ import pytest
 from Config.GraphConfig import GraphConfig
 from Core.Schema.GraphBuildManifest import (
     GraphBuildManifest,
-    GraphProfile,
-    GraphTopologyKind,
     write_graph_build_manifest,
 )
+from Core.Schema.GraphBuildTypes import GraphProfile, GraphSchemaMode, GraphTopologyKind
 
 
-def test_entity_graph_manifest_infers_kg_profile_for_minimal_config() -> None:
-    """Minimal ER graph config should produce a KG-style manifest."""
+def test_entity_graph_manifest_infers_legacy_minimal_fields_for_default_config() -> None:
+    """Default config should preserve the current minimal legacy field surface."""
 
     manifest = GraphBuildManifest.from_graph_config(
         dataset_name="MuSiQue",
@@ -30,6 +29,21 @@ def test_entity_graph_manifest_infers_kg_profile_for_minimal_config() -> None:
     assert manifest.edge_fields == ["src_id", "tgt_id", "weight", "source_id"]
     assert manifest.artifacts.entity_chunk_provenance is True
     assert manifest.artifacts.relationship_chunk_provenance is True
+    assert manifest.schema_contract.mode is GraphSchemaMode.OPEN
+
+
+def test_entity_graph_manifest_uses_explicit_kg_profile_contract() -> None:
+    """Explicit KG profile should advertise the profile-locked relation-name surface."""
+
+    manifest = GraphBuildManifest.from_graph_config(
+        dataset_name="MuSiQue",
+        graph_type="er_graph",
+        graph_config=GraphConfig(graph_profile=GraphProfile.KG),
+    )
+
+    assert manifest.graph_profile is GraphProfile.KG
+    assert manifest.config_flags.extract_two_step is True
+    assert manifest.edge_fields == ["src_id", "tgt_id", "weight", "source_id", "relation_name"]
 
 
 def test_entity_graph_manifest_infers_rkg_profile_when_keywords_enabled() -> None:
@@ -62,6 +76,26 @@ def test_entity_graph_manifest_infers_rkg_profile_when_keywords_enabled() -> Non
     ]
     assert manifest.artifacts.cooccurrence_edges is True
     assert manifest.artifacts.communities is True
+
+
+def test_entity_graph_manifest_persists_explicit_schema_contract() -> None:
+    """Manifest should record the declared schema guidance used for the build."""
+
+    manifest = GraphBuildManifest.from_graph_config(
+        dataset_name="MuSiQue",
+        graph_type="er_graph",
+        graph_config=GraphConfig(
+            graph_profile=GraphProfile.TKG,
+            schema_mode=GraphSchemaMode.GUIDED,
+            schema_entity_types=["person", "organization"],
+            schema_relation_types=["employed_by", "located_in"],
+        ),
+    )
+
+    assert manifest.graph_profile is GraphProfile.TKG
+    assert manifest.schema_contract.mode is GraphSchemaMode.GUIDED
+    assert manifest.schema_contract.entity_types == ["person", "organization"]
+    assert manifest.schema_contract.relation_types == ["employed_by", "located_in"]
 
 
 def test_non_entity_graph_manifest_uses_topology_specific_profile() -> None:
