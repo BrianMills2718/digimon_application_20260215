@@ -84,6 +84,7 @@
 - 2026-03-21: The grounded-entity frozen-case fixture was expanded to cover the pure-lane conceptual-node question directly (`european club`, `continental football`, `treble`, `sextuple`) alongside the existing `medical leave`, `throat cancer`, and `Silver Ball` cases.
 - 2026-03-21: A live rerun on that expanded six-case fixture completed cleanly with the tightened grounded prompt (`gemini/gemini-2.5-flash-lite`, execution `467b91975b4c`). The grounded variant remained directionally better (`0.939` vs `0.915`) but not significantly so. The new conceptual-node cases scored cleanly, while the remaining failures stayed concentrated on entity-record completeness for named relationship endpoints such as `throat cancer` and `Silver Ball`.
 - 2026-03-21: A follow-up prompt-only completeness instruction was also tested on that same six-case fixture through `prompt_eval`, and it regressed. The grounded run dropped to `5/6` scored items (`run_id=8ccb490a9c03`), `musique_doc_5_grounded_medical_leave` hit a truncated `209786`-character response, and `musique_doc_3_grounded_european_club` regressed into malformed short tuples. That wording should not stay in the live prompt contract.
+- 2026-03-21: Plan #6 implemented a real two-pass extraction path in the live delimiter-based graph builder. The deterministic contract is now proven, but the first medical-leave live proof showed the remaining gap clearly: `gemini/gemini-2.5-flash-lite` ignored the tuple contract and failed closed, while `gemini/gemini-2.5-flash` honored the contract but still missed `throat cancer` as an entity record. That means the next iteration target is now two-pass prompt quality on the frozen completeness fixture, not more one-pass prompt sprawl.
 
 ### Steps
 
@@ -163,6 +164,7 @@
    - Keep ADR-007 closure semantics: relationships may only refer to materialized entity records.
    - Extract the entity inventory first, then extract relationships against that explicit inventory.
    - Prove the two-pass contract on the same six-case frozen fixture before another live smoke rebuild.
+   - Execution now continues in [Plan #6](06_two_pass_extraction_proof.md) so the architecture proof has its own acceptance criteria and file scope.
 
 ---
 

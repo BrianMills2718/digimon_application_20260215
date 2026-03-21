@@ -69,6 +69,18 @@ class ERGraphConfigOverrides(BaseModel):
         ),
         description="Enable the stricter extraction prompt contract that forbids predicate phrases in entity slots.",
     )
+    two_pass_extraction: Optional[bool] = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "two_pass_extraction",
+            "two_pass_delimiter_extraction",
+            "use_two_pass_extraction",
+        ),
+        description=(
+            "Run delimiter-based entity extraction in two passes: entity inventory first, "
+            "then relationship extraction constrained to that inventory."
+        ),
+    )
     prefer_grounded_named_entities: Optional[bool] = Field(
         default=None,
         validation_alias=AliasChoices(

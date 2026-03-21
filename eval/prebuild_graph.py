@@ -84,6 +84,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Enable the stricter extraction prompt contract for entity-graph builds.",
     )
     parser.add_argument(
+        "--two-pass-extraction",
+        action="store_true",
+        help="Run delimiter-based entity extraction in two passes: entity inventory first, then relationships.",
+    )
+    parser.add_argument(
         "--prefer-grounded-named-entities",
         action="store_true",
         help="Prefer named or groundable entities over vague abstractions during extraction.",
@@ -133,6 +138,8 @@ def build_er_config_overrides(args: argparse.Namespace) -> dict[str, Any]:
         overrides["schema_relation_types"] = list(args.schema_relation_type)
     if args.strict_extraction_slot_discipline:
         overrides["strict_extraction_slot_discipline"] = True
+    if args.two_pass_extraction:
+        overrides["two_pass_extraction"] = True
     if args.prefer_grounded_named_entities:
         overrides["prefer_grounded_named_entities"] = True
     return overrides
@@ -148,6 +155,7 @@ def build_requires_fresh_graph(args: argparse.Namespace) -> bool:
             bool(args.schema_entity_type),
             bool(args.schema_relation_type),
             args.strict_extraction_slot_discipline,
+            args.two_pass_extraction,
             args.prefer_grounded_named_entities,
             args.chunk_limit is not None,
             args.lane_policy != "reliability",
@@ -240,6 +248,7 @@ async def main(args: argparse.Namespace) -> None:
         f"profile={args.graph_profile or 'default'}, "
         f"schema_mode={args.schema_mode or 'default'}, "
         f"strict_slot_discipline={args.strict_extraction_slot_discipline}, "
+        f"two_pass_extraction={args.two_pass_extraction}, "
         f"grounded_entity_preference={args.prefer_grounded_named_entities}, "
         f"lane_policy={args.lane_policy}, "
         f"chunk_limit={args.chunk_limit or 'all'}..."

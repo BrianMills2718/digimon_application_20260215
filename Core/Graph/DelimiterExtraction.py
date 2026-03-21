@@ -78,15 +78,160 @@ class DelimiterExtractionMixin:
             )
         return graph_cfg
 
+    @staticmethod
+    def _parse_record_attributes(record: str) -> list[str] | None:
+        """Parse one delimited extraction tuple into normalized attributes.
+
+        The delimiter-based extraction path is intentionally lightweight, but we
+        still need one shared parser so the one-pass and two-pass paths apply
+        the same markup stripping and tuple splitting rules.
+        """
+
+        match = re.search(r"\((.*)\)", record)
+        if match is None:
+            return None
+
+        record_attributes = split_string_by_multi_markers(
+            match.group(1), [DEFAULT_TUPLE_DELIMITER]
+        )
+        return [
+            strip_extraction_field_markup(attribute)
+            for attribute in record_attributes
+        ]
+
+    @staticmethod
+    def _quote_extraction_value(value: str) -> str:
+        """Return one extraction field quoted for a synthetic tuple record."""
+
+        escaped = value.replace('"', '\\"')
+        return f'"{escaped}"'
+
+    def _serialize_entity_record(self, entity: Entity) -> str:
+        """Serialize one validated entity back into the delimiter tuple format.
+
+        The two-pass proof reuses the existing graph builder, which already
+        consumes raw extraction tuples. Serializing the validated first-pass
+        entities avoids introducing a separate record format into the current
+        build path.
+        """
+
+        tuple_delimiter = DEFAULT_TUPLE_DELIMITER
+        return (
+            f"({self._quote_extraction_value('entity')}"
+            f"{tuple_delimiter}{self._quote_extraction_value(entity.entity_name)}"
+            f"{tuple_delimiter}{self._quote_extraction_value(entity.entity_type)}"
+            f"{tuple_delimiter}{self._quote_extraction_value(entity.description)})"
+        )
+
+    def _entity_inventory_text(self, entities: list[Entity]) -> str:
+        """Render a compact validated entity inventory for relationship pass prompts."""
+
+        inventory_lines = []
+        for entity in entities:
+            inventory_lines.append(
+                f'- "{entity.entity_name}" | type="{entity.entity_type}" | '
+                f'description="{entity.description}"'
+            )
+        return "\n".join(inventory_lines)
+
+    async def _run_delimited_extraction_prompt(
+        self,
+        *,
+        prompt: str,
+        continue_prompt: str,
+        if_loop_prompt: str,
+        log_label: str,
+        chunk_id: str,
+    ) -> list[str]:
+        """Run one delimiter-extraction prompt with the existing gleaning loop.
+
+        Both the legacy one-pass path and the new two-pass proof use the same
+        working-memory conversation pattern so any observed quality delta comes
+        from prompt structure rather than orchestration drift.
+        """
+
+        graph_cfg = self._graph_config()
+
+        working_memory = Memory()
+        working_memory.add(Message(content=prompt, role="user"))
+        final_result = await self.llm.aask(prompt)
+        working_memory.add(Message(content=final_result, role="assistant"))
+
+        for glean_idx in range(graph_cfg.max_gleaning):
+            working_memory.add(Message(content=continue_prompt, role="user"))
+            context_str = "\n".join(
+                f"{msg.sent_from}: {msg.content}" for msg in working_memory.get()
+            )
+            glean_result = await self.llm.aask(context_str)
+            working_memory.add(Message(content=glean_result, role="assistant"))
+            final_result += glean_result
+            logger.info(
+                f"{log_label} gleaning step {glean_idx + 1} for chunk {chunk_id}: "
+                f"{glean_result[:500]}..."
+            )
+
+            if glean_idx == graph_cfg.max_gleaning - 1:
+                break
+
+            working_memory.add(Message(content=if_loop_prompt, role="user"))
+            context_str = "\n".join(
+                f"{msg.sent_from}: {msg.content}" for msg in working_memory.get()
+            )
+            if_loop_result = await self.llm.aask(context_str)
+            if if_loop_result.strip().strip('"').strip("'").lower() != "yes":
+                break
+
+        logger.info(
+            f"{log_label} raw LLM output for chunk {chunk_id} before splitting: "
+            f">>>\n{final_result}\n<<<"
+        )
+        working_memory.clear()
+
+        extracted_records = split_string_by_multi_markers(
+            final_result, [DEFAULT_RECORD_DELIMITER, DEFAULT_COMPLETION_DELIMITER]
+        )
+        logger.info(f"{log_label} split records for chunk {chunk_id}: {extracted_records}")
+        return extracted_records
+
+    async def _collect_valid_entities_from_records(
+        self,
+        records: list[str],
+        *,
+        chunk_key: str,
+    ) -> list[Entity]:
+        """Validate and deduplicate entity records emitted by the first extraction pass."""
+
+        entities_by_name: dict[str, Entity] = {}
+        for record in records:
+            record_attributes = self._parse_record_attributes(record)
+            if record_attributes is None:
+                continue
+            entity = await self._handle_single_entity_extraction(record_attributes, chunk_key)
+            if entity is None:
+                continue
+
+            existing = entities_by_name.get(entity.entity_name)
+            if existing is None or len(entity.description) > len(existing.description):
+                entities_by_name[entity.entity_name] = entity
+
+        return list(entities_by_name.values())
+
     # ------------------------------------------------------------------
     # LLM call + gleaning
     # ------------------------------------------------------------------
 
     async def _extract_records_from_chunk(self, chunk_info: TextChunk) -> List[str]:
         """
-        Call the LLM with ENTITY_EXTRACTION (or ENTITY_EXTRACTION_KEYWORD) and
-        return the raw delimiter-split records list.
+        Extract raw delimiter tuples for one chunk using the configured prompt strategy.
         """
+        graph_cfg = self._graph_config()
+        if graph_cfg.two_pass_extraction:
+            return await self._extract_two_pass_records_from_chunk(chunk_info)
+        return await self._extract_one_pass_records_from_chunk(chunk_info)
+
+    async def _extract_one_pass_records_from_chunk(self, chunk_info: TextChunk) -> List[str]:
+        """Run the legacy single-pass delimiter extraction flow."""
+
         graph_cfg = self._graph_config()
 
         context = self._build_context_for_entity_extraction(chunk_info.content)
@@ -110,43 +255,82 @@ class DelimiterExtractionMixin:
             include_grounded_entity_preference=graph_cfg.prefer_grounded_named_entities,
             schema_guidance=schema_guidance,
         )
-
-        working_memory = Memory()
-        working_memory.add(Message(content=prompt, role="user"))
-        final_result = await self.llm.aask(prompt)
-        working_memory.add(Message(content=final_result, role="assistant"))
-
-        for glean_idx in range(graph_cfg.max_gleaning):
-            working_memory.add(Message(content=GraphPrompt.ENTITY_CONTINUE_EXTRACTION, role="user"))
-            context_str = "\n".join(
-                f"{msg.sent_from}: {msg.content}" for msg in working_memory.get()
-            )
-            glean_result = await self.llm.aask(context_str)
-            working_memory.add(Message(content=glean_result, role="assistant"))
-            final_result += glean_result
-            logger.info(f"Gleaning step {glean_idx + 1}: {glean_result[:500]}...")
-
-            if glean_idx == graph_cfg.max_gleaning - 1:
-                break
-
-            working_memory.add(Message(content=GraphPrompt.ENTITY_IF_LOOP_EXTRACTION, role="user"))
-            context_str = "\n".join(
-                f"{msg.sent_from}: {msg.content}" for msg in working_memory.get()
-            )
-            if_loop_result = await self.llm.aask(context_str)
-            if if_loop_result.strip().strip('"').strip("'").lower() != "yes":
-                break
-
-        logger.info(
-            f"Raw LLM output for chunk {chunk_info.chunk_id} before splitting: >>>\n{final_result}\n<<<"
+        return await self._run_delimited_extraction_prompt(
+            prompt=prompt,
+            continue_prompt=GraphPrompt.ENTITY_CONTINUE_EXTRACTION,
+            if_loop_prompt=GraphPrompt.ENTITY_IF_LOOP_EXTRACTION,
+            log_label="One-pass extraction",
+            chunk_id=chunk_info.chunk_id,
         )
-        working_memory.clear()
 
-        extracted_records = split_string_by_multi_markers(
-            final_result, [DEFAULT_RECORD_DELIMITER, DEFAULT_COMPLETION_DELIMITER]
+    async def _extract_two_pass_records_from_chunk(self, chunk_info: TextChunk) -> List[str]:
+        """Run entity-only extraction first, then relationship-only extraction.
+
+        The second pass is constrained to the validated entity inventory from
+        pass one. If the first pass yields no valid entities, this method fails
+        closed and returns no records instead of allowing unconstrained
+        relationship tuples into the graph.
+        """
+
+        graph_cfg = self._graph_config()
+        context = self._build_context_for_entity_extraction(chunk_info.content)
+        entity_types = resolve_entity_type_names(graph_cfg)
+        relation_types = resolve_relation_type_names(graph_cfg)
+        schema_guidance = build_schema_guidance_text(
+            graph_config=graph_cfg,
+            entity_types=entity_types,
+            relation_types=relation_types,
         )
-        logger.info(f"Split records for chunk {chunk_info.chunk_id}: {extracted_records}")
-        return extracted_records
+        entity_prompt = GraphPrompt.build_entity_inventory_extraction_prompt(
+            input_text=context["input_text"],
+            entity_types=entity_types,
+            tuple_delimiter=context["tuple_delimiter"],
+            record_delimiter=context["record_delimiter"],
+            completion_delimiter=context["completion_delimiter"],
+            include_slot_discipline=graph_cfg.strict_extraction_slot_discipline,
+            include_grounded_entity_preference=graph_cfg.prefer_grounded_named_entities,
+            schema_guidance=schema_guidance,
+        )
+        entity_records = await self._run_delimited_extraction_prompt(
+            prompt=entity_prompt,
+            continue_prompt=GraphPrompt.ENTITY_CONTINUE_EXTRACTION,
+            if_loop_prompt=GraphPrompt.ENTITY_IF_LOOP_EXTRACTION,
+            log_label="Two-pass entity extraction",
+            chunk_id=chunk_info.chunk_id,
+        )
+        entities = await self._collect_valid_entities_from_records(
+            entity_records,
+            chunk_key=chunk_info.chunk_id,
+        )
+        if not entities:
+            logger.warning(
+                f"Two-pass extraction found no valid entities for chunk {chunk_info.chunk_id}; "
+                "skipping relationship pass."
+            )
+            return []
+
+        relationship_prompt = GraphPrompt.build_relationship_extraction_prompt(
+            input_text=context["input_text"],
+            entity_inventory_text=self._entity_inventory_text(entities),
+            relation_types=relation_types,
+            tuple_delimiter=context["tuple_delimiter"],
+            record_delimiter=context["record_delimiter"],
+            completion_delimiter=context["completion_delimiter"],
+            include_relation_name=graph_cfg.enable_edge_name,
+            include_relation_keywords=graph_cfg.enable_edge_keywords,
+        )
+        relationship_records = await self._run_delimited_extraction_prompt(
+            prompt=relationship_prompt,
+            continue_prompt=GraphPrompt.RELATIONSHIP_CONTINUE_EXTRACTION,
+            if_loop_prompt=GraphPrompt.RELATIONSHIP_IF_LOOP_EXTRACTION,
+            log_label="Two-pass relationship extraction",
+            chunk_id=chunk_info.chunk_id,
+        )
+        entity_tuple_records = [
+            self._serialize_entity_record(entity)
+            for entity in entities
+        ]
+        return entity_tuple_records + relationship_records
 
     # ------------------------------------------------------------------
     # Record → Entity / Relationship parsing
@@ -160,17 +344,10 @@ class DelimiterExtractionMixin:
 
         for record in records:
             logger.info(f"Processing record: '{record}'")
-            match = re.search(r"\((.*)\)", record)
-            if match is None:
+            record_attributes = self._parse_record_attributes(record)
+            if record_attributes is None:
                 continue
 
-            record_attributes = split_string_by_multi_markers(
-                match.group(1), [DEFAULT_TUPLE_DELIMITER]
-            )
-            record_attributes = [
-                strip_extraction_field_markup(attribute)
-                for attribute in record_attributes
-            ]
             logger.info(f"Record attributes after splitting: {record_attributes}")
 
             entity = await self._handle_single_entity_extraction(record_attributes, chunk_key)
@@ -220,11 +397,9 @@ class DelimiterExtractionMixin:
         valid_entity_name, invalid_reason = classify_entity_name(entity_name)
         if not valid_entity_name:
             logger.warning(
-                "Skipping invalid extracted entity. chunk_key=%s raw_entity=%r cleaned_entity=%r reason=%s",
-                chunk_key,
-                record_attributes[1],
-                entity_name,
-                invalid_reason,
+                "Skipping invalid extracted entity. "
+                f"chunk_key={chunk_key} raw_entity={record_attributes[1]!r} "
+                f"cleaned_entity={entity_name!r} reason={invalid_reason}"
             )
             return None
 
@@ -254,11 +429,9 @@ class DelimiterExtractionMixin:
         )
         if not is_valid_entity_record:
             logger.warning(
-                "Skipping invalid extracted entity record. chunk_key=%s entity=%r entity_type=%r reason=%s",
-                chunk_key,
-                entity_name,
-                final_entity_type,
-                invalid_entity_reason,
+                "Skipping invalid extracted entity record. "
+                f"chunk_key={chunk_key} entity={entity_name!r} "
+                f"entity_type={final_entity_type!r} reason={invalid_entity_reason}"
             )
             return None
 
@@ -332,12 +505,9 @@ class DelimiterExtractionMixin:
         )
         if not is_valid_relationship_record:
             logger.warning(
-                "Skipping invalid extracted relationship record. chunk_key=%s src=%r tgt=%r relation_name=%r reason=%s",
-                chunk_key,
-                src_id,
-                tgt_id,
-                final_relation_name,
-                invalid_relationship_reason,
+                "Skipping invalid extracted relationship record. "
+                f"chunk_key={chunk_key} src={src_id!r} tgt={tgt_id!r} "
+                f"relation_name={final_relation_name!r} reason={invalid_relationship_reason}"
             )
             return None
 

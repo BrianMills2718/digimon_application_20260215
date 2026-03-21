@@ -58,6 +58,13 @@ class GraphConfig(YamlModel):
             "entity slots and require non-placeholder entity types for typed profiles."
         ),
     )
+    two_pass_extraction: bool = Field(
+        default=False,
+        description=(
+            "Whether delimiter-based entity-graph extraction should run in two passes: "
+            "entity inventory first, then relationship extraction constrained to that inventory."
+        ),
+    )
     prefer_grounded_named_entities: bool = Field(
         default=False,
         description=(
@@ -172,5 +179,15 @@ class GraphConfig(YamlModel):
             object.__setattr__(self, "enable_edge_name", True)
             object.__setattr__(self, "enable_edge_description", True)
             object.__setattr__(self, "enable_edge_keywords", True)
+
+        if self.two_pass_extraction:
+            if self.type not in {"er_graph", "rkg_graph"}:
+                raise ValueError(
+                    "two_pass_extraction is only supported for delimiter-based entity graphs"
+                )
+            if self.extract_two_step:
+                raise ValueError(
+                    "two_pass_extraction is not supported when extract_two_step=True"
+                )
 
         return self

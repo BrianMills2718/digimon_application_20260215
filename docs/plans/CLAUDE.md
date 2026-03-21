@@ -13,6 +13,7 @@ Historical planning artifacts outside `docs/plans/` are not authoritative unless
 | 3 | [Prove Adaptive Routing](03_prove_adaptive_routing.md) | High | 🚧 In Progress | All future investment |
 | 4 | [Graph Build Rearchitecture](04_graph_build_rearchitecture.md) | High | 🚧 In Progress | Clean graph rebuild |
 | 5 | [Extraction Quality Repair for Entity-Graph Builds](05_extraction_quality_repair.md) | High | 🚧 In Progress | Full MuSiQue rebuild, fixed-graph sanity rerun |
+| 6 | [Two-Pass Extraction Proof for Entity Completeness](06_two_pass_extraction_proof.md) | High | 🚧 In Progress | Next live entity-graph smoke rebuild |
 
 ## Status Key
 

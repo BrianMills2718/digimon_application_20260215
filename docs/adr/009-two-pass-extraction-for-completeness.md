@@ -1,6 +1,6 @@
 # ADR-009: Prefer Two-Pass Extraction if One-Pass Completeness Remains Unstable
 
-**Status**: Proposed
+**Status**: Accepted
 **Date**: 2026-03-21
 
 ## Context
@@ -22,17 +22,18 @@ extraction.
 
 ## Decision
 
-If the next completeness proof still fails under the frozen six-case fixture,
-prefer a two-pass extraction architecture over piling more instructions into the
+Prefer a two-pass extraction architecture over piling more instructions into the
 one-pass prompt.
 
 Proposed two-pass shape:
 
 1. Pass 1 extracts the grounded entity inventory only.
-2. Pass 2 extracts relationships using the frozen entity inventory as an
+2. Pass 2 extracts relationships using the pass-1 entity inventory as an
    explicit boundary.
 3. Relationship extraction fails loudly if it references an entity outside the
    pass-1 inventory.
+4. DIGIMON proves the contract on the existing six-case frozen fixture before
+   using it in another live smoke rebuild.
 
 ## Consequences
 

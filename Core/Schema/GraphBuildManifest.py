@@ -39,6 +39,7 @@ class GraphConfigSnapshot(BaseModel):
 
     extract_two_step: bool
     strict_extraction_slot_discipline: bool
+    two_pass_extraction: bool
     prefer_grounded_named_entities: bool
     enable_entity_type: bool
     enable_entity_description: bool
@@ -68,7 +69,7 @@ class GraphBuildRuntimeSnapshot(BaseModel):
 class GraphBuildManifest(BaseModel):
     """Persisted description of one graph build and its available capabilities."""
 
-    manifest_version: int = 4
+    manifest_version: int = 5
     dataset_name: str
     source_dataset_name: str | None = None
     graph_type: str
@@ -127,6 +128,7 @@ class GraphBuildManifest(BaseModel):
             config_flags=GraphConfigSnapshot(
                 extract_two_step=graph_config.extract_two_step,
                 strict_extraction_slot_discipline=graph_config.strict_extraction_slot_discipline,
+                two_pass_extraction=graph_config.two_pass_extraction,
                 prefer_grounded_named_entities=graph_config.prefer_grounded_named_entities,
                 enable_entity_type=graph_config.enable_entity_type,
                 enable_entity_description=graph_config.enable_entity_description,

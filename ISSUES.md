@@ -309,6 +309,29 @@ the stable groundedness improvement that suppresses broad category labels, but
 it should not keep the extra completeness instruction that caused output
 explosion on a short case.
 
+**Update:** 2026-03-21 (two-pass extraction proof)
+
+Plan #6 now implements a real two-pass extraction path in the live
+delimiter-based build code:
+
+- pass 1 extracts entity-only tuples
+- DIGIMON validates and materializes that inventory
+- pass 2 extracts relationship tuples against the validated inventory only
+
+The first live proof on `musique_doc_5_grounded_medical_leave` split the
+remaining problem into two truthful parts:
+
+- `gemini/gemini-2.5-flash-lite` did not follow the required tuple contract on
+  pass 1 and the build failed closed with zero records
+- `gemini/gemini-2.5-flash` did follow the two-pass tuple contract, but it
+  still missed `throat cancer` as an entity record and instead promoted date
+  nodes such as `19 July` and `December 2012`
+
+So two-pass extraction is now structurally proven, but it has not yet solved
+the motivating named-endpoint completeness problem. The next step should be
+`prompt_eval`-driven iteration on the two-pass prompts over the same frozen
+completeness cases, not another ad hoc live rebuild.
+
 ### ISSUE-008: Live extraction smoke builds still use mixed-model fallbacks
 
 **Observed:** 2026-03-21  

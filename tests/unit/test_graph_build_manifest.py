@@ -119,6 +119,21 @@ def test_entity_graph_manifest_persists_strict_slot_discipline_flag() -> None:
     assert manifest.config_flags.strict_extraction_slot_discipline is True
 
 
+def test_entity_graph_manifest_persists_two_pass_extraction_flag() -> None:
+    """Manifest config flags should record the two-pass extraction contract."""
+
+    manifest = GraphBuildManifest.from_graph_config(
+        dataset_name="MuSiQue",
+        graph_type="er_graph",
+        graph_config=GraphConfig(
+            graph_profile=GraphProfile.TKG,
+            two_pass_extraction=True,
+        ),
+    )
+
+    assert manifest.config_flags.two_pass_extraction is True
+
+
 def test_entity_graph_manifest_persists_grounded_entity_preference_flag() -> None:
     """Manifest config flags should record the grounded-entity prompt preference."""
 
