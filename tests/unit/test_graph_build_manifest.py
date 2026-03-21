@@ -47,6 +47,7 @@ def test_entity_graph_manifest_uses_explicit_kg_profile_contract() -> None:
 
     assert manifest.graph_profile is GraphProfile.KG
     assert manifest.config_flags.extract_two_step is True
+    assert manifest.config_flags.strict_extraction_slot_discipline is False
     assert manifest.edge_fields == ["src_id", "tgt_id", "weight", "source_id", "relation_name"]
 
 
@@ -100,6 +101,21 @@ def test_entity_graph_manifest_persists_explicit_schema_contract() -> None:
     assert manifest.schema_contract.mode is GraphSchemaMode.GUIDED
     assert manifest.schema_contract.entity_types == ["person", "organization"]
     assert manifest.schema_contract.relation_types == ["employed_by", "located_in"]
+
+
+def test_entity_graph_manifest_persists_strict_slot_discipline_flag() -> None:
+    """Manifest config flags should record the stricter extraction prompt contract."""
+
+    manifest = GraphBuildManifest.from_graph_config(
+        dataset_name="MuSiQue",
+        graph_type="er_graph",
+        graph_config=GraphConfig(
+            graph_profile=GraphProfile.TKG,
+            strict_extraction_slot_discipline=True,
+        ),
+    )
+
+    assert manifest.config_flags.strict_extraction_slot_discipline is True
 
 
 def test_non_entity_graph_manifest_uses_topology_specific_profile() -> None:

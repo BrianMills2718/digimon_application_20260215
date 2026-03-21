@@ -51,6 +51,13 @@ class GraphConfig(YamlModel):
         default_factory=list,
         description="Declared relation types for guided or closed extraction modes.",
     )
+    strict_extraction_slot_discipline: bool = Field(
+        default=False,
+        description=(
+            "Whether extraction prompts should explicitly forbid predicate phrases in "
+            "entity slots and require non-placeholder entity types for typed profiles."
+        ),
+    )
 
     # Building graph
     extract_two_step: bool = False

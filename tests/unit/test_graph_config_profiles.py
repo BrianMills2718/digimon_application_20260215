@@ -53,6 +53,15 @@ def test_profile_assignment_revalidates_existing_config() -> None:
     assert config.enable_edge_description is True
 
 
+def test_strict_extraction_slot_discipline_is_assignable_contract_flag() -> None:
+    """The stricter extraction prompt contract should be a first-class typed flag."""
+
+    config = GraphConfig(graph_profile=GraphProfile.TKG)
+    config.strict_extraction_slot_discipline = True
+
+    assert config.strict_extraction_slot_discipline is True
+
+
 def test_entity_graph_rejects_tree_profile() -> None:
     """Entity graph configs should fail loudly on topology/profile mismatches."""
 

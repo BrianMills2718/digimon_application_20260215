@@ -60,6 +60,15 @@ class ERGraphConfigOverrides(BaseModel):
         validation_alias=AliasChoices("schema_relation_types", "guided_relation_types", "allowed_relation_types"),
         description="Relation types to use for guided or closed extraction.",
     )
+    strict_extraction_slot_discipline: Optional[bool] = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "strict_extraction_slot_discipline",
+            "strict_slot_discipline",
+            "slot_discipline",
+        ),
+        description="Enable the stricter extraction prompt contract that forbids predicate phrases in entity slots.",
+    )
     extract_two_step: Optional[bool] = Field(
         default=None,
         validation_alias=AliasChoices('extract_two_step', 'two_step_extraction', 'extraction_strategy', 'extraction_mode'),

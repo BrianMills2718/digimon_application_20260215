@@ -59,6 +59,10 @@
 - 2026-03-21: Live `MuSiQue_TKG_smoke` rebuild after Slice 1 produced a materially cleaner artifact: `119` nodes / `90` edges, with no empty or single-letter IDs, no `entity name ...` pseudo-nodes, no null/placeholder typed nodes, and none of the original heuristic bad edges.
 - 2026-03-21: Slice 2 shifts extraction prompt iteration onto shared infrastructure. Frozen MuSiQue extraction cases now have a dedicated `prompt_eval` harness with deterministic structural scoring so prompt changes can be compared before another smoke rebuild.
 - 2026-03-21: A live one-case `prompt_eval` smoke run completed successfully on the frozen extraction harness. Both `current_contract` and `slot_disciplined_contract` scored `1.0` on the first case, which proves the shared experiment path works but does not yet show prompt separation.
+- 2026-03-21: The first full 3-case comparison exposed a shared-tooling compatibility issue: `prompt_eval`'s bootstrap comparison path is not compatible with the current SciPy version in this environment. The DIGIMON harness now defaults to `paired_t` for paired multi-case comparisons so prompt iteration can continue without patching the sibling repo first.
+- 2026-03-21: The first full 3-case paired run completed after that harness fix. `slot_disciplined_contract` scored `1.00` mean structural quality versus `0.85` for `current_contract`, with the main remaining failure on the Vilanova case caused by malformed relationship tuple endings in the baseline prompt contract.
+- 2026-03-21: Slice 3 landed as a typed build contract. `strict_extraction_slot_discipline` is now part of `GraphConfig`, the ER build override surface, the manifest snapshot, the prebuild CLI, and the live extraction prompt renderer.
+- 2026-03-21: A live `MuSiQue_TKG_smoke_strict_slots` rebuild completed successfully with the new flag and a truthful manifest (`strict_extraction_slot_discipline=true`). The artifact improved from `119` nodes / `90` edges to `105` nodes / `95` edges on the same 10-chunk slice, but it still includes semantically weak entities such as `his`, `form`, and `medical leave`, plus normalization-damaged names such as `supercopa de espa a` and `el cl sico`. This means prompt-only tightening is not sufficient.
 
 ### Steps
 
@@ -92,6 +96,10 @@
 6. Re-run the small MuSiQue TKG smoke build.
    - Rebuild `MuSiQue_TKG_smoke` and check whether the known-bad cases are gone.
    - Only after this smoke slice passes should a larger rebuild or fixed-graph sanity rerun proceed.
+7. Add deterministic semantic entity filtering after structural validation.
+   - Reject pronouns and other anaphoric placeholders (`his`, `her`, `their`, `he`, `she`) before graph persistence.
+   - Reject low-value abstract filler nodes when they are not stable named entities for the active profile, such as `form` or `medical leave` in open `TKG` extraction.
+   - Keep this separate from canonical-name redesign; Unicode-preserving identity belongs to Plan #4, not this slice.
 
 ---
 
@@ -126,6 +134,9 @@
 - [ ] rejected extraction records are logged with chunk provenance and reason
 - [ ] `MuSiQue_TKG_smoke` can be rebuilt after the change without reintroducing empty/single-character junk nodes
 - [ ] a frozen `prompt_eval` harness exists for extraction prompt variants on the MuSiQue smoke cases
+- [ ] the strict-slot build contract is wired through graph config, build overrides, manifest truth, and the prebuild CLI
+- [ ] the strict-slot smoke rebuild proves lower malformed-slot leakage than the earlier `MuSiQue_TKG_smoke` artifact
+- [ ] semantic junk entities such as pronouns and low-value abstractions are rejected before graph persistence
 - [ ] docs and ADRs are updated to reflect the extraction contract
 
 ---
@@ -136,3 +147,4 @@
 - Do not combine this with a storage migration, VDB redesign, or benchmark agent prompt work.
 - The smallest proof is the 10-chunk MuSiQue smoke build, not a full rebuild.
 - `prompt_eval` is the required iteration surface for extraction prompt changes in this plan; ad hoc prompt edits without the frozen-case harness do not count as progress.
+- Residual Unicode/name damage like `supercopa de espa a` and `el cl sico` is a real issue, but it belongs to the canonical identity redesign in Plan #4 rather than being patched opportunistically here.

@@ -78,6 +78,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Optional cap on how many prepared chunks to include in the graph build.",
     )
     parser.add_argument(
+        "--strict-extraction-slot-discipline",
+        action="store_true",
+        help="Enable the stricter extraction prompt contract for entity-graph builds.",
+    )
+    parser.add_argument(
         "--skip-entity-vdb",
         action="store_true",
         help="Skip the entity VDB build step.",
@@ -114,6 +119,8 @@ def build_er_config_overrides(args: argparse.Namespace) -> dict[str, Any]:
         overrides["schema_entity_types"] = list(args.schema_entity_type)
     if args.schema_relation_type:
         overrides["schema_relation_types"] = list(args.schema_relation_type)
+    if args.strict_extraction_slot_discipline:
+        overrides["strict_extraction_slot_discipline"] = True
     return overrides
 
 
@@ -126,6 +133,7 @@ def build_requires_fresh_graph(args: argparse.Namespace) -> bool:
             args.schema_mode is not None,
             bool(args.schema_entity_type),
             bool(args.schema_relation_type),
+            args.strict_extraction_slot_discipline,
             args.chunk_limit is not None,
         ]
     )
@@ -182,6 +190,7 @@ async def main(args: argparse.Namespace) -> None:
         f"artifact_dataset={artifact_dataset_name}, "
         f"profile={args.graph_profile or 'default'}, "
         f"schema_mode={args.schema_mode or 'default'}, "
+        f"strict_slot_discipline={args.strict_extraction_slot_discipline}, "
         f"chunk_limit={args.chunk_limit or 'all'}..."
     )
     t0 = time.time()

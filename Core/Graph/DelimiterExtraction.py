@@ -11,6 +11,7 @@ import re
 from collections import defaultdict
 from typing import Any, List, Optional, Tuple
 
+from Config.GraphConfig import GraphConfig
 from Core.Common.Logger import logger
 from Core.Common.extraction_validation import (
     strip_extraction_field_markup,
@@ -43,8 +44,8 @@ class DelimiterExtractionMixin:
 
     Requirements on the host class:
       - self.llm            — LLM instance with .aask()
-      - self.graph_config   — graph configuration (GraphConfig or equivalent)
-                              OR self.config with the relevant fields
+      - self.graph_config   — typed GraphConfig
+                              OR self.config pointing to the same GraphConfig
     """
 
     # ------------------------------------------------------------------
@@ -62,6 +63,21 @@ class DelimiterExtractionMixin:
             input_text=content,
         )
 
+    def _graph_config(self) -> GraphConfig:
+        """Return the typed graph config from the host graph builder.
+
+        The extraction path depends on a first-class `GraphConfig` contract so
+        prompt variants, manifests, and parser behavior stay aligned. This
+        helper fails loudly if a host class wires an incompatible config object.
+        """
+
+        graph_cfg = getattr(self, "graph_config", getattr(self, "config", None))
+        if not isinstance(graph_cfg, GraphConfig):
+            raise TypeError(
+                "DelimiterExtractionMixin requires a GraphConfig on self.graph_config or self.config."
+            )
+        return graph_cfg
+
     # ------------------------------------------------------------------
     # LLM call + gleaning
     # ------------------------------------------------------------------
@@ -71,7 +87,7 @@ class DelimiterExtractionMixin:
         Call the LLM with ENTITY_EXTRACTION (or ENTITY_EXTRACTION_KEYWORD) and
         return the raw delimiter-split records list.
         """
-        graph_cfg = getattr(self, "graph_config", self.config)
+        graph_cfg = self._graph_config()
 
         context = self._build_context_for_entity_extraction(chunk_info.content)
         entity_types = resolve_entity_type_names(graph_cfg)
@@ -88,8 +104,9 @@ class DelimiterExtractionMixin:
             tuple_delimiter=context["tuple_delimiter"],
             record_delimiter=context["record_delimiter"],
             completion_delimiter=context["completion_delimiter"],
-            include_relation_name=getattr(graph_cfg, "enable_edge_name", False),
-            include_relation_keywords=getattr(graph_cfg, "enable_edge_keywords", False),
+            include_relation_name=graph_cfg.enable_edge_name,
+            include_relation_keywords=graph_cfg.enable_edge_keywords,
+            include_slot_discipline=graph_cfg.strict_extraction_slot_discipline,
             schema_guidance=schema_guidance,
         )
 
@@ -98,7 +115,7 @@ class DelimiterExtractionMixin:
         final_result = await self.llm.aask(prompt)
         working_memory.add(Message(content=final_result, role="assistant"))
 
-        for glean_idx in range(getattr(graph_cfg, "max_gleaning", 1)):
+        for glean_idx in range(graph_cfg.max_gleaning):
             working_memory.add(Message(content=GraphPrompt.ENTITY_CONTINUE_EXTRACTION, role="user"))
             context_str = "\n".join(
                 f"{msg.sent_from}: {msg.content}" for msg in working_memory.get()
@@ -108,7 +125,7 @@ class DelimiterExtractionMixin:
             final_result += glean_result
             logger.info(f"Gleaning step {glean_idx + 1}: {glean_result[:500]}...")
 
-            if glean_idx == getattr(graph_cfg, "max_gleaning", 1) - 1:
+            if glean_idx == graph_cfg.max_gleaning - 1:
                 break
 
             working_memory.add(Message(content=GraphPrompt.ENTITY_IF_LOOP_EXTRACTION, role="user"))
@@ -194,8 +211,8 @@ class DelimiterExtractionMixin:
             )
             return None
 
-        graph_cfg = getattr(self, "graph_config", self.config)
-        custom_ontology = getattr(graph_cfg, "loaded_custom_ontology", None)
+        graph_cfg = self._graph_config()
+        custom_ontology = graph_cfg.loaded_custom_ontology
         entity_attributes: dict = {}
         final_entity_type = clean_str(record_attributes[2])
 
@@ -215,7 +232,7 @@ class DelimiterExtractionMixin:
         is_valid_entity_record, invalid_entity_reason = validate_entity_record(
             entity_name,
             final_entity_type,
-            require_typed_entities=getattr(graph_cfg, "enable_entity_type", False),
+            require_typed_entities=graph_cfg.enable_entity_type,
         )
         if not is_valid_entity_record:
             logger.warning(
@@ -247,11 +264,11 @@ class DelimiterExtractionMixin:
         if len(record_attributes) < 5 or record_attributes[0] != '"relationship"':
             return None
 
-        graph_cfg = getattr(self, "graph_config", self.config)
-        custom_ontology = getattr(graph_cfg, "loaded_custom_ontology", None)
+        graph_cfg = self._graph_config()
+        custom_ontology = graph_cfg.loaded_custom_ontology
         relation_attributes: dict = {}
-        enable_relation_name = getattr(graph_cfg, "enable_edge_name", False)
-        enable_keywords = getattr(graph_cfg, "enable_edge_keywords", False)
+        enable_relation_name = graph_cfg.enable_edge_name
+        enable_keywords = graph_cfg.enable_edge_keywords
 
         relation_name = ""
         description_index = 3

@@ -55,11 +55,6 @@ DEFAULT_CASES_PATH = Path(__file__).with_name("fixtures") / "musique_tkg_extract
 DEFAULT_DATASET_NAME = "musique_tkg_extraction_prompt_eval"
 DEFAULT_PROJECT_NAME = "Digimon_for_KG_application"
 _RECORD_PATTERN = re.compile(r"\((.*)\)")
-_STRICT_SLOT_DISCIPLINE = """-Slot Discipline-
-- source_entity and target_entity must each be concrete entity names from the text, not predicate phrases or connector phrases.
-- If a candidate slot is only a verb phrase such as won by, located in, suffered, or part of, do not emit that relationship record.
-- When typed entities are required, never emit null, none, unknown, or placeholder entity types. Omit the entity instead.
-"""
 
 
 class ExtractionPromptEvalExpectation(BaseModel):
@@ -123,30 +118,16 @@ def build_prompt_variants(
 ) -> list[PromptVariant]:
     """Build the prompt variants for the extraction prompt experiment."""
 
-    entity_types = resolve_entity_type_names(graph_config)
-    relation_types = resolve_relation_type_names(graph_config)
-    schema_guidance = build_schema_guidance_text(
-        graph_config=graph_config,
-        entity_types=entity_types,
-        relation_types=relation_types,
+    current_prompt = _build_prompt_from_graph_config(graph_config)
+    strict_graph_config = graph_config.model_copy(
+        update={"strict_extraction_slot_discipline": True}
     )
-    base_prompt = GraphPrompt.build_entity_extraction_prompt(
-        input_text="{input}",
-        entity_types=entity_types,
-        relation_types=relation_types,
-        tuple_delimiter=DEFAULT_TUPLE_DELIMITER,
-        record_delimiter=DEFAULT_RECORD_DELIMITER,
-        completion_delimiter=DEFAULT_COMPLETION_DELIMITER,
-        include_relation_name=graph_config.enable_edge_name,
-        include_relation_keywords=graph_config.enable_edge_keywords,
-        schema_guidance=schema_guidance,
-    )
-    strict_prompt = _inject_slot_discipline(base_prompt)
+    strict_prompt = _build_prompt_from_graph_config(strict_graph_config)
     shared_kwargs: dict[str, Any] = {"task": llm_task, "max_budget": max_budget}
     return [
         PromptVariant(
             name="current_contract",
-            messages=[{"role": "user", "content": base_prompt}],
+            messages=[{"role": "user", "content": current_prompt}],
             model=subject_model,
             temperature=0.0,
             kwargs=shared_kwargs,
@@ -291,6 +272,12 @@ def parse_args() -> argparse.Namespace:
         help="Disable llm_client observability emission for the prompt_eval run.",
     )
     parser.add_argument(
+        "--comparison-method",
+        choices=["paired_t", "bootstrap"],
+        default="paired_t",
+        help="Comparison method for multi-case paired runs. Defaults to paired_t for current SciPy compatibility.",
+    )
+    parser.add_argument(
         "--output-json",
         type=Path,
         default=None,
@@ -341,6 +328,7 @@ async def run_cli(args: argparse.Namespace) -> int:
             result,
             "current_contract",
             "slot_disciplined_contract",
+            method=args.comparison_method,
             comparison_mode="paired_by_input",
         )
     _print_summary(result, comparison, subject_model=subject_model)
@@ -360,13 +348,28 @@ def main() -> int:
     return asyncio.run(run_cli(parse_args()))
 
 
-def _inject_slot_discipline(prompt: str) -> str:
-    """Add slot-discipline instructions ahead of the real text block."""
+def _build_prompt_from_graph_config(graph_config: GraphConfig) -> str:
+    """Render the extraction prompt corresponding to one graph-config contract."""
 
-    marker = "\n-Text-\n"
-    if marker not in prompt:
-        raise ValueError("Expected '-Text-' section in extraction prompt.")
-    return prompt.replace(marker, f"\n{_STRICT_SLOT_DISCIPLINE}\n{marker}", 1)
+    entity_types = resolve_entity_type_names(graph_config)
+    relation_types = resolve_relation_type_names(graph_config)
+    schema_guidance = build_schema_guidance_text(
+        graph_config=graph_config,
+        entity_types=entity_types,
+        relation_types=relation_types,
+    )
+    return GraphPrompt.build_entity_extraction_prompt(
+        input_text="{input}",
+        entity_types=entity_types,
+        relation_types=relation_types,
+        tuple_delimiter=DEFAULT_TUPLE_DELIMITER,
+        record_delimiter=DEFAULT_RECORD_DELIMITER,
+        completion_delimiter=DEFAULT_COMPLETION_DELIMITER,
+        include_relation_name=graph_config.enable_edge_name,
+        include_relation_keywords=graph_config.enable_edge_keywords,
+        include_slot_discipline=graph_config.strict_extraction_slot_discipline,
+        schema_guidance=schema_guidance,
+    )
 
 
 def _score_extraction_output(output: str, graph_config: GraphConfig) -> _ExtractionScoreState:

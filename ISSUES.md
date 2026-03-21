@@ -90,14 +90,42 @@ layer:
   - `('located in', 'tear', 'medial collateral ligament')`
 - some nodes still land with weak or null typing, including
   `left knee`, `medial collateral ligament`, `sextuple`, and `silver ball`
+- after the stricter slot-discipline contract was wired end to end and
+  `MuSiQue_TKG_smoke_strict_slots` was rebuilt, the specific malformed-slot
+  failures improved, but the artifact still contains semantically weak entities
+  such as `his`, `form`, and `medical leave`
 
 This means the current build architecture is now good enough to isolate artifact
 namespaces and provenance, but not yet good enough to claim TKG-quality schema
 fidelity on real benchmark chunks.
 
 **Next step:** execute [Plan #5](docs/plans/05_extraction_quality_repair.md)
-to add typed extraction validation and rerun the `MuSiQue_TKG_smoke` slice
-before any full rebuild or fixed-graph benchmark interpretation.
+to finish the extraction-quality repair path: keep the strict prompt contract,
+add deterministic semantic entity filtering, and rerun the smoke slice before
+any full rebuild or fixed-graph benchmark interpretation.
+
+### ISSUE-004: Canonical entity identity still destroys Unicode-rich names
+
+**Observed:** 2026-03-21  
+**Status:** `planned`
+
+Even after the stricter extraction-slot contract, the rebuilt smoke artifact
+still stores normalization-damaged node IDs such as:
+
+- `supercopa de espa a`
+- `el cl sico`
+
+This is not mainly a prompt problem. It is evidence that canonical entity
+identity is still flowing through the current lossy normalization path instead
+of a Unicode-preserving canonical-name contract.
+
+This matters because DIGIMON cannot honestly reproduce richer GraphRAG methods
+or compare retrieval operators if the build layer destroys the surface form of
+real entities before indexing and retrieval.
+
+**Next step:** continue [Plan #4](docs/plans/04_graph_build_rearchitecture.md)
+to separate canonical identity from search normalization, then rebuild the
+entity-graph slice from that contract instead of patching names ad hoc.
 
 ---
 

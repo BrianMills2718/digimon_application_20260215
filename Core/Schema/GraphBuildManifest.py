@@ -38,6 +38,7 @@ class GraphConfigSnapshot(BaseModel):
     """Relevant graph-config switches captured with the build."""
 
     extract_two_step: bool
+    strict_extraction_slot_discipline: bool
     enable_entity_type: bool
     enable_entity_description: bool
     enable_edge_name: bool
@@ -113,6 +114,7 @@ class GraphBuildManifest(BaseModel):
             ),
             config_flags=GraphConfigSnapshot(
                 extract_two_step=graph_config.extract_two_step,
+                strict_extraction_slot_discipline=graph_config.strict_extraction_slot_discipline,
                 enable_entity_type=graph_config.enable_entity_type,
                 enable_entity_description=graph_config.enable_entity_description,
                 enable_edge_name=graph_config.enable_edge_name,

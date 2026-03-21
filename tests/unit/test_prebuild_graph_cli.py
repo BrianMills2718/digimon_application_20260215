@@ -32,6 +32,7 @@ def test_parse_args_accepts_profile_schema_and_chunk_limit() -> None:
             "person",
             "--schema-relation-type",
             "located_in",
+            "--strict-extraction-slot-discipline",
             "--chunk-limit",
             "25",
         ]
@@ -43,6 +44,7 @@ def test_parse_args_accepts_profile_schema_and_chunk_limit() -> None:
     assert args.schema_mode == "guided"
     assert args.schema_entity_type == ["person"]
     assert args.schema_relation_type == ["located_in"]
+    assert args.strict_extraction_slot_discipline is True
     assert args.chunk_limit == 25
 
 
@@ -69,6 +71,7 @@ def test_build_er_config_overrides_converts_cli_strings_to_enums() -> None:
             "person",
             "--schema-relation-type",
             "works_for",
+            "--strict-extraction-slot-discipline",
         ]
     )
 
@@ -78,12 +81,21 @@ def test_build_er_config_overrides_converts_cli_strings_to_enums() -> None:
     assert overrides["schema_mode"] is GraphSchemaMode.CLOSED
     assert overrides["schema_entity_types"] == ["person"]
     assert overrides["schema_relation_types"] == ["works_for"]
+    assert overrides["strict_extraction_slot_discipline"] is True
 
 
 def test_build_requires_fresh_graph_for_explicit_contract() -> None:
     """Explicit profile/schema/slice requests should not silently reuse old builds."""
 
     args = parse_args(["MuSiQue", "--chunk-limit", "10"])
+
+    assert build_requires_fresh_graph(args) is True
+
+
+def test_build_requires_fresh_graph_for_strict_slot_contract() -> None:
+    """Strict extraction-slot discipline should force a fresh graph build."""
+
+    args = parse_args(["MuSiQue", "--strict-extraction-slot-discipline"])
 
     assert build_requires_fresh_graph(args) is True
 

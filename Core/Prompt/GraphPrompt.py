@@ -421,6 +421,7 @@ def build_entity_extraction_prompt(
     completion_delimiter: str,
     include_relation_name: bool,
     include_relation_keywords: bool,
+    include_slot_discipline: bool,
     schema_guidance: str,
 ) -> str:
     """Build a profile-aware delimiter extraction prompt.
@@ -464,6 +465,14 @@ def build_entity_extraction_prompt(
     relationship_fields_text = "\n".join(relationship_fields)
     relationship_format = tuple_delimiter.join(relationship_format_fields)
     schema_block = f"\n\n{schema_guidance}" if schema_guidance else ""
+    slot_discipline_block = ""
+    if include_slot_discipline:
+        slot_discipline_block = """
+
+-Slot Discipline-
+- source_entity and target_entity must each be concrete entity names from the text, not predicate phrases or connector phrases
+- if a candidate source_entity or target_entity is only a verb phrase such as won by, located in, suffered, or part of, omit that relationship record
+- when typed entities are required, never emit null, none, unknown, or placeholder entity types; omit the entity instead"""
 
     return f"""-Goal-
 Extract entities and relationships from the text to build a graph.
@@ -482,7 +491,7 @@ Format each relationship as ("relationship"{tuple_delimiter}{relationship_format
 -Output Rules-
 1. Return output in English as one flat list.
 2. Use {record_delimiter} between records.
-3. When finished, output {completion_delimiter}.{schema_block}
+3. When finished, output {completion_delimiter}.{schema_block}{slot_discipline_block}
 
 -Text-
 {input_text}

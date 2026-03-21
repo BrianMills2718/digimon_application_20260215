@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 from pathlib import Path
-from types import SimpleNamespace
+
+from Config.GraphConfig import GraphConfig
+from Core.Schema.GraphBuildTypes import GraphProfile
 
 
 def _load_module(module_name: str, relative_path: str):
@@ -30,13 +32,13 @@ class _ExtractionHarness(DelimiterExtractionMixin):
     """Minimal host object for delimiter extraction helper tests."""
 
     def __init__(self) -> None:
-        self.config = SimpleNamespace(
+        self.config = GraphConfig(
+            graph_profile=GraphProfile.TKG,
             enable_edge_name=True,
             enable_edge_keywords=False,
             enable_entity_type=True,
             schema_entity_types=[],
             schema_relation_types=[],
-            schema_mode="open",
             loaded_custom_ontology=None,
             max_gleaning=1,
         )
