@@ -2360,7 +2360,10 @@ async def entity_neighborhood(
                 seeds_found.append(normalized)
                 seed_node_ids.add(normalized)
 
-    # Expand seeds with common abbreviation aliases (saint↔st, mount↔mt, etc.)
+    # Expand seeds with common abbreviation aliases (saint↔st, mount↔mt, etc.).
+    # The graph still stores normalized text strings rather than a dedicated alias
+    # index, so keep this low-cost recall bridge until entity aliases become a
+    # first-class build artifact.
     _ALIAS_PAIRS = [("saint", "st"), ("mount", "mt"), ("fort", "ft"), ("doctor", "dr")]
     alias_seeds = set()
     for seed in list(seed_node_ids):
@@ -5946,9 +5949,9 @@ if BENCHMARK_MODE:
         model = llm.model if llm else _state["config"].llm.model
         trace_id = f"digimon.semantic_plan.{uuid.uuid4().hex[:8]}"
 
-        # Use Gemini directly for planning (free credits, no OpenRouter dependency).
-        # Falls back to deepseek via OpenRouter if Gemini fails.
-        plan_model = "gemini/gemini-2.5-flash"
+        # Use deepseek for planning to avoid Gemini rate limits.
+        # Planning is cheap (~500 tokens) and deepseek handles structured output well.
+        plan_model = "deepseek/deepseek-chat"
         try:
             plan, _meta = await acall_llm_structured(
                 plan_model,
@@ -5958,7 +5961,6 @@ if BENCHMARK_MODE:
                 trace_id=trace_id,
                 max_budget=0,
                 num_retries=2,
-                fallback_models=["openrouter/deepseek/deepseek-chat"],
             )
 
             # Second-pass plan critic/reviser:

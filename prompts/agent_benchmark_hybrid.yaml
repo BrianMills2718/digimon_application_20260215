@@ -71,9 +71,13 @@ messages:
          "fought between Dec 14 and Jan 18" → the start is Dec 14).
          Mark completed atoms by updating via `todo_write` with status="done".
 
-      4. **Revise, don't give up.** If a retrieval path dead-ends, try the other surface
-         (graph↔text) or revise your upstream hypothesis. Never submit "unknown" or
-         "cannot determine."
+      4. **Revise, don't give up.** If a retrieval path dead-ends:
+         - **Rephrase the query** — try synonyms, related terms, or broader phrasing.
+           ("education" may appear as "worked at" or "instrument maker at" in the text.)
+         - **Try the other surface** (graph↔text) — if text search fails, try entity_neighborhood;
+           if graph is sparse, try chunk_vdb_search with a natural-language question.
+         - **Broaden the search** — if "X at Y" fails, search just for "Y" then filter.
+         Never submit "unknown" or "cannot determine."
 
       ## Non-negotiable constraints
       - Use tools; never answer from prior knowledge.
