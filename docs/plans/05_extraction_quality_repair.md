@@ -75,6 +75,10 @@
 - 2026-03-21: The first live run on that short policy-focused smoke fixture completed cleanly (`gemini/gemini-2.5-flash-lite`, execution `dcdbe4ebda95`) and produced a small nominal improvement for `grounded_entity_contract` (`0.448` mean score vs `0.425`). But the run also exposed a deeper parser bug: every trial had `entity_validity=0.0` because legitimate typed values like `<person>` were stripped to the empty string by the current field-tag cleaner. This means the short smoke proof is now blocked on parser repair, not on policy ambiguity.
 - 2026-03-21: Slice 5 repaired that parser bug. `strip_extraction_field_markup()` now removes only known placeholder wrappers like `<entity_type>...</entity_type>` and preserves legitimate angled values like `<person>`, with deterministic unit coverage for both cases.
 - 2026-03-21: The short grounded-entity smoke fixture was rerun after the parser fix (`gemini/gemini-2.5-flash-lite`, execution `0bd80b942644`). Both variants recovered `entity_validity=1.0` across all four cases, and the grounded variant finished slightly higher (`0.989` vs `0.981`) but without a statistically meaningful advantage. The only clear policy win was the `medical_leave` case, where the grounded variant suppressed the generic `medical leave` entity while keeping `throat cancer`; both variants still missed `Silver Ball` as a standalone entity node.
+- 2026-03-21: ADR-007 accepted entity/relationship closure as a build contract. The short grounded-entity smoke fixture was rerun with closure-aware scoring (`gemini/gemini-2.5-flash-lite`, execution `04b5479be557`): `slot_disciplined_contract` scored `0.907`, `grounded_entity_contract` scored `0.921`, and both variants were now penalized when a relationship endpoint appeared without a corresponding entity record.
+- 2026-03-21: A first live closure-aware 10-chunk rebuild completed as `MuSiQue_TKG_smoke_closure` with `strict_extraction_slot_discipline=true`. The artifact finished at `123` nodes / `68` edges. It no longer contains `form`, `fitness`, or `medical leave`, and it still contains `silver ball` and `throat cancer`. This proves the fail-closed closure path is live, but Unicode-damaged IDs like `supercopa de espa a` still remain and one chunk fell back from Gemini to DeepSeek during extraction, so this slice is useful evidence rather than final graph-quality proof.
+- 2026-03-21: The same 10-chunk slice was rebuilt with `prefer_grounded_named_entities=true` as `MuSiQue_TKG_smoke_closure_grounded`. The artifact dropped to `100` nodes / `70` edges, but the grounded variant over-pruned useful named nodes that the prompt-eval smoke cases were supposed to protect: `silver ball` disappeared and `throat cancer` disappeared. This means the grounded flag has not earned promotion into the live path.
+- 2026-03-21: Both live closure-aware smoke builds used mixed-model extraction because Gemini fell back to DeepSeek after provider policy blocks. That is a real experimental confound. The next live artifact comparison must run on a pure-lane/no-fallback build path before DIGIMON treats the result as decision-grade evidence.
 
 ### Steps
 
@@ -133,6 +137,14 @@
    - The first clean smoke rerun is a tie-to-slight-win for the grounded variant, not a decisive gain.
    - Do not promote the grounded flag by default unless it improves the next real artifact slice, not just the tiny policy fixture.
    - The next extraction-quality question is entity completeness: named values like `Silver Ball` can still appear only as relationship endpoints instead of entity records.
+13. Compare closure-aware live smoke artifacts before promoting grounded extraction.
+   - Rebuild the same 10-chunk MuSiQue slice with and without `prefer_grounded_named_entities`.
+   - Inspect whether the grounded variant preserves useful named nodes such as `Silver Ball` and `throat cancer` while continuing to suppress low-value abstractions.
+   - Treat any mixed-model build caused by provider fallback as non-final evidence that must be called out explicitly in the plan and issues.
+14. Add a pure-lane extraction build mode before the next live comparison.
+   - Graph-build smoke comparisons should be able to fail loudly instead of silently mixing providers/models.
+   - Wire a no-fallback extraction option into the ER build path so prompt/build comparisons can be rerun with one controlled model lane.
+   - Only after that rerun should DIGIMON decide whether the grounded prompt policy is helping or over-pruning on real corpus slices.
 
 ---
 

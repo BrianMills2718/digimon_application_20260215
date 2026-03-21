@@ -12,6 +12,7 @@ ADRs document significant architectural decisions.
 | 004 | Rebuild DIGIMON Around a Canonical Entity-Graph Architecture | Accepted | 2026-03-21 |
 | 005 | Fail Loud on Malformed TKG Extraction Records | Accepted | 2026-03-21 |
 | 006 | Decide Open-TKG Grounded Entity Policy with Frozen Prompt-Eval Cases | Accepted | 2026-03-21 |
+| 007 | Require Entity-Relationship Closure in Extraction Output | Accepted | 2026-03-21 |
 
 ## ADR Lifecycle
 
