@@ -120,6 +120,15 @@ def _select_input_chunks(
     return selected_chunks, available_count
 
 
+def _resolve_artifact_dataset_name(tool_input: BuildERGraphInputs) -> str:
+    """Return the artifact namespace for an ER graph build."""
+
+    artifact_dataset_name = tool_input.artifact_dataset_name or tool_input.target_dataset_name
+    if not artifact_dataset_name:
+        raise ValueError("artifact_dataset_name resolved to an empty value")
+    return artifact_dataset_name
+
+
 async def build_er_graph(
     tool_input: BuildERGraphInputs,
     main_config: Config,
@@ -130,6 +139,7 @@ async def build_er_graph(
     """Build an entity graph from prepared chunks and persist its manifest."""
 
     try:
+        artifact_dataset_name = _resolve_artifact_dataset_name(tool_input)
         current_graph_config = main_config.graph.model_copy(deep=True)
         apply_overrides(current_graph_config, tool_input.config_overrides)
         temp_full_config = main_config.model_copy(deep=True)
@@ -141,13 +151,18 @@ async def build_er_graph(
             encoder=encoder_instance,
         )
         if hasattr(er_graph_instance._graph, 'namespace'):
-            er_graph_instance._graph.namespace = chunk_factory.get_namespace(tool_input.target_dataset_name, graph_type="er_graph")
+            er_graph_instance._graph.namespace = chunk_factory.get_namespace(
+                artifact_dataset_name,
+                graph_type="er_graph",
+            )
         input_chunks = await chunk_factory.get_chunks_for_dataset(tool_input.target_dataset_name)
         if not input_chunks:
             return BuildERGraphOutputs(
                 graph_id="", status="failure",
                 message=f"No input chunks found for dataset: {tool_input.target_dataset_name}",
-                artifact_path=None
+                artifact_path=None,
+                source_dataset_name=tool_input.target_dataset_name,
+                artifact_dataset_name=artifact_dataset_name,
             )
 
         selected_chunks, available_input_chunk_count = _select_input_chunks(
@@ -164,24 +179,32 @@ async def build_er_graph(
         if not success:
             logger.error(f"build_er_graph tool: er_graph_instance.build_graph failed for {tool_input.target_dataset_name}")
             return BuildERGraphOutputs(
-                graph_id=f"{tool_input.target_dataset_name}_ERGraph",
+                graph_id=f"{artifact_dataset_name}_ERGraph",
                 status="failure",
-                message=f"ERGraph building failed internally for {tool_input.target_dataset_name}.",
+                message=(
+                    "ERGraph building failed internally for source dataset "
+                    f"{tool_input.target_dataset_name} into artifact namespace {artifact_dataset_name}."
+                ),
                 node_count=None,
                 edge_count=None,
-                artifact_path=None
+                artifact_path=None,
+                source_dataset_name=tool_input.target_dataset_name,
+                artifact_dataset_name=artifact_dataset_name,
             )
-        
+
         logger.info(f"build_er_graph tool: er_graph_instance.build_graph succeeded for {tool_input.target_dataset_name}")
         counts = await get_graph_counts(er_graph_instance)
         artifact_p = get_artifact_path(er_graph_instance)
         if artifact_p is None:
             raise ValueError("ERGraph build succeeded but did not produce an artifact path")
+        er_graph_instance.source_dataset_name = tool_input.target_dataset_name
+        er_graph_instance.artifact_dataset_name = artifact_dataset_name
         write_graph_build_manifest(
-            dataset_name=tool_input.target_dataset_name,
+            dataset_name=artifact_dataset_name,
             graph_type="er_graph",
             graph_config=current_graph_config,
             artifact_path=artifact_p,
+            source_dataset_name=tool_input.target_dataset_name,
             available_input_chunk_count=available_input_chunk_count,
             selected_input_chunk_count=len(selected_chunks),
             requested_input_chunk_limit=tool_input.chunk_limit,
@@ -190,21 +213,28 @@ async def build_er_graph(
         logger.info(f"build_er_graph artifact path: {artifact_p}")
 
         return BuildERGraphOutputs(
-            graph_id=f"{tool_input.target_dataset_name}_ERGraph",
+            graph_id=f"{artifact_dataset_name}_ERGraph",
             status="success",
-            message=f"ERGraph built successfully for {tool_input.target_dataset_name}.",
+            message=(
+                "ERGraph built successfully from source dataset "
+                f"{tool_input.target_dataset_name} into artifact namespace {artifact_dataset_name}."
+            ),
             node_count=counts['node_count'],
             edge_count=counts['edge_count'],
             layer_count=counts['layer_count'],
             artifact_path=artifact_p,
+            source_dataset_name=tool_input.target_dataset_name,
+            artifact_dataset_name=artifact_dataset_name,
             graph_instance=er_graph_instance
         )
     except Exception as e:
         return BuildERGraphOutputs(
-            graph_id=f"{tool_input.target_dataset_name}_ERGraph",
+            graph_id=f"{(tool_input.artifact_dataset_name or tool_input.target_dataset_name)}_ERGraph",
             status="failure",
             message=str(e),
-            artifact_path=None
+            artifact_path=None,
+            source_dataset_name=tool_input.target_dataset_name,
+            artifact_dataset_name=tool_input.artifact_dataset_name or tool_input.target_dataset_name,
         )
 
 

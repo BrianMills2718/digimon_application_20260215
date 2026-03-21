@@ -30,6 +30,7 @@ def test_entity_graph_manifest_infers_legacy_minimal_fields_for_default_config()
     assert manifest.artifacts.entity_chunk_provenance is True
     assert manifest.artifacts.relationship_chunk_provenance is True
     assert manifest.schema_contract.mode is GraphSchemaMode.OPEN
+    assert manifest.source_dataset_name == "MuSiQue"
     assert manifest.available_input_chunk_count is None
     assert manifest.selected_input_chunk_count is None
     assert manifest.requested_input_chunk_limit is None
@@ -129,6 +130,7 @@ def test_write_graph_build_manifest_persists_json_to_existing_artifact_dir(tmp_p
         graph_type="er_graph",
         graph_config=GraphConfig(enable_edge_name=True),
         artifact_path=str(tmp_path),
+        source_dataset_name="MuSiQue_source",
         available_input_chunk_count=100,
         selected_input_chunk_count=25,
         requested_input_chunk_limit=25,
@@ -138,6 +140,7 @@ def test_write_graph_build_manifest_persists_json_to_existing_artifact_dir(tmp_p
 
     assert Path(manifest_path).exists()
     assert loaded.dataset_name == "MuSiQue"
+    assert loaded.source_dataset_name == "MuSiQue_source"
     assert loaded.edge_fields == ["src_id", "tgt_id", "weight", "source_id", "relation_name"]
     assert loaded.available_input_chunk_count == 100
     assert loaded.selected_input_chunk_count == 25

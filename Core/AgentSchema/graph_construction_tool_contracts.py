@@ -13,6 +13,7 @@ from Core.Schema.GraphBuildTypes import GraphProfile, GraphSchemaMode
 # =========================
 class BaseGraphBuildOutputs(BaseModel):
     """Common output fields for all graph build tools."""
+
     graph_id: str = Field(description="Unique identifier for the built graph artifact. This ID will be used by retrieval tools and other graph operations.")
     status: str = Field(description="Status of the build operation, e.g., 'success', 'failure'.")
     message: str = Field(description="A descriptive message about the outcome of the build operation, including any errors.")
@@ -20,6 +21,14 @@ class BaseGraphBuildOutputs(BaseModel):
     edge_count: Optional[int] = Field(default=None, description="Number of edges in the built graph (if applicable).")
     layer_count: Optional[int] = Field(default=None, description="Number of layers in the built graph (for tree graphs).")
     artifact_path: Optional[str] = Field(default=None, description="Path to the primary persisted graph artifact.")
+    source_dataset_name: Optional[str] = Field(
+        default=None,
+        description="Dataset whose prepared corpus supplied the input chunks.",
+    )
+    artifact_dataset_name: Optional[str] = Field(
+        default=None,
+        description="Dataset namespace under which build artifacts were persisted.",
+    )
     graph_instance: Optional[Any] = Field(default=None, description="The actual populated graph instance.", exclude=True)
     
     class Config:
@@ -98,6 +107,10 @@ class BuildERGraphInputs(BaseModel):
     """Inputs for the ER graph build tool."""
 
     target_dataset_name: str = Field(description="Name of the dataset for input chunks and namespacing artifacts.")
+    artifact_dataset_name: Optional[str] = Field(
+        default=None,
+        description="Optional artifact namespace. Defaults to target_dataset_name when omitted.",
+    )
     force_rebuild: bool = Field(default=False, description="If True, forces a rebuild even if artifacts exist.")
     chunk_limit: Optional[int] = Field(
         default=None,

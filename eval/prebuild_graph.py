@@ -41,6 +41,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("dataset", help="Dataset name, for example MuSiQue or HotpotQA_full.")
     parser.add_argument(
+        "--artifact-dataset-name",
+        help="Optional artifact namespace. Defaults to the source dataset name.",
+    )
+    parser.add_argument(
         "--force-rebuild",
         action="store_true",
         help="Rebuild graph artifacts even if they already exist on disk.",
@@ -144,6 +148,12 @@ def ensure_existing_graph_can_be_reused(args: argparse.Namespace, graph_path: Pa
         )
 
 
+def resolve_artifact_dataset_name(args: argparse.Namespace) -> str:
+    """Return the artifact namespace for this CLI run."""
+
+    return args.artifact_dataset_name or args.dataset
+
+
 async def main(args: argparse.Namespace) -> None:
     """Run the requested graph build and optional VDB build steps."""
 
@@ -154,7 +164,13 @@ async def main(args: argparse.Namespace) -> None:
     await server._ensure_corpus(args.dataset, None)
     print(f"Initialized. LLM model: {server._state['config'].llm.model}")
 
-    graph_path = Path(server._state["config"].working_dir) / args.dataset / "er_graph" / "nx_data.graphml"
+    artifact_dataset_name = resolve_artifact_dataset_name(args)
+    graph_path = (
+        Path(server._state["config"].working_dir)
+        / artifact_dataset_name
+        / "er_graph"
+        / "nx_data.graphml"
+    )
     ensure_existing_graph_can_be_reused(args, graph_path)
 
     overrides_dict = build_er_config_overrides(args)
@@ -162,15 +178,18 @@ async def main(args: argparse.Namespace) -> None:
 
     print(
         "[1/3] Building ER graph with "
+        f"source_dataset={args.dataset}, "
+        f"artifact_dataset={artifact_dataset_name}, "
         f"profile={args.graph_profile or 'default'}, "
         f"schema_mode={args.schema_mode or 'default'}, "
         f"chunk_limit={args.chunk_limit or 'all'}..."
     )
     t0 = time.time()
-    server._tag_llm_for_build("er", args.dataset)
+    server._tag_llm_for_build("er", artifact_dataset_name)
     result = await build_er_graph(
         BuildERGraphInputs(
             target_dataset_name=args.dataset,
+            artifact_dataset_name=artifact_dataset_name,
             force_rebuild=args.force_rebuild,
             chunk_limit=args.chunk_limit,
             config_overrides=overrides,
@@ -197,8 +216,8 @@ async def main(args: argparse.Namespace) -> None:
         print("[2/3] Building entity VDB...")
         t0 = time.time()
         entity_result = await server.entity_vdb_build(
-            graph_reference_id=f"{args.dataset}_ERGraph",
-            vdb_collection_name=f"{args.dataset}_entities",
+            graph_reference_id=f"{artifact_dataset_name}_ERGraph",
+            vdb_collection_name=f"{artifact_dataset_name}_entities",
             force_rebuild=args.force_rebuild,
         )
         elapsed = time.time() - t0
@@ -210,14 +229,17 @@ async def main(args: argparse.Namespace) -> None:
         print("[3/3] Building relationship VDB...")
         t0 = time.time()
         relationship_result = await server.relationship_vdb_build(
-            graph_reference_id=f"{args.dataset}_ERGraph",
-            vdb_collection_name=f"{args.dataset}_relationships_vdb_relationships",
+            graph_reference_id=f"{artifact_dataset_name}_ERGraph",
+            vdb_collection_name=f"{artifact_dataset_name}_relationships_vdb_relationships",
             force_rebuild=args.force_rebuild,
         )
         elapsed = time.time() - t0
         print(f"[3/3] Relationship VDB done in {elapsed:.0f}s: {relationship_result[:200]}")
 
-    print(f"\nAll requested prerequisites built for {args.dataset}.")
+    print(
+        "\nAll requested prerequisites built for "
+        f"source_dataset={args.dataset} artifact_dataset={artifact_dataset_name}."
+    )
 
 
 if __name__ == "__main__":

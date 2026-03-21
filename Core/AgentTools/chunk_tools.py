@@ -31,6 +31,25 @@ from Core.Common.Constants import GRAPH_FIELD_SEP
 # --- Tool Implementation for: Chunks From Relationships ---
 # tool_id: "Chunk.FromRelationships"
 
+
+def _resolve_chunk_dataset_name(graph_instance: Any, graph_reference_id: str) -> str:
+    """Resolve which dataset's prepared corpus should ground chunk lookups.
+
+    Aliased graph builds may persist artifacts under a new namespace while still
+    drawing chunks from a different source dataset. When that metadata is
+    available on the graph instance, prefer it over the graph ID-derived alias.
+    """
+
+    source_dataset_name = getattr(graph_instance, "source_dataset_name", None)
+    if isinstance(source_dataset_name, str) and source_dataset_name.strip():
+        return source_dataset_name
+
+    dataset_name = graph_reference_id
+    for suffix in ["_ERGraph", "_RKGraph", "_TreeGraph", "_PassageGraph"]:
+        if dataset_name.endswith(suffix):
+            return dataset_name[:-len(suffix)]
+    return dataset_name
+
 def chunk_from_relationships(
     input_data: Dict[str, Any],
     context: GraphRAGContext
@@ -344,11 +363,10 @@ async def chunk_occurrence_tool(
     all_chunks_dict = {}
     if chunk_storage:
         try:
-            dataset_name = params.document_collection_id
-            for suffix in ["_ERGraph", "_RKGraph", "_TreeGraph", "_PassageGraph"]:
-                if dataset_name.endswith(suffix):
-                    dataset_name = dataset_name[:-len(suffix)]
-                    break
+            dataset_name = _resolve_chunk_dataset_name(
+                graph_instance,
+                params.document_collection_id,
+            )
             chunks_list = await chunk_storage.get_chunks_for_dataset(dataset_name)
             for cid, chunk in chunks_list:
                 all_chunks_dict[cid] = chunk
@@ -667,12 +685,10 @@ async def chunk_get_text_for_entities_tool(
         all_chunks_dict = {}
         if chunk_storage:
             try:
-                # Extract dataset name from graph_reference_id
-                dataset_name = validated_input.graph_reference_id
-                for suffix in ["_ERGraph", "_RKGraph", "_TreeGraph", "_PassageGraph"]:
-                    if dataset_name.endswith(suffix):
-                        dataset_name = dataset_name[:-len(suffix)]
-                        break
+                dataset_name = _resolve_chunk_dataset_name(
+                    graph_instance,
+                    validated_input.graph_reference_id,
+                )
                 
                 # Get all chunks for the dataset
                 chunks_list = await chunk_storage.get_chunks_for_dataset(dataset_name)

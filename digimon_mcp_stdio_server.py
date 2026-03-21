@@ -1635,14 +1635,22 @@ async def _register_graph_if_built(result: Any) -> None:
     graph_instance = getattr(result, "graph_instance", None)
 
     if graph_instance:
+        artifact_dataset_name = getattr(result, "artifact_dataset_name", None)
+        if not artifact_dataset_name:
+            artifact_dataset_name = result.graph_id
+            for suffix in ["_ERGraph", "_RKGraph", "_TreeGraphBalanced", "_TreeGraph", "_PassageGraph"]:
+                if artifact_dataset_name.endswith(suffix):
+                    artifact_dataset_name = artifact_dataset_name[: -len(suffix)]
+                    break
+        source_dataset_name = getattr(result, "source_dataset_name", None)
+        if source_dataset_name:
+            graph_instance.source_dataset_name = source_dataset_name
+        graph_instance.artifact_dataset_name = artifact_dataset_name
         # Set namespace so chunk lookups work
         if hasattr(graph_instance, "_graph") and hasattr(graph_instance._graph, "namespace"):
-            dataset_name = result.graph_id
-            for suffix in ["_ERGraph", "_RKGraph", "_TreeGraphBalanced", "_TreeGraph", "_PassageGraph"]:
-                if dataset_name.endswith(suffix):
-                    dataset_name = dataset_name[: -len(suffix)]
-                    break
-            graph_instance._graph.namespace = _state["chunk_factory"].get_namespace(dataset_name)
+            graph_instance._graph.namespace = _state["chunk_factory"].get_namespace(
+                artifact_dataset_name
+            )
 
         ctx.add_graph_instance(result.graph_id, graph_instance)
 

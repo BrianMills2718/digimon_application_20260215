@@ -12,6 +12,7 @@ from eval.prebuild_graph import (
     build_requires_fresh_graph,
     ensure_existing_graph_can_be_reused,
     parse_args,
+    resolve_artifact_dataset_name,
 )
 
 
@@ -21,6 +22,8 @@ def test_parse_args_accepts_profile_schema_and_chunk_limit() -> None:
     args = parse_args(
         [
             "MuSiQue",
+            "--artifact-dataset-name",
+            "MuSiQue_tkg_smoke",
             "--graph-profile",
             "tkg",
             "--schema-mode",
@@ -35,6 +38,7 @@ def test_parse_args_accepts_profile_schema_and_chunk_limit() -> None:
     )
 
     assert args.dataset == "MuSiQue"
+    assert args.artifact_dataset_name == "MuSiQue_tkg_smoke"
     assert args.graph_profile == "tkg"
     assert args.schema_mode == "guided"
     assert args.schema_entity_type == ["person"]
@@ -82,6 +86,22 @@ def test_build_requires_fresh_graph_for_explicit_contract() -> None:
     args = parse_args(["MuSiQue", "--chunk-limit", "10"])
 
     assert build_requires_fresh_graph(args) is True
+
+
+def test_resolve_artifact_dataset_name_defaults_to_source_dataset() -> None:
+    """Artifact namespace should default to the source dataset name."""
+
+    args = parse_args(["MuSiQue"])
+
+    assert resolve_artifact_dataset_name(args) == "MuSiQue"
+
+
+def test_resolve_artifact_dataset_name_prefers_explicit_alias() -> None:
+    """Artifact namespace should use the explicit alias when provided."""
+
+    args = parse_args(["MuSiQue", "--artifact-dataset-name", "MuSiQue_tkg_smoke"])
+
+    assert resolve_artifact_dataset_name(args) == "MuSiQue_tkg_smoke"
 
 
 def test_ensure_existing_graph_can_be_reused_rejects_stale_graph(tmp_path: Path) -> None:

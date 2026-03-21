@@ -58,8 +58,9 @@ class GraphSchemaContract(BaseModel):
 class GraphBuildManifest(BaseModel):
     """Persisted description of one graph build and its available capabilities."""
 
-    manifest_version: int = 2
+    manifest_version: int = 3
     dataset_name: str
+    source_dataset_name: str | None = None
     graph_type: str
     topology_kind: GraphTopologyKind
     graph_profile: GraphProfile
@@ -80,6 +81,7 @@ class GraphBuildManifest(BaseModel):
         dataset_name: str,
         graph_type: str,
         graph_config: GraphConfig,
+        source_dataset_name: str | None = None,
         available_input_chunk_count: int | None = None,
         selected_input_chunk_count: int | None = None,
         requested_input_chunk_limit: int | None = None,
@@ -97,6 +99,7 @@ class GraphBuildManifest(BaseModel):
 
         return cls(
             dataset_name=dataset_name,
+            source_dataset_name=source_dataset_name or dataset_name,
             graph_type=graph_type,
             topology_kind=topology_kind,
             graph_profile=graph_profile,
@@ -158,6 +161,7 @@ def write_graph_build_manifest(
     graph_type: str,
     graph_config: GraphConfig,
     artifact_path: str,
+    source_dataset_name: str | None = None,
     available_input_chunk_count: int | None = None,
     selected_input_chunk_count: int | None = None,
     requested_input_chunk_limit: int | None = None,
@@ -173,6 +177,7 @@ def write_graph_build_manifest(
         dataset_name=dataset_name,
         graph_type=graph_type,
         graph_config=graph_config,
+        source_dataset_name=source_dataset_name,
         available_input_chunk_count=available_input_chunk_count,
         selected_input_chunk_count=selected_input_chunk_count,
         requested_input_chunk_limit=requested_input_chunk_limit,

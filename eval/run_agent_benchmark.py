@@ -2100,6 +2100,10 @@ async def main() -> None:
     parser.add_argument("--data-root", default="./Data", help="Data root directory")
     parser.add_argument("--mode", default=CANONICAL_MODE, choices=["fixed", "adaptive", "aot", "hybrid", "baseline", "fixed_graph"],
                         help="Prompt mode. 'hybrid' is canonical. 'baseline' uses no graph tools. 'fixed_graph' uses deterministic graph pipeline.")
+    parser.add_argument("--condition", type=str, default=None,
+                        help="Condition ID for experiment tracking (e.g. 'multi_query_v1', 'baseline'). Enables cohort comparison.")
+    parser.add_argument("--tag", type=str, default=None,
+                        help="Free-form tag for this run (stored in provenance, queryable).")
     parser.add_argument("--questions", type=str, default=None,
                         help="Comma-separated question IDs to run (e.g. 'q1,q4,q7')")
     parser.add_argument("--questions-file", type=str, default=None,
@@ -2450,6 +2454,8 @@ async def main() -> None:
         mode=args.mode,
         prompt_variant=("codex_compact" if (_is_codex_model(args.model) and effective_codex_profile == "compact") else "default"),
     )
+    run_provenance["condition_id"] = getattr(args, "condition", None) or args.mode
+    run_provenance["tag"] = getattr(args, "tag", None)
     run_provenance["codex_profile"] = effective_codex_profile if _is_codex_model(args.model) else None
     run_provenance["digimon_benchmark_mode"] = benchmark_mode
     run_provenance["post_run_eval_config"] = {
@@ -2696,6 +2702,7 @@ async def main() -> None:
         agent_spec=agent_spec_value,
         allow_missing_agent_spec=bool(args.allow_missing_agent_spec),
         missing_agent_spec_reason=(args.missing_agent_spec_reason or "").strip() or None,
+        condition_id=getattr(args, "condition", None) or args.mode,
         metrics_schema=["em", "f1", "llm_em"],
         project="Digimon_for_KG_application",
     )
