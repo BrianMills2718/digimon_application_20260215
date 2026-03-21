@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from Config.GraphConfig import GraphConfig
 from Core.Schema.EntityRelation import Entity
 
 
@@ -76,13 +77,9 @@ class _ExtractionHarness(DelimiterExtractionMixin):
     """Minimal host object for delimiter extraction helper tests."""
 
     def __init__(self) -> None:
-        self.config = SimpleNamespace(
+        self.config = GraphConfig(
             enable_edge_name=False,
             enable_edge_keywords=False,
-            schema_entity_types=[],
-            schema_relation_types=[],
-            schema_mode="open",
-            loaded_custom_ontology=None,
             max_gleaning=1,
         )
         self.graph_config = self.config

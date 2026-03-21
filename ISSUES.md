@@ -125,6 +125,27 @@ So the residual problem is no longer "should we add the grounded flag at all?"
 It is "how do we improve extraction quality without destroying useful named
 entities on the real slice?"
 
+**Update:** 2026-03-21 (pure-lane rerun)
+
+Plan #5 now has a dedicated no-fallback build lane plus manifest runtime truth.
+The same 10-chunk slice was rerun in pure lane:
+
+- `MuSiQue_TKG_smoke_closure_pure`: `93` nodes / `63` edges
+- `MuSiQue_TKG_smoke_closure_grounded_pure`: `104` nodes / `79` edges
+
+This changed the interpretation of the earlier mixed-lane result:
+
+- the grounded pure-lane build no longer drops `silver ball`
+- both pure-lane variants still suppress `form`, `fitness`, and `medical leave`
+- `throat cancer` is still missing in both pure-lane artifacts
+- the grounded pure-lane build appears to introduce more abstract/conceptual
+  nodes such as `european club`, `treble`, and `sextuple`
+
+So the current blocker is narrower and more truthful than before: the grounded
+policy is not simply "over-pruning named entities", but it still does not solve
+the medical-diagnosis completeness problem and may increase conceptual-node
+inflation on the real slice.
+
 **Next step:** execute [Plan #5](docs/plans/05_extraction_quality_repair.md)
 to finish the extraction-quality repair path: keep the strict prompt contract,
 add deterministic semantic entity filtering, and rerun the smoke slice before
@@ -257,7 +278,7 @@ entity records before another larger rebuild or graph-quality claim.
 ### ISSUE-008: Live extraction smoke builds still use mixed-model fallbacks
 
 **Observed:** 2026-03-21  
-**Status:** `confirmed`
+**Status:** `resolved`
 
 Both live 10-chunk closure-aware smoke builds allowed provider fallback during
 extraction:
@@ -275,6 +296,27 @@ explicitly.
 **Next step:** extend the graph-build path to support a pure-lane/no-fallback
 extraction mode for evaluation builds, then rerun the 10-chunk comparison on
 that controlled path.
+
+**Resolution:** 2026-03-21
+
+The evaluation/prebuild path now supports a dedicated pure-lane build mode and
+persists runtime truth in the graph-build manifest:
+
+- `eval/prebuild_graph.py` accepts `--lane-policy pure`
+- the build path uses a dedicated LLM instance instead of silently inheriting
+  server fallbacks
+- `graph_build_manifest.json` now records the primary model, fallback models,
+  and lane policy used for the build
+
+The same 10-chunk closure-aware MuSiQue slice was rerun successfully with no
+fallbacks:
+
+- `MuSiQue_TKG_smoke_closure_pure`
+- `MuSiQue_TKG_smoke_closure_grounded_pure`
+
+That means DIGIMON now has a truthful way to produce decision-grade live build
+comparisons. Mixed-lane artifacts remain useful for debugging, but they are no
+longer the only available evaluation surface.
 
 ---
 

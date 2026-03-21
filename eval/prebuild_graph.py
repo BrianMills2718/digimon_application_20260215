@@ -15,6 +15,7 @@ from pathlib import Path
 import sys
 import time
 from typing import Any
+import uuid
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -88,6 +89,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Prefer named or groundable entities over vague abstractions during extraction.",
     )
     parser.add_argument(
+        "--lane-policy",
+        default="reliability",
+        choices=["pure", "reliability"],
+        help="Extraction-model lane policy. pure disables fallback models; reliability preserves configured fallbacks.",
+    )
+    parser.add_argument(
         "--skip-entity-vdb",
         action="store_true",
         help="Skip the entity VDB build step.",
@@ -143,6 +150,7 @@ def build_requires_fresh_graph(args: argparse.Namespace) -> bool:
             args.strict_extraction_slot_discipline,
             args.prefer_grounded_named_entities,
             args.chunk_limit is not None,
+            args.lane_policy != "reliability",
         ]
     )
 
@@ -170,6 +178,38 @@ def resolve_artifact_dataset_name(args: argparse.Namespace) -> str:
     return args.artifact_dataset_name or args.dataset
 
 
+def resolve_build_fallback_models(args: argparse.Namespace, config: Any) -> list[str]:
+    """Return the fallback chain implied by the requested build lane."""
+
+    configured_fallbacks = list(getattr(config.llm, "fallback_models", None) or [])
+    if args.lane_policy == "pure":
+        return []
+    return configured_fallbacks
+
+
+def build_prebuild_llm(args: argparse.Namespace, config: Any) -> Any:
+    """Create a dedicated LLM adapter for this prebuild run."""
+
+    from Core.Provider.LLMClientAdapter import LLMClientAdapter
+
+    return LLMClientAdapter(
+        config.llm.model,
+        fallback_models=resolve_build_fallback_models(args, config),
+        num_retries=3,
+    )
+
+
+def tag_build_llm(llm: Any, graph_type: str, dataset_name: str) -> None:
+    """Attach task and trace metadata to the build LLM instance."""
+
+    if hasattr(llm, "set_task"):
+        llm.set_task(f"digimon.graph_build_{graph_type}")
+    if hasattr(llm, "set_trace_id"):
+        llm.set_trace_id(
+            f"digimon.graph_build_{graph_type}.{dataset_name}.{uuid.uuid4().hex[:8]}"
+        )
+
+
 async def main(args: argparse.Namespace) -> None:
     """Run the requested graph build and optional VDB build steps."""
 
@@ -181,6 +221,7 @@ async def main(args: argparse.Namespace) -> None:
     print(f"Initialized. LLM model: {server._state['config'].llm.model}")
 
     artifact_dataset_name = resolve_artifact_dataset_name(args)
+    build_llm = build_prebuild_llm(args, server._state["config"])
     graph_path = (
         Path(server._state["config"].working_dir)
         / artifact_dataset_name
@@ -200,10 +241,11 @@ async def main(args: argparse.Namespace) -> None:
         f"schema_mode={args.schema_mode or 'default'}, "
         f"strict_slot_discipline={args.strict_extraction_slot_discipline}, "
         f"grounded_entity_preference={args.prefer_grounded_named_entities}, "
+        f"lane_policy={args.lane_policy}, "
         f"chunk_limit={args.chunk_limit or 'all'}..."
     )
     t0 = time.time()
-    server._tag_llm_for_build("er", artifact_dataset_name)
+    tag_build_llm(build_llm, "er", artifact_dataset_name)
     result = await build_er_graph(
         BuildERGraphInputs(
             target_dataset_name=args.dataset,
@@ -213,7 +255,7 @@ async def main(args: argparse.Namespace) -> None:
             config_overrides=overrides,
         ),
         server._state["config"],
-        server._state["llm"],
+        build_llm,
         server._state["encoder"],
         server._state["chunk_factory"],
     )

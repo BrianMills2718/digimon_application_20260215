@@ -57,10 +57,18 @@ class GraphSchemaContract(BaseModel):
     relation_types: list[str] = Field(default_factory=list)
 
 
+class GraphBuildRuntimeSnapshot(BaseModel):
+    """LLM-lane metadata needed to interpret one graph build truthfully."""
+
+    primary_model: str | None = None
+    fallback_models: list[str] = Field(default_factory=list)
+    lane_policy: str = "pure"
+
+
 class GraphBuildManifest(BaseModel):
     """Persisted description of one graph build and its available capabilities."""
 
-    manifest_version: int = 3
+    manifest_version: int = 4
     dataset_name: str
     source_dataset_name: str | None = None
     graph_type: str
@@ -71,6 +79,7 @@ class GraphBuildManifest(BaseModel):
     artifacts: GraphArtifactFlags = Field(default_factory=GraphArtifactFlags)
     schema_contract: GraphSchemaContract = Field(default_factory=GraphSchemaContract)
     config_flags: GraphConfigSnapshot
+    build_runtime: GraphBuildRuntimeSnapshot | None = None
     available_input_chunk_count: int | None = None
     selected_input_chunk_count: int | None = None
     requested_input_chunk_limit: int | None = None
@@ -83,6 +92,7 @@ class GraphBuildManifest(BaseModel):
         dataset_name: str,
         graph_type: str,
         graph_config: GraphConfig,
+        build_runtime: GraphBuildRuntimeSnapshot | None = None,
         source_dataset_name: str | None = None,
         available_input_chunk_count: int | None = None,
         selected_input_chunk_count: int | None = None,
@@ -113,6 +123,7 @@ class GraphBuildManifest(BaseModel):
                 entity_types=list(graph_config.schema_entity_types),
                 relation_types=list(graph_config.schema_relation_types),
             ),
+            build_runtime=build_runtime,
             config_flags=GraphConfigSnapshot(
                 extract_two_step=graph_config.extract_two_step,
                 strict_extraction_slot_discipline=graph_config.strict_extraction_slot_discipline,
@@ -165,6 +176,7 @@ def write_graph_build_manifest(
     graph_type: str,
     graph_config: GraphConfig,
     artifact_path: str,
+    build_runtime: GraphBuildRuntimeSnapshot | None = None,
     source_dataset_name: str | None = None,
     available_input_chunk_count: int | None = None,
     selected_input_chunk_count: int | None = None,
@@ -181,6 +193,7 @@ def write_graph_build_manifest(
         dataset_name=dataset_name,
         graph_type=graph_type,
         graph_config=graph_config,
+        build_runtime=build_runtime,
         source_dataset_name=source_dataset_name,
         available_input_chunk_count=available_input_chunk_count,
         selected_input_chunk_count=selected_input_chunk_count,

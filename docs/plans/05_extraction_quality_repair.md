@@ -79,6 +79,8 @@
 - 2026-03-21: A first live closure-aware 10-chunk rebuild completed as `MuSiQue_TKG_smoke_closure` with `strict_extraction_slot_discipline=true`. The artifact finished at `123` nodes / `68` edges. It no longer contains `form`, `fitness`, or `medical leave`, and it still contains `silver ball` and `throat cancer`. This proves the fail-closed closure path is live, but Unicode-damaged IDs like `supercopa de espa a` still remain and one chunk fell back from Gemini to DeepSeek during extraction, so this slice is useful evidence rather than final graph-quality proof.
 - 2026-03-21: The same 10-chunk slice was rebuilt with `prefer_grounded_named_entities=true` as `MuSiQue_TKG_smoke_closure_grounded`. The artifact dropped to `100` nodes / `70` edges, but the grounded variant over-pruned useful named nodes that the prompt-eval smoke cases were supposed to protect: `silver ball` disappeared and `throat cancer` disappeared. This means the grounded flag has not earned promotion into the live path.
 - 2026-03-21: Both live closure-aware smoke builds used mixed-model extraction because Gemini fell back to DeepSeek after provider policy blocks. That is a real experimental confound. The next live artifact comparison must run on a pure-lane/no-fallback build path before DIGIMON treats the result as decision-grade evidence.
+- 2026-03-21: Slice 6 added a dedicated pure-lane evaluation build path plus manifest runtime truth. `eval/prebuild_graph.py` can now run extraction with `--lane-policy pure`, and `graph_build_manifest.json` records the primary model, fallback models, and lane policy used for the build.
+- 2026-03-21: The 10-chunk closure-aware MuSiQue slice was rerun on that controlled path as `MuSiQue_TKG_smoke_closure_pure` (`93` nodes / `63` edges) and `MuSiQue_TKG_smoke_closure_grounded_pure` (`104` nodes / `79` edges). This corrected the earlier mixed-lane conclusion: the grounded pure-lane build preserved `silver ball`, but both pure-lane variants still missed `throat cancer`, and the grounded build introduced more conceptual nodes such as `european club`, `treble`, and `sextuple`.
 
 ### Steps
 
@@ -145,6 +147,10 @@
    - Graph-build smoke comparisons should be able to fail loudly instead of silently mixing providers/models.
    - Wire a no-fallback extraction option into the ER build path so prompt/build comparisons can be rerun with one controlled model lane.
    - Only after that rerun should DIGIMON decide whether the grounded prompt policy is helping or over-pruning on real corpus slices.
+15. Use the pure-lane evidence to tighten the next grounded-entity prompt_eval slice.
+   - Freeze new policy cases that test the remaining real-slice tradeoff: preserve medical diagnoses such as `throat cancer` while avoiding conceptual-node inflation such as `european club`, `treble`, and `sextuple`.
+   - Judge prompt variants on those cases with `prompt_eval` before another live rebuild.
+   - Do not promote the grounded policy into the default live path unless the frozen cases improve and the next pure-lane smoke rerun reflects the same direction.
 
 ---
 
@@ -182,6 +188,7 @@
 - [ ] the strict-slot build contract is wired through graph config, build overrides, manifest truth, and the prebuild CLI
 - [ ] the strict-slot smoke rebuild proves lower malformed-slot leakage than the earlier `MuSiQue_TKG_smoke` artifact
 - [ ] semantic junk entities such as pronouns and low-value abstractions are rejected before graph persistence
+- [ ] a pure-lane/no-fallback extraction mode exists for decision-grade live build comparisons and is recorded in manifest truth
 - [ ] docs and ADRs are updated to reflect the extraction contract
 
 ---

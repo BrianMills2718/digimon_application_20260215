@@ -9,6 +9,7 @@ import pytest
 from Config.GraphConfig import GraphConfig
 from Core.Schema.GraphBuildManifest import (
     GraphBuildManifest,
+    GraphBuildRuntimeSnapshot,
     write_graph_build_manifest,
 )
 from Core.Schema.GraphBuildTypes import GraphProfile, GraphSchemaMode, GraphTopologyKind
@@ -161,6 +162,11 @@ def test_write_graph_build_manifest_persists_json_to_existing_artifact_dir(tmp_p
         graph_type="er_graph",
         graph_config=GraphConfig(enable_edge_name=True),
         artifact_path=str(tmp_path),
+        build_runtime=GraphBuildRuntimeSnapshot(
+            primary_model="gemini/gemini-2.5-flash",
+            fallback_models=["openrouter/deepseek/deepseek-chat"],
+            lane_policy="reliability",
+        ),
         source_dataset_name="MuSiQue_source",
         available_input_chunk_count=100,
         selected_input_chunk_count=25,
@@ -172,6 +178,10 @@ def test_write_graph_build_manifest_persists_json_to_existing_artifact_dir(tmp_p
     assert Path(manifest_path).exists()
     assert loaded.dataset_name == "MuSiQue"
     assert loaded.source_dataset_name == "MuSiQue_source"
+    assert loaded.build_runtime is not None
+    assert loaded.build_runtime.primary_model == "gemini/gemini-2.5-flash"
+    assert loaded.build_runtime.fallback_models == ["openrouter/deepseek/deepseek-chat"]
+    assert loaded.build_runtime.lane_policy == "reliability"
     assert loaded.edge_fields == ["src_id", "tgt_id", "weight", "source_id", "relation_name"]
     assert loaded.available_input_chunk_count == 100
     assert loaded.selected_input_chunk_count == 25

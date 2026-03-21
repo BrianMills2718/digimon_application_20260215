@@ -8,10 +8,12 @@ import pytest
 
 from Core.Schema.GraphBuildTypes import GraphProfile, GraphSchemaMode
 from eval.prebuild_graph import (
+    build_prebuild_llm,
     build_er_config_overrides,
     build_requires_fresh_graph,
     ensure_existing_graph_can_be_reused,
     parse_args,
+    resolve_build_fallback_models,
     resolve_artifact_dataset_name,
 )
 
@@ -34,6 +36,8 @@ def test_parse_args_accepts_profile_schema_and_chunk_limit() -> None:
             "located_in",
             "--strict-extraction-slot-discipline",
             "--prefer-grounded-named-entities",
+            "--lane-policy",
+            "pure",
             "--chunk-limit",
             "25",
         ]
@@ -47,6 +51,7 @@ def test_parse_args_accepts_profile_schema_and_chunk_limit() -> None:
     assert args.schema_relation_type == ["located_in"]
     assert args.strict_extraction_slot_discipline is True
     assert args.prefer_grounded_named_entities is True
+    assert args.lane_policy == "pure"
     assert args.chunk_limit == 25
 
 
@@ -112,6 +117,14 @@ def test_build_requires_fresh_graph_for_grounded_entity_preference() -> None:
     assert build_requires_fresh_graph(args) is True
 
 
+def test_build_requires_fresh_graph_for_pure_lane_policy() -> None:
+    """Pure-lane requests should force a fresh graph artifact."""
+
+    args = parse_args(["MuSiQue", "--lane-policy", "pure"])
+
+    assert build_requires_fresh_graph(args) is True
+
+
 def test_resolve_artifact_dataset_name_defaults_to_source_dataset() -> None:
     """Artifact namespace should default to the source dataset name."""
 
@@ -126,6 +139,41 @@ def test_resolve_artifact_dataset_name_prefers_explicit_alias() -> None:
     args = parse_args(["MuSiQue", "--artifact-dataset-name", "MuSiQue_tkg_smoke"])
 
     assert resolve_artifact_dataset_name(args) == "MuSiQue_tkg_smoke"
+
+
+def test_resolve_build_fallback_models_respects_lane_policy() -> None:
+    """Pure-lane builds should clear fallbacks while reliability keeps them."""
+
+    class _LLMConfig:
+        model = "gemini/gemini-2.5-flash"
+        fallback_models = ["openrouter/deepseek/deepseek-chat"]
+
+    class _Config:
+        llm = _LLMConfig()
+
+    pure_args = parse_args(["MuSiQue", "--lane-policy", "pure"])
+    reliability_args = parse_args(["MuSiQue"])
+
+    assert resolve_build_fallback_models(pure_args, _Config()) == []
+    assert resolve_build_fallback_models(reliability_args, _Config()) == [
+        "openrouter/deepseek/deepseek-chat"
+    ]
+
+
+def test_build_prebuild_llm_uses_lane_policy_for_fallbacks() -> None:
+    """Dedicated prebuild adapters should mirror the requested lane contract."""
+
+    class _LLMConfig:
+        model = "gemini/gemini-2.5-flash"
+        fallback_models = ["openrouter/deepseek/deepseek-chat"]
+
+    class _Config:
+        llm = _LLMConfig()
+
+    llm = build_prebuild_llm(parse_args(["MuSiQue", "--lane-policy", "pure"]), _Config())
+
+    assert getattr(llm, "model") == "gemini/gemini-2.5-flash"
+    assert getattr(llm, "_fallback_models") == []
 
 
 def test_ensure_existing_graph_can_be_reused_rejects_stale_graph(tmp_path: Path) -> None:

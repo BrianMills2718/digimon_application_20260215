@@ -21,7 +21,10 @@ from Core.AgentSchema.graph_construction_tool_contracts import (
 from Core.Graph.GraphFactory import get_graph
 from Option.Config2 import Config
 from Core.Common.Logger import logger
-from Core.Schema.GraphBuildManifest import write_graph_build_manifest
+from Core.Schema.GraphBuildManifest import (
+    GraphBuildRuntimeSnapshot,
+    write_graph_build_manifest,
+)
 
 
 def apply_overrides(config_copy: Any, overrides: Optional[Any]) -> None:
@@ -129,6 +132,23 @@ def _resolve_artifact_dataset_name(tool_input: BuildERGraphInputs) -> str:
     return artifact_dataset_name
 
 
+def _infer_build_runtime_snapshot(llm_instance: Any) -> GraphBuildRuntimeSnapshot | None:
+    """Derive build-lane metadata from the concrete LLM instance in use."""
+
+    primary_model = getattr(llm_instance, "model", None)
+    if primary_model is None:
+        return None
+
+    raw_fallbacks = getattr(llm_instance, "_fallback_models", None) or []
+    fallback_models = [str(model) for model in raw_fallbacks]
+    lane_policy = "reliability" if fallback_models else "pure"
+    return GraphBuildRuntimeSnapshot(
+        primary_model=str(primary_model),
+        fallback_models=fallback_models,
+        lane_policy=lane_policy,
+    )
+
+
 async def build_er_graph(
     tool_input: BuildERGraphInputs,
     main_config: Config,
@@ -204,6 +224,7 @@ async def build_er_graph(
             graph_type="er_graph",
             graph_config=current_graph_config,
             artifact_path=artifact_p,
+            build_runtime=_infer_build_runtime_snapshot(llm_instance),
             source_dataset_name=tool_input.target_dataset_name,
             available_input_chunk_count=available_input_chunk_count,
             selected_input_chunk_count=len(selected_chunks),
@@ -277,6 +298,7 @@ async def build_rk_graph(
             graph_type="rkg_graph",
             graph_config=current_graph_config,
             artifact_path=artifact_p,
+            build_runtime=_infer_build_runtime_snapshot(llm_instance),
             available_input_chunk_count=len(input_chunks),
             selected_input_chunk_count=len(input_chunks),
         )
@@ -337,6 +359,7 @@ async def build_tree_graph(
             graph_type="tree_graph",
             graph_config=current_graph_config,
             artifact_path=artifact_p,
+            build_runtime=_infer_build_runtime_snapshot(llm_instance),
             available_input_chunk_count=len(input_chunks),
             selected_input_chunk_count=len(input_chunks),
         )
@@ -397,6 +420,7 @@ async def build_tree_graph_balanced(
             graph_type="tree_graph_balanced",
             graph_config=current_graph_config,
             artifact_path=artifact_p,
+            build_runtime=_infer_build_runtime_snapshot(llm_instance),
             available_input_chunk_count=len(input_chunks),
             selected_input_chunk_count=len(input_chunks),
         )
@@ -457,6 +481,7 @@ async def build_passage_graph(
             graph_type="passage_graph",
             graph_config=current_graph_config,
             artifact_path=artifact_p,
+            build_runtime=_infer_build_runtime_snapshot(llm_instance),
             available_input_chunk_count=len(input_chunks),
             selected_input_chunk_count=len(input_chunks),
         )
