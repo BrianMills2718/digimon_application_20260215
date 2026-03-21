@@ -66,7 +66,7 @@
 ### Phase 1: Canonical Entity-Graph Schema
 
 1. Split canonical identity from search normalization.
-2. Add schema-guided extraction inputs so the build can run in open, guided, or stricter profile-driven modes instead of relying on unconstrained extraction alone.
+2. Add schema-guided extraction inputs so the build can run in `open`, `schema_guided`, or `schema_constrained` profile-driven modes instead of relying on unconstrained extraction alone.
 3. Add first-class node fields for `canonical_name`, aliases, search keys, type, description, and provenance.
 4. Add first-class edge fields for relation name, relation description, relation keywords, provenance, weight, and edge kind.
 5. Keep tree and passage graphs out of this slice.

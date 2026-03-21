@@ -12,6 +12,8 @@ Use this file to find the current, supported documentation set.
   Architecture, storage model, and benchmark caveats.
 - `docs/GRAPH_ATTRIBUTE_MODEL.md`
   Canonical graph schema, JayLZhou mapping, and projection strategy.
+- `docs/GLOSSARY.md`
+  Canonical term definitions for schema modes, profiles, and build/eval contracts.
 - `docs/TOOL_CAPABILITY_MATRIX.md`
   Which tools apply to which graph builds, attributes, and artifacts.
 - `docs/COMPETITIVE_ANALYSIS.md`

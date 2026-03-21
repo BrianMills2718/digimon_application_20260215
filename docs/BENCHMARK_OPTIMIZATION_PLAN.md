@@ -65,18 +65,18 @@ Load via `llm_client.render_prompt()`. No behavior change — pure externalizati
 
 This unblocks schema-constrained extraction (Phase 4).
 
-### Phase 4: Schema-Constrained Extraction (1-2 days)
+### Phase 4: Schema-Constrained/Schema-Guided Extraction (1-2 days)
 **Status**: PENDING
 
-Wire open/closed/mixed ontology modes into the extraction pipeline.
+Wire `open`, `schema_guided`, and `schema_constrained` modes into the extraction pipeline.
 
 **Design**: ADR-002 (`docs/adr/002-universal-graph-schema-and-extraction.md`)
 **Existing code**: `~/projects/Digimons/src/core/extraction_schemas.py` + `schema_manager.py`
 
-**Config addition** to `Config2.yaml`:
+**Config addition** to project config:
 ```yaml
 graph:
-  ontology_mode: "mixed"  # "open" | "closed" | "mixed"
+  schema_mode: "schema_guided"  # "open" | "schema_guided" | "schema_constrained"
   ontology:
     entity_types:
       - person: "A human individual"
@@ -91,9 +91,9 @@ graph:
 
 **Prompt template** (Jinja2 conditionals):
 ```
-{% if ontology_mode == "closed" %}
+{% if schema_mode == "schema_constrained" %}
 ONLY extract entities matching these types: {{ entity_types }}
-{% elif ontology_mode == "mixed" %}
+{% elif schema_mode == "schema_guided" %}
 Prefer these types: {{ entity_types }}
 Mark genuinely new types with [NEW] prefix.
 {% endif %}
@@ -101,7 +101,7 @@ Mark genuinely new types with [NEW] prefix.
 
 **Decisions needed**:
 - Which entity/relation types for MuSiQue? (multi-hop QA about Wikipedia articles — mostly person, org, location, event, work_of_art)
-- Use mixed mode (safer) or closed (more constrained)?
+- Use `schema_guided` (safer) or `schema_constrained` (more constrained)?
 - Port schema classes from Digimons or rewrite simpler versions?
 
 ### Phase 5: Build Communities on MuSiQue (2 hours)
@@ -129,7 +129,7 @@ Already implemented — just needs to be executed on the MuSiQue graph.
 **Status**: PENDING — only if schema-constrained extraction is ready
 
 Rebuild the MuSiQue graph from scratch with:
-- Mixed-mode ontology (Phase 4)
+- Schema-guided/schema-constrained mode (Phase 4)
 - All enrichments applied post-build: co-occurrence + centrality + synonym edges + communities
 
 Compare node/edge counts and entity type distribution against the open-mode graph.

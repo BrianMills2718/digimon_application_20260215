@@ -48,10 +48,10 @@ Supporting infrastructure:
 | Enhancement | Description | Depends on |
 |-------------|-------------|------------|
 | **Prompts as data** | Move extraction prompts from `GraphPrompt.py` to YAML/Jinja2 templates. Graph type config selects template. | Nothing |
-| **Ontology modes** | `open`/`closed`/`mixed` entity and relation type constraints in extraction prompts | Prompts as data |
+| **Schema modes** | `open`/`schema_guided`/`schema_constrained` entity and relation type constraints in extraction prompts | Prompts as data |
 | **Entity canonicalization** | Post-build LLM fuzzy dedup. Reuse `onto-canon/concept_dedup.py` logic on NetworkX graph directly. | Nothing |
 | **Q-code resolution** | Post-build Wikidata entity disambiguation via `onto-canon/wikidata_entity_search.py` | Entity canonicalization |
-| **Schema validation** | Post-build rejection/flagging of out-of-schema types (closed/mixed mode) | Ontology modes |
+| **Schema validation** | Post-build rejection/flagging of out-of-schema types (`schema_constrained`) | Schema modes |
 | **Reified graph type** | New extraction template + JSON parser for event-as-node diamond pattern (n-ary relationships) | Prompts as data |
 
 ---
@@ -254,7 +254,7 @@ This enables safe experimentation: snapshot before mutation, diff to verify, res
 | Belief state (lightweight) | Edge attributes: status, probability | — |
 | Belief state (deep) | — | Full epistemic engine: logit math, tensions, resolution, meta-beliefs |
 | Provenance | `source_id` attribute on nodes/edges | `evidence` table + `evidence_concepts` + `artifact_lineage` |
-| Ontology constraints | Prompt-level (open/closed/mixed) | `predicate_proposals` + governance pipeline |
+| Schema constraints | Prompt-level (`open`/`schema_guided`/`schema_constrained`) | `predicate_proposals` + governance pipeline |
 | Q-codes | Post-build enrichment attribute | Wikidata entity search + disambiguation |
 
 ---

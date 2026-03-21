@@ -12,7 +12,7 @@ Three independent problems that share a root cause:
 
 1. **Extraction prompts are hardcoded Python strings** in `Core/Prompt/GraphPrompt.py`. Adding a new graph type or modifying extraction behavior requires editing Python code. Violates "Prompts as Data" principle.
 
-2. **No ontology enforcement**. The `custom_ontology_path` config appends guidance text to prompts, but the LLM can ignore it. No validation, no closed-vocabulary enforcement, no mixed-mode "approved list + propose new" workflow.
+2. **No schema enforcement**. The `custom_ontology_path` config appends guidance text to prompts, but the LLM can ignore it. No validation, no schema-constrained enforcement, no schema_guided "approved list + propose new" workflow.
 
 3. **No n-ary relationships or reification**. All extraction produces binary `(source, relation, target)` tuples. Events involving 3+ participants are flattened into multiple binary edges that lose role information ("who did what to whom").
 
@@ -102,11 +102,11 @@ system: |
 user: |
   Given the following text, extract all entities and relationships.
 
-  {% if ontology_mode == "closed" %}
+  {% if schema_mode == "schema_constrained" %}
   You MUST only use entity types from this list: {{ entity_types | join(", ") }}
   You MUST only use relationship types from this list: {{ relation_types | join(", ") }}
   If you encounter an entity or relationship that doesn't fit these types, skip it.
-  {% elif ontology_mode == "mixed" %}
+  {% elif schema_mode == "schema_guided" %}
   Prefer these entity types: {{ entity_types | join(", ") }}
   Prefer these relationship types: {{ relation_types | join(", ") }}
   If you encounter something that clearly doesn't fit any of these types but is important,
@@ -123,16 +123,16 @@ user: |
   Text: {{ input_text }}
 ```
 
-### 3. Ontology Modes: Open, Closed, Mixed
+### 3. Schema Modes: Open, Schema-Guided, Schema-Constrained
 
 Three modes configured per graph build:
 
 ```yaml
-# In Config2.yaml or passed as config_overrides to graph_build_*
+# In config file or passed as config_overrides to graph_build_*
 graph:
-  ontology_mode: "mixed"  # "open" | "closed" | "mixed"
+  schema_mode: "schema_guided"  # "open" | "schema_guided" | "schema_constrained"
 
-  # For closed/mixed modes:
+  # For schema-guided/schema-constrained modes:
   ontology:
     entity_types:
       - person: "A human individual"
@@ -154,14 +154,14 @@ graph:
 | Mode | Extraction | Validation | New types |
 |------|-----------|------------|-----------|
 | **Open** | No constraints in prompt | No validation | All accepted |
-| **Closed** | Prompt constrains to list | Post-extraction rejects out-of-schema | Rejected |
-| **Mixed** | Prompt prefers list, allows `[NEW]` | Post-extraction flags `[NEW]` types | Logged for review, accepted provisionally |
+| **Schema-Constrained** | Prompt constrains to list | Post-extraction rejects out-of-schema | Rejected |
+| **Schema-Guided** | Prompt prefers list, allows `[NEW]` | Post-extraction flags `[NEW]` types | Logged for review, accepted provisionally |
 
-Mixed mode connects to onto-canon's predicate governance pipeline: `[NEW]` types are equivalent to `predicate_proposals` with status `pending`. An agent or human can later promote, reject, or merge them.
+Schema-guided mode connects to onto-canon's predicate governance pipeline: `[NEW]` types are equivalent to `predicate_proposals` with status `pending`. An agent or human can later promote, reject, or merge them.
 
-### 3b. Canonicalization Aggressiveness (Orthogonal to Ontology Mode)
+### 3b. Canonicalization Aggressiveness (Orthogonal to Schema Mode)
 
-Ontology mode controls what the LLM **extracts**. Canonicalization aggressiveness controls how hard we **merge** extracted output into canonical vocabularies **post-extraction**. These are independent dimensions:
+Schema mode controls what the LLM **extracts**. Canonicalization aggressiveness controls how hard we **merge** extracted output into canonical vocabularies **post-extraction**. These are independent dimensions:
 
 ```
                     Canonicalization Aggressiveness
@@ -171,9 +171,9 @@ Constraint    │              │               │              │
   open        │ current      │               │ "open-       │
               │ behavior     │               │  minimal"    │
               │              │               │              │
-  mixed       │              │               │              │
+  schema_guided       │              │               │              │
               │              │               │              │
-  closed      │              │               │ maximum      │
+  schema_constrained      │              │               │ maximum      │
               │              │               │ constraint   │
               └──────────────┴───────────────┴──────────────┘
 ```
@@ -183,7 +183,7 @@ Constraint    │              │               │              │
 Canonicalization applies to **three independent targets**, each with its own aggressiveness setting:
 
 ```yaml
-# In Config2.yaml
+# In config
 post_build:
   canonicalize:
     entities:
@@ -213,7 +213,7 @@ post_build:
 - **SUMO**: ~100 top-level types in a formal hierarchy (Agent, Organization, Process, etc.)
 - **FrameNet**: ~1,200 frames with named roles (Employer, Employee, Position, etc.)
 
-A "closed" ontology with a hand-curated list of 10 entity types is just a subset of SUMO. A hand-curated list of 20 relation types is just a subset of PropBank. The canonical vocabularies ARE the principled version of what hand-curated lists approximate.
+A "schema_constrained" ontology with a hand-curated list of 10 entity types is just a subset of SUMO. A hand-curated list of 20 relation types is just a subset of PropBank. The canonical vocabularies ARE the principled version of what hand-curated lists approximate.
 
 **The aggressiveness dimension operates at three levels, not one.** Canonicalization isn't just "map messy text into canonical senses." It also controls how coarse-grained the canonical vocabulary itself becomes — merging senses with each other:
 
@@ -237,7 +237,7 @@ Aggressiveness controls how far up you climb:
 | **Moderate** | Merge contextual references ("the Agency" ↔ "CIA") | Map to PropBank AND merge similar senses (`fund-01` + `finance-01` → same group via FrameNet frame) | Map to SUMO parent type |
 | **Aggressive** | Merge by semantic similarity (LLM decides) | Collapse entire FrameNet frames into single predicates (`fund-01` + `invest-01` + `bankroll` → `FINANCIAL_TRANSFER`) | Collapse to SUMO top-level (~20 types) |
 
-**This replaces hand-curated ontology lists**: A "closed" ontology with 10 entity types and 20 relation types is just an ad-hoc slice of SUMO/PropBank. Setting `aggressiveness: "aggressive"` with SUMO/PropBank/FrameNet as the vocabulary achieves the same effect systematically — the ontology stays minimal because semantically similar extractions get collapsed, and the granularity is controlled by a single parameter rather than per-domain curation.
+**This replaces hand-curated ontology lists**: A schema-constrained ontology with 10 entity types and 20 relation types is just an ad-hoc slice of SUMO/PropBank. Setting `aggressiveness: "aggressive"` with SUMO/PropBank/FrameNet as the vocabulary achieves the same effect systematically — the ontology stays minimal because semantically similar extractions get collapsed, and the granularity is controlled by a single parameter rather than per-domain curation.
 
 **Cypher/openCypher becomes valuable as aggressiveness increases**: With no canonicalization, edge labels are messy ("directed", "is the director of", "was directed by") — Cypher pattern matching fails on label mismatch. At conservative aggressiveness, these become `direct-01` — Cypher works on exact senses. At aggressive, `fund-01` and `invest-01` collapse to the same label — Cypher queries become more general and more powerful. The value of structured queries scales directly with canonicalization aggressiveness.
 
@@ -283,7 +283,7 @@ This is the diamond pattern on NetworkX. No storage layer changes needed. The ev
 After extraction and graph construction, optional enrichment steps run in sequence:
 
 ```yaml
-# In Config2.yaml
+# In config
 post_build:
   - canonicalize_entities:
       enabled: true
@@ -293,7 +293,7 @@ post_build:
   - resolve_qcodes:
       enabled: false             # Wikidata Q-code resolution
   - validate_schema:
-      enabled: false             # reject/flag out-of-schema types (closed/mixed mode)
+      enabled: false             # reject/flag out-of-schema types (schema_constrained mode)
   - map_predicates:
       enabled: false             # map relation_name → AMR predicate via onto-canon
 ```
@@ -332,7 +332,7 @@ prompts/
     rkg_extraction.yaml
     reified_extraction.yaml
     gleaning.yaml        # Shared gleaning template
-  ontology/              # Ontology constraint files (for closed/mixed)
+  ontology/              # Ontology constraint files (for schema_guided/schema_constrained)
     hotpotqa_types.yaml  # Domain-specific type lists
     general_types.yaml   # General-purpose defaults
   canonicalization/      # Canonicalization prompts
@@ -345,7 +345,7 @@ prompts/
 
 - **Entity canonicalization**: Reuse `match_entities_to_concepts` prompt from `onto-canon/prompts/concept_dedup/match_concepts.yaml`
 - **Q-code resolution**: Call `onto-canon/onto_canon/wikidata_entity_search.py` in the `resolve_qcodes` post-build step
-- **Predicate governance**: `[NEW]` types from mixed mode feed into onto-canon's `predicate_proposals` table
+- **Predicate governance**: `[NEW]` types from schema_guided mode feed into onto-canon's `predicate_proposals` table
 - **Schema validation**: Onto-canon's SUMO constraints can validate extracted types in the `validate_schema` step
 
 ### With existing DIGIMON code
@@ -354,7 +354,7 @@ prompts/
 - `ERGraph`, `RKGraph` read their graph type config to select templates
 - `_build_graph_from_records` / `_build_graph_from_tuples` gain a `reified` code path for diamond-pattern nodes
 - `BaseGraph.build_graph()` gains a post-build enrichment hook
-- `Config2.yaml` gains `ontology_mode`, `ontology`, and `post_build` sections
+- `GraphConfig.py` (plus YAML config inputs) gains `schema_mode`, `schema_entity_types`, and `post_build` sections
 - No operator changes needed (topology-agnostic)
 
 ## Implementation Order
@@ -362,7 +362,7 @@ prompts/
 1. **Entity canonicalization post-build step** — The most immediate value. Adapts onto-canon's `match_entities_to_concepts()` for direct NetworkX graph operation. Configurable `merge_threshold`. No dependency on prompts-as-data.
 2. **Prompts as data** — Move extraction prompts from `GraphPrompt.py` to YAML/Jinja2 templates. Load via `llm_client.render_prompt()`. No behavior change, just externalization. Unblocks ontology modes.
 3. **Relation canonicalization post-build step** — Map extracted relation names to PropBank senses via onto-canon's AMR pipeline. Configurable aggressiveness. Unblocks Cypher.
-4. **Ontology modes** — Add `ontology_mode` config + Jinja2 conditionals in templates. Open mode is current behavior. Closed/mixed add constraints. Consider: SUMO/PropBank as the canonical type/relation lists rather than hand-curated per-domain lists.
+4. **Schema modes** — Add `schema_mode` config + Jinja2 conditionals in templates. Open mode is current behavior. Schema-guided/schema-constrained add constraints. Consider: SUMO/PropBank as the canonical type/relation lists rather than hand-curated per-domain lists.
 5. **Cypher query tool** — Integrate [GrandCypher](https://github.com/aplbrain/grand-cypher) for openCypher queries on NetworkX. Value scales with canonicalization aggressiveness — most useful after step 3.
 6. **Entity type canonicalization** — Map extracted types to SUMO hierarchy. Configurable aggressiveness.
 7. **Reified graph type** — New extraction template + JSON parser + diamond-pattern builder. For n-ary events (intelligence analysis use case, not needed for QA benchmarks).
@@ -386,5 +386,5 @@ prompts/
 
 **Risks:**
 - Reified extraction may produce inconsistent event boundaries (LLM decides what constitutes "one event")
-- Closed ontology mode may cause the LLM to force-fit entities into wrong types rather than skip them
+- Schema-constrained mode may cause the LLM to force-fit entities into wrong types rather than skip them
 - Entity canonicalization may over-merge (merge distinct entities with similar names)
