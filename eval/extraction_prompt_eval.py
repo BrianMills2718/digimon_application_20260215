@@ -105,6 +105,7 @@ class _ExtractionScoreState:
     valid_relationships: int = 0
     emitted_entity_names: list[str] = field(default_factory=list)
     valid_entity_names: list[str] = field(default_factory=list)
+    candidate_relationship_pairs: list[tuple[str, str]] = field(default_factory=list)
     invalid_reasons: list[str] = field(default_factory=list)
 
 
@@ -413,11 +414,17 @@ def _score_extraction_output(output: str, graph_config: GraphConfig) -> _Extract
             state.relationship_records += 1
             valid, reason = _validate_relationship_attributes(record_attributes, graph_config)
             if valid:
-                state.valid_relationships += 1
+                state.candidate_relationship_pairs.append(
+                    (
+                        clean_str(record_attributes[1]),
+                        clean_str(record_attributes[2]),
+                    )
+                )
             else:
                 state.invalid_reasons.append(reason or "invalid_relationship_record")
             continue
         state.invalid_reasons.append(f"unknown_record_type:{record_type}")
+    _apply_entity_relationship_closure(state)
     return state
 
 
@@ -591,6 +598,19 @@ def _coverage_ratio(*, observed_count: int, expected_minimum: int) -> float:
     if expected_minimum == 0:
         return 1.0
     return min(1.0, observed_count / expected_minimum)
+
+
+def _apply_entity_relationship_closure(state: _ExtractionScoreState) -> None:
+    """Count only relationships whose endpoints are backed by emitted entity records."""
+
+    valid_entity_names = {name for name in state.valid_entity_names if name}
+    valid_relationships = 0
+    for src_id, tgt_id in state.candidate_relationship_pairs:
+        if src_id in valid_entity_names and tgt_id in valid_entity_names:
+            valid_relationships += 1
+            continue
+        state.invalid_reasons.append("relationship_endpoint_missing_entity_record")
+    state.valid_relationships = valid_relationships
 
 
 def _print_summary(result: Any, comparison: Any, *, subject_model: str) -> None:

@@ -186,7 +186,23 @@ class DelimiterExtractionMixin:
                 logger.info(f"Extracted relationship: {json.dumps(relationship.as_dict, indent=2)}")
                 maybe_edges[(relationship.src_id, relationship.tgt_id)].append(relationship)
 
-        return dict(maybe_nodes), dict(maybe_edges)
+        entity_names = set(maybe_nodes)
+        filtered_edges: dict[tuple[str, str], list] = {}
+        for edge_key, relationships in maybe_edges.items():
+            src_id, tgt_id = edge_key
+            if src_id in entity_names and tgt_id in entity_names:
+                filtered_edges[edge_key] = relationships
+                continue
+            for relationship in relationships:
+                logger.warning(
+                    "Skipping extracted relationship without entity-backed endpoints. chunk_key={} src={!r} tgt={!r} reason={}",
+                    chunk_key,
+                    relationship.src_id,
+                    relationship.tgt_id,
+                    "relationship_endpoint_missing_entity_record",
+                )
+
+        return dict(maybe_nodes), filtered_edges
 
     # ------------------------------------------------------------------
 

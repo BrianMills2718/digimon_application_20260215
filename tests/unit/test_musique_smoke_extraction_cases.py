@@ -105,3 +105,22 @@ def test_tagged_null_type_case_is_rejected_after_markup_stripping() -> None:
     )
 
     assert result is None
+
+
+def test_relationship_without_entity_record_is_dropped_from_built_graph() -> None:
+    """Graph builds should not keep edges whose endpoints were never emitted as entities."""
+
+    extractor = _ExtractionHarness()
+
+    nodes, edges = asyncio.run(
+        extractor._build_graph_from_records(
+            [
+                '("entity"<|><Messi><|><person><|><football player>)',
+                '("relationship"<|><Messi><|><Silver Ball><|><won><|><Messi won the Silver Ball><|><1.0>)',
+            ],
+            chunk_key="chunk_9",
+        )
+    )
+
+    assert "messi" in nodes
+    assert ("messi", "silver ball") not in edges

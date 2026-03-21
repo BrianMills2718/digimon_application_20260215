@@ -472,6 +472,7 @@ def build_entity_extraction_prompt(
 
 -Slot Discipline-
 - source_entity and target_entity must each be concrete entity names from the text, not predicate phrases or connector phrases
+- every source_entity and target_entity used in a relationship must also appear as an entity record elsewhere in the same output; if you cannot emit the entity record, omit the relationship
 - if a candidate source_entity or target_entity is only a verb phrase such as won by, located in, suffered, or part of, omit that relationship record
 - when typed entities are required, never emit null, none, unknown, or placeholder entity types; omit the entity instead"""
     grounded_entity_block = ""

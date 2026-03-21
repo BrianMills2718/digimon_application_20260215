@@ -84,6 +84,7 @@ def test_build_prompt_variants_adds_grounded_entity_variant() -> None:
         "grounded_entity_contract",
     ]
     assert "-Slot Discipline-" in variants[0].messages[0]["content"]
+    assert "must also appear as an entity record elsewhere in the same output" in variants[0].messages[0]["content"]
     assert "-Grounded Entity Preference-" not in variants[0].messages[0]["content"]
     assert "-Grounded Entity Preference-" in variants[1].messages[0]["content"]
 
@@ -159,6 +160,32 @@ def test_extraction_output_evaluator_scores_grounded_entity_cases_without_relati
     assert score.dimension_scores["relationship_validity"] == pytest.approx(1.0)
     assert score.dimension_scores["coverage"] == pytest.approx(1.0)
     assert score.dimension_scores["entity_policy"] == pytest.approx(1.0)
+
+
+def test_extraction_output_evaluator_penalizes_relationship_endpoints_without_entity_records() -> None:
+    """Relationship endpoints should not count as valid unless the entity records also exist."""
+
+    evaluator = build_extraction_output_evaluator(_tkg_graph_config())
+    output = (
+        f'("entity"{DEFAULT_TUPLE_DELIMITER}"Messi"{DEFAULT_TUPLE_DELIMITER}"person"'
+        f'{DEFAULT_TUPLE_DELIMITER}"football player"){DEFAULT_RECORD_DELIMITER}'
+        f'("relationship"{DEFAULT_TUPLE_DELIMITER}"Messi"{DEFAULT_TUPLE_DELIMITER}"Silver Ball"'
+        f'{DEFAULT_TUPLE_DELIMITER}"won"{DEFAULT_TUPLE_DELIMITER}"Messi won the Silver Ball"'
+        f"{DEFAULT_TUPLE_DELIMITER}1){DEFAULT_COMPLETION_DELIMITER}"
+    )
+
+    score = evaluator(
+        output,
+        {
+            "min_valid_entities": 1,
+            "min_valid_relationships": 1,
+            "required_entity_names": ["Messi", "Silver Ball"],
+        },
+    )
+
+    assert score.dimension_scores["relationship_validity"] == pytest.approx(0.0)
+    assert score.dimension_scores["entity_policy"] < 1.0
+    assert "relationship_endpoint_missing_entity_record" in score.reasoning
 
 
 def test_run_cli_allows_single_case_smoke_runs_without_comparison(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
