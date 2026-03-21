@@ -11,6 +11,7 @@ Historical planning artifacts outside `docs/plans/` are not authoritative unless
 | 1 | [Example Plan](01_example.md) | Medium | 📋 Planned | - |
 | 2 | [DIGIMON V2 Greenfield Planning Phase](02_digimon_v2_greenfield_planning_phase.md) | High | ✅ Complete | - |
 | 3 | [Prove Adaptive Routing](03_prove_adaptive_routing.md) | High | 🚧 In Progress | All future investment |
+| 4 | [Graph Build Rearchitecture](04_graph_build_rearchitecture.md) | High | 📋 Planned | Clean graph rebuild |
 
 ## Status Key
 
