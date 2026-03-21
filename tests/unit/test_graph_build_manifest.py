@@ -118,6 +118,21 @@ def test_entity_graph_manifest_persists_strict_slot_discipline_flag() -> None:
     assert manifest.config_flags.strict_extraction_slot_discipline is True
 
 
+def test_entity_graph_manifest_persists_grounded_entity_preference_flag() -> None:
+    """Manifest config flags should record the grounded-entity prompt preference."""
+
+    manifest = GraphBuildManifest.from_graph_config(
+        dataset_name="MuSiQue",
+        graph_type="er_graph",
+        graph_config=GraphConfig(
+            graph_profile=GraphProfile.TKG,
+            prefer_grounded_named_entities=True,
+        ),
+    )
+
+    assert manifest.config_flags.prefer_grounded_named_entities is True
+
+
 def test_non_entity_graph_manifest_uses_topology_specific_profile() -> None:
     """Passage and tree builds should not masquerade as KG/TKG/RKG profiles."""
 

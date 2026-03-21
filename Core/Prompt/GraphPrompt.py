@@ -422,6 +422,7 @@ def build_entity_extraction_prompt(
     include_relation_name: bool,
     include_relation_keywords: bool,
     include_slot_discipline: bool,
+    include_grounded_entity_preference: bool,
     schema_guidance: str,
 ) -> str:
     """Build a profile-aware delimiter extraction prompt.
@@ -473,6 +474,13 @@ def build_entity_extraction_prompt(
 - source_entity and target_entity must each be concrete entity names from the text, not predicate phrases or connector phrases
 - if a candidate source_entity or target_entity is only a verb phrase such as won by, located in, suffered, or part of, omit that relationship record
 - when typed entities are required, never emit null, none, unknown, or placeholder entity types; omit the entity instead"""
+    grounded_entity_block = ""
+    if include_grounded_entity_preference:
+        grounded_entity_block = """
+
+-Grounded Entity Preference-
+- prefer entities that are referential and groundable from the text, such as named people, organizations, locations, competitions, awards, diagnoses, titles, or concrete time periods
+- do not emit vague qualities, generic states, or common-noun abstractions as standalone entities unless the text clearly treats them as named or directly groundable concepts"""
 
     return f"""-Goal-
 Extract entities and relationships from the text to build a graph.
@@ -491,7 +499,7 @@ Format each relationship as ("relationship"{tuple_delimiter}{relationship_format
 -Output Rules-
 1. Return output in English as one flat list.
 2. Use {record_delimiter} between records.
-3. When finished, output {completion_delimiter}.{schema_block}{slot_discipline_block}
+3. When finished, output {completion_delimiter}.{schema_block}{slot_discipline_block}{grounded_entity_block}
 
 -Text-
 {input_text}

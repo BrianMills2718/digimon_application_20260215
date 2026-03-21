@@ -58,6 +58,13 @@ class GraphConfig(YamlModel):
             "entity slots and require non-placeholder entity types for typed profiles."
         ),
     )
+    prefer_grounded_named_entities: bool = Field(
+        default=False,
+        description=(
+            "Whether extraction prompts should prefer named or otherwise groundable "
+            "entities over vague common-noun abstractions in open TKG extraction."
+        ),
+    )
 
     # Building graph
     extract_two_step: bool = False

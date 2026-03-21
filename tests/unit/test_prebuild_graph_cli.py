@@ -33,6 +33,7 @@ def test_parse_args_accepts_profile_schema_and_chunk_limit() -> None:
             "--schema-relation-type",
             "located_in",
             "--strict-extraction-slot-discipline",
+            "--prefer-grounded-named-entities",
             "--chunk-limit",
             "25",
         ]
@@ -45,6 +46,7 @@ def test_parse_args_accepts_profile_schema_and_chunk_limit() -> None:
     assert args.schema_entity_type == ["person"]
     assert args.schema_relation_type == ["located_in"]
     assert args.strict_extraction_slot_discipline is True
+    assert args.prefer_grounded_named_entities is True
     assert args.chunk_limit == 25
 
 
@@ -72,6 +74,7 @@ def test_build_er_config_overrides_converts_cli_strings_to_enums() -> None:
             "--schema-relation-type",
             "works_for",
             "--strict-extraction-slot-discipline",
+            "--prefer-grounded-named-entities",
         ]
     )
 
@@ -82,6 +85,7 @@ def test_build_er_config_overrides_converts_cli_strings_to_enums() -> None:
     assert overrides["schema_entity_types"] == ["person"]
     assert overrides["schema_relation_types"] == ["works_for"]
     assert overrides["strict_extraction_slot_discipline"] is True
+    assert overrides["prefer_grounded_named_entities"] is True
 
 
 def test_build_requires_fresh_graph_for_explicit_contract() -> None:
@@ -96,6 +100,14 @@ def test_build_requires_fresh_graph_for_strict_slot_contract() -> None:
     """Strict extraction-slot discipline should force a fresh graph build."""
 
     args = parse_args(["MuSiQue", "--strict-extraction-slot-discipline"])
+
+    assert build_requires_fresh_graph(args) is True
+
+
+def test_build_requires_fresh_graph_for_grounded_entity_preference() -> None:
+    """Grounded-entity preference should force a fresh graph build."""
+
+    args = parse_args(["MuSiQue", "--prefer-grounded-named-entities"])
 
     assert build_requires_fresh_graph(args) is True
 

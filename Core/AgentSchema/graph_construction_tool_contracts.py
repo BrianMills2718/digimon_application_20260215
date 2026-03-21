@@ -69,6 +69,18 @@ class ERGraphConfigOverrides(BaseModel):
         ),
         description="Enable the stricter extraction prompt contract that forbids predicate phrases in entity slots.",
     )
+    prefer_grounded_named_entities: Optional[bool] = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "prefer_grounded_named_entities",
+            "grounded_entity_preference",
+            "prefer_grounded_entities",
+        ),
+        description=(
+            "Prefer named or otherwise groundable entities over vague common-noun abstractions "
+            "during extraction."
+        ),
+    )
     extract_two_step: Optional[bool] = Field(
         default=None,
         validation_alias=AliasChoices('extract_two_step', 'two_step_extraction', 'extraction_strategy', 'extraction_mode'),

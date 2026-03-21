@@ -107,6 +107,7 @@ class DelimiterExtractionMixin:
             include_relation_name=graph_cfg.enable_edge_name,
             include_relation_keywords=graph_cfg.enable_edge_keywords,
             include_slot_discipline=graph_cfg.strict_extraction_slot_discipline,
+            include_grounded_entity_preference=graph_cfg.prefer_grounded_named_entities,
             schema_guidance=schema_guidance,
         )
 

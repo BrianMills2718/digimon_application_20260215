@@ -24,6 +24,7 @@
 
 - `ISSUES.md` - `ISSUE-003` from the `MuSiQue_TKG_smoke` run
 - `docs/plans/04_graph_build_rearchitecture.md` - current graph rebuild milestone and blockers
+- `docs/adr/006-open-tkg-grounded-entity-policy.md` - accepted decision for how abstraction policy must be proven before deterministic filtering
 - `Core/Graph/DelimiterExtraction.py` - current delimiter-based extraction and parsing path
 - `Core/Prompt/GraphPrompt.py` - profile-aware extraction prompt builder
 - `Core/Common/graph_schema_guidance.py` - current schema guidance support
@@ -38,6 +39,7 @@
 - `docs/plans/05_extraction_quality_repair.md` (create)
 - `docs/plans/CLAUDE.md` (modify)
 - `docs/adr/005-typed-extraction-validation.md` (create)
+- `docs/adr/006-open-tkg-grounded-entity-policy.md` (create)
 - `ISSUES.md` (modify)
 - `Core/Graph/DelimiterExtraction.py` (modify)
 - `Core/Prompt/GraphPrompt.py` (modify)
@@ -48,6 +50,9 @@
 - `tests/unit/test_extraction_record_validation.py` (create)
 - `tests/unit/test_musique_smoke_extraction_cases.py` (create)
 - `tests/unit/test_extraction_prompt_eval.py` (create)
+- `tests/unit/test_graph_build_manifest.py` (modify)
+- `tests/unit/test_graph_config_profiles.py` (modify)
+- `tests/unit/test_prebuild_graph_cli.py` (modify)
 
 ---
 
@@ -64,6 +69,7 @@
 - 2026-03-21: Slice 3 landed as a typed build contract. `strict_extraction_slot_discipline` is now part of `GraphConfig`, the ER build override surface, the manifest snapshot, the prebuild CLI, and the live extraction prompt renderer.
 - 2026-03-21: A live `MuSiQue_TKG_smoke_strict_slots` rebuild completed successfully with the new flag and a truthful manifest (`strict_extraction_slot_discipline=true`). The artifact improved from `119` nodes / `90` edges to `105` nodes / `95` edges on the same 10-chunk slice, but it still includes semantically weak entities such as `his`, `form`, and `medical leave`, plus normalization-damaged names such as `supercopa de espa a` and `el cl sico`. This means prompt-only tightening is not sufficient.
 - 2026-03-21: Slice 4 added deterministic anaphora filtering in the extraction validator. A follow-up live rebuild to `MuSiQue_TKG_smoke_strict_slots_no_anaphora` dropped the 10-chunk smoke artifact further to `99` nodes / `78` edges and removed `his` from the persisted graph. Residual low-value abstractions such as `form` still survive, which means the next unresolved question is abstraction policy rather than pronoun handling.
+- 2026-03-21: ADR-006 was accepted to resolve that ambiguity. DIGIMON will prove the grounded-entity policy with frozen `prompt_eval` cases that include both "drop this abstraction" and "keep this named borderline entity" examples before encoding a deterministic abstraction validator.
 
 ### Steps
 
@@ -105,6 +111,14 @@
    - Define what counts as a named/groundable entity versus an abstract common-noun concept for open `TKG` extraction.
    - Do not solve this with an ad hoc benchmark-only stoplist.
    - Once the rule is defined, encode it in deterministic validation and rerun the 10-chunk smoke slice again.
+9. Expand the frozen prompt-eval cases for grounded-entity policy.
+   - Add focused real-corpus snippets for abstractions that should be dropped, such as `form`, `fitness`, and `medical leave`.
+   - Add focused real-corpus snippets for named borderline entities that should still be kept, such as `Silver Ball` and `Copa del Rey`.
+   - Score both required and forbidden entity names so prompt changes are judged on pruning quality, not only tuple shape.
+10. Compare the current best prompt contract against a grounded-entity variant.
+   - Baseline the comparison on the current best contract, not the original pre-slice prompt.
+   - Use `prompt_eval` over the expanded frozen case set.
+   - Only if the grounded variant suppresses abstractions without over-pruning legitimate entities should it move into the live build path.
 
 ---
 

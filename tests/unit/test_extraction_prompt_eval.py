@@ -41,16 +41,20 @@ def test_load_extraction_prompt_eval_cases_freezes_expected_musique_slice() -> N
     """The frozen prompt-eval fixture should keep the intended MuSiQue smoke cases."""
 
     cases = load_extraction_prompt_eval_cases(DEFAULT_CASES_PATH)
-    assert [case.source_doc_id for case in cases] == [1, 5, 9]
+    assert [case.source_doc_id for case in cases] == [1, 1, 1, 5, 5, 9, 9]
     assert [case.id for case in cases] == [
         "musique_doc_1_barcelona_2006_07",
+        "musique_doc_1_grounded_form_fitness",
+        "musique_doc_1_grounded_copa_del_rey",
         "musique_doc_5_vilanova_2012_2013",
+        "musique_doc_5_grounded_medical_leave",
         "musique_doc_9_messi_2015_2016",
+        "musique_doc_9_grounded_silver_ball",
     ]
 
 
-def test_build_prompt_variants_adds_slot_discipline_variant() -> None:
-    """Prompt iteration should compare the current contract against a stricter variant."""
+def test_build_prompt_variants_adds_grounded_entity_variant() -> None:
+    """Prompt iteration should compare the strict contract against a grounded-entity variant."""
 
     variants = build_prompt_variants(
         graph_config=_tkg_graph_config(),
@@ -59,11 +63,12 @@ def test_build_prompt_variants_adds_slot_discipline_variant() -> None:
         max_budget=1.0,
     )
     assert [variant.name for variant in variants] == [
-        "current_contract",
         "slot_disciplined_contract",
+        "grounded_entity_contract",
     ]
-    assert "-Slot Discipline-" not in variants[0].messages[0]["content"]
-    assert "-Slot Discipline-" in variants[1].messages[0]["content"]
+    assert "-Slot Discipline-" in variants[0].messages[0]["content"]
+    assert "-Grounded Entity Preference-" not in variants[0].messages[0]["content"]
+    assert "-Grounded Entity Preference-" in variants[1].messages[0]["content"]
 
 
 def test_extraction_output_evaluator_rewards_structurally_valid_tkg_output() -> None:
@@ -114,6 +119,31 @@ def test_extraction_output_evaluator_penalizes_invalid_slots_and_missing_types()
     assert "relationship_subject_looks_like_predicate" in score.reasoning
 
 
+def test_extraction_output_evaluator_scores_grounded_entity_cases_without_relationship_penalty() -> None:
+    """Entity-policy cases with no expected relationships should not be penalized for omitting them."""
+
+    evaluator = build_extraction_output_evaluator(_tkg_graph_config())
+    output = (
+        f'("entity"{DEFAULT_TUPLE_DELIMITER}"Ronaldinho"{DEFAULT_TUPLE_DELIMITER}"person"'
+        f'{DEFAULT_TUPLE_DELIMITER}"Brazilian footballer"){DEFAULT_COMPLETION_DELIMITER}'
+    )
+
+    score = evaluator(
+        output,
+        {
+            "min_valid_entities": 1,
+            "min_valid_relationships": 0,
+            "required_entity_names": ["Ronaldinho"],
+            "forbidden_entity_names": ["form", "fitness"],
+        },
+    )
+
+    assert score.score == pytest.approx(1.0)
+    assert score.dimension_scores["relationship_validity"] == pytest.approx(1.0)
+    assert score.dimension_scores["coverage"] == pytest.approx(1.0)
+    assert score.dimension_scores["entity_policy"] == pytest.approx(1.0)
+
+
 def test_run_cli_allows_single_case_smoke_runs_without_comparison(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A one-case smoke run should skip paired comparison instead of crashing."""
 
@@ -123,16 +153,16 @@ def test_run_cli_allows_single_case_smoke_runs_without_comparison(tmp_path: Path
         return EvalResult(
             experiment_name="musique_tkg_extraction_prompt_eval",
             execution_id="exec_single_case",
-            variants=["current_contract", "slot_disciplined_contract"],
+            variants=["slot_disciplined_contract", "grounded_entity_contract"],
             trials=[],
             summary={
-                "current_contract": VariantSummary(
-                    variant_name="current_contract",
+                "slot_disciplined_contract": VariantSummary(
+                    variant_name="slot_disciplined_contract",
                     n_trials=1,
                     mean_score=0.7,
                 ),
-                "slot_disciplined_contract": VariantSummary(
-                    variant_name="slot_disciplined_contract",
+                "grounded_entity_contract": VariantSummary(
+                    variant_name="grounded_entity_contract",
                     n_trials=1,
                     mean_score=0.9,
                 ),

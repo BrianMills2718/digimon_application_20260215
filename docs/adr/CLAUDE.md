@@ -10,6 +10,8 @@ ADRs document significant architectural decisions.
 | 002 | Universal Graph Schema and Configurable Extraction | Proposed | 2026-02-16 |
 | 003 | Three Graph Tool Suites — Creation, Retrieval, Mutation | Proposed | 2026-02-16 |
 | 004 | Rebuild DIGIMON Around a Canonical Entity-Graph Architecture | Accepted | 2026-03-21 |
+| 005 | Fail Loud on Malformed TKG Extraction Records | Accepted | 2026-03-21 |
+| 006 | Decide Open-TKG Grounded Entity Policy with Frozen Prompt-Eval Cases | Accepted | 2026-03-21 |
 
 ## ADR Lifecycle
 

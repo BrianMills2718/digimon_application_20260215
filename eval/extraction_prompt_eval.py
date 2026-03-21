@@ -70,6 +70,14 @@ class ExtractionPromptEvalExpectation(BaseModel):
         ge=0,
         description="Minimum number of structurally valid relationship records expected from the case.",
     )
+    required_entity_names: list[str] = Field(
+        default_factory=list,
+        description="Entity names that should remain extractable under the intended policy.",
+    )
+    forbidden_entity_names: list[str] = Field(
+        default_factory=list,
+        description="Entity names that should not survive under the intended grounded-entity policy.",
+    )
 
 
 class ExtractionPromptEvalCase(BaseModel):
@@ -95,6 +103,8 @@ class _ExtractionScoreState:
     relationship_records: int = 0
     valid_entities: int = 0
     valid_relationships: int = 0
+    emitted_entity_names: list[str] = field(default_factory=list)
+    valid_entity_names: list[str] = field(default_factory=list)
     invalid_reasons: list[str] = field(default_factory=list)
 
 
@@ -118,23 +128,26 @@ def build_prompt_variants(
 ) -> list[PromptVariant]:
     """Build the prompt variants for the extraction prompt experiment."""
 
-    current_prompt = _build_prompt_from_graph_config(graph_config)
     strict_graph_config = graph_config.model_copy(
         update={"strict_extraction_slot_discipline": True}
     )
+    grounded_graph_config = strict_graph_config.model_copy(
+        update={"prefer_grounded_named_entities": True}
+    )
     strict_prompt = _build_prompt_from_graph_config(strict_graph_config)
+    grounded_prompt = _build_prompt_from_graph_config(grounded_graph_config)
     shared_kwargs: dict[str, Any] = {"task": llm_task, "max_budget": max_budget}
     return [
         PromptVariant(
-            name="current_contract",
-            messages=[{"role": "user", "content": current_prompt}],
+            name="slot_disciplined_contract",
+            messages=[{"role": "user", "content": strict_prompt}],
             model=subject_model,
             temperature=0.0,
             kwargs=shared_kwargs,
         ),
         PromptVariant(
-            name="slot_disciplined_contract",
-            messages=[{"role": "user", "content": strict_prompt}],
+            name="grounded_entity_contract",
+            messages=[{"role": "user", "content": grounded_prompt}],
             model=subject_model,
             temperature=0.0,
             kwargs=shared_kwargs,
@@ -326,8 +339,8 @@ async def run_cli(args: argparse.Namespace) -> int:
     if len(cases) >= 2:
         comparison = compare_variants(
             result,
-            "current_contract",
             "slot_disciplined_contract",
+            "grounded_entity_contract",
             method=args.comparison_method,
             comparison_mode="paired_by_input",
         )
@@ -368,6 +381,7 @@ def _build_prompt_from_graph_config(graph_config: GraphConfig) -> str:
         include_relation_name=graph_config.enable_edge_name,
         include_relation_keywords=graph_config.enable_edge_keywords,
         include_slot_discipline=graph_config.strict_extraction_slot_discipline,
+        include_grounded_entity_preference=graph_config.prefer_grounded_named_entities,
         schema_guidance=schema_guidance,
     )
 
@@ -386,9 +400,12 @@ def _score_extraction_output(output: str, graph_config: GraphConfig) -> _Extract
         record_type = record_attributes[0]
         if record_type == '"entity"':
             state.entity_records += 1
+            cleaned_entity_name = clean_str(record_attributes[1])
+            state.emitted_entity_names.append(cleaned_entity_name)
             valid, reason = _validate_entity_attributes(record_attributes, graph_config)
             if valid:
                 state.valid_entities += 1
+                state.valid_entity_names.append(cleaned_entity_name)
             else:
                 state.invalid_reasons.append(reason or "invalid_entity_record")
             continue
@@ -445,6 +462,7 @@ def _validate_entity_attributes(
     return validate_entity_record(
         entity_name,
         entity_type,
+        entity_description=record_attributes[3],
         require_typed_entities=graph_config.enable_entity_type,
     )
 
@@ -480,39 +498,99 @@ def _dimension_scores(
     record_shape = (
         state.parseable_records / state.total_records if state.total_records else 0.0
     )
-    entity_validity = (
-        state.valid_entities / state.entity_records if state.entity_records else 0.0
+    entity_validity = _validity_ratio(
+        valid_count=state.valid_entities,
+        total_count=state.entity_records,
+        expected_minimum=expectation.min_valid_entities,
     )
-    relationship_validity = (
-        state.valid_relationships / state.relationship_records
-        if state.relationship_records
-        else 0.0
+    relationship_validity = _validity_ratio(
+        valid_count=state.valid_relationships,
+        total_count=state.relationship_records,
+        expected_minimum=expectation.min_valid_relationships,
     )
-    entity_coverage = min(
-        1.0,
-        state.valid_entities / max(expectation.min_valid_entities, 1),
+    entity_coverage = _coverage_ratio(
+        observed_count=state.valid_entities,
+        expected_minimum=expectation.min_valid_entities,
     )
-    relationship_coverage = min(
-        1.0,
-        state.valid_relationships / max(expectation.min_valid_relationships, 1),
+    relationship_coverage = _coverage_ratio(
+        observed_count=state.valid_relationships,
+        expected_minimum=expectation.min_valid_relationships,
     )
-    return {
+    dimension_scores: dict[str, float] = {
         "record_shape": record_shape,
         "entity_validity": entity_validity,
         "relationship_validity": relationship_validity,
         "coverage": (entity_coverage + relationship_coverage) / 2,
     }
+    entity_policy = _entity_policy_score(state, expectation)
+    if entity_policy is not None:
+        dimension_scores["entity_policy"] = entity_policy
+    return dimension_scores
 
 
 def _overall_score(dimension_scores: dict[str, float]) -> float:
-    """Weight structural validity higher than mere tuple parseability."""
+    """Weight only the score dimensions that are active for the current case."""
 
-    return (
-        (0.1 * dimension_scores["record_shape"])
-        + (0.3 * dimension_scores["entity_validity"])
-        + (0.3 * dimension_scores["relationship_validity"])
-        + (0.3 * dimension_scores["coverage"])
+    weights = {
+        "record_shape": 0.1,
+        "entity_validity": 0.25,
+        "relationship_validity": 0.25,
+        "coverage": 0.2,
+        "entity_policy": 0.2,
+    }
+    active_weight = sum(weights[name] for name in dimension_scores)
+    if active_weight <= 0:
+        return 0.0
+    weighted_score = sum(
+        weights[name] * score for name, score in dimension_scores.items()
     )
+    return weighted_score / active_weight
+
+
+def _entity_policy_score(
+    state: _ExtractionScoreState,
+    expectation: ExtractionPromptEvalExpectation,
+) -> float | None:
+    """Score whether required entities are kept and forbidden ones are suppressed."""
+
+    emitted_entities = {
+        clean_str(name) for name in state.emitted_entity_names if clean_str(name)
+    }
+    valid_entities = {
+        clean_str(name) for name in state.valid_entity_names if clean_str(name)
+    }
+    required = {clean_str(name) for name in expectation.required_entity_names if clean_str(name)}
+    forbidden = {clean_str(name) for name in expectation.forbidden_entity_names if clean_str(name)}
+
+    if not required and not forbidden:
+        return None
+
+    required_recall = 1.0
+    if required:
+        required_recall = sum(name in valid_entities for name in required) / len(required)
+
+    forbidden_precision = 1.0
+    if forbidden:
+        forbidden_hits = sum(name in emitted_entities for name in forbidden)
+        forbidden_precision = 1.0 - (forbidden_hits / len(forbidden))
+
+    return (required_recall + forbidden_precision) / 2
+
+
+def _validity_ratio(*, valid_count: int, total_count: int, expected_minimum: int) -> float:
+    """Return a validity ratio that stays neutral when a case expects no records of that kind."""
+
+    if total_count:
+        return valid_count / total_count
+    return 1.0 if expected_minimum == 0 else 0.0
+
+
+def _coverage_ratio(*, observed_count: int, expected_minimum: int) -> float:
+    """Return coverage against the frozen expectation, treating zero-required cases as satisfied."""
+
+    if expected_minimum == 0:
+        return 1.0
+    return min(1.0, observed_count / expected_minimum)
 
 
 def _print_summary(result: Any, comparison: Any, *, subject_model: str) -> None:
