@@ -12,6 +12,7 @@ Historical planning artifacts outside `docs/plans/` are not authoritative unless
 | 2 | [DIGIMON V2 Greenfield Planning Phase](02_digimon_v2_greenfield_planning_phase.md) | High | ✅ Complete | - |
 | 3 | [Prove Adaptive Routing](03_prove_adaptive_routing.md) | High | 🚧 In Progress | All future investment |
 | 4 | [Graph Build Rearchitecture](04_graph_build_rearchitecture.md) | High | 🚧 In Progress | Clean graph rebuild |
+| 5 | [Extraction Quality Repair for Entity-Graph Builds](05_extraction_quality_repair.md) | High | 🚧 In Progress | Full MuSiQue rebuild, fixed-graph sanity rerun |
 
 ## Status Key
 

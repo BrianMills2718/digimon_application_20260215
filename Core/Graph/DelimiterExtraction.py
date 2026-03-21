@@ -12,6 +12,11 @@ from collections import defaultdict
 from typing import Any, List, Optional, Tuple
 
 from Core.Common.Logger import logger
+from Core.Common.extraction_validation import (
+    strip_extraction_field_markup,
+    validate_entity_record,
+    validate_relationship_record,
+)
 from Core.Common.graph_schema_guidance import (
     build_schema_guidance_text,
     resolve_entity_type_names,
@@ -144,6 +149,10 @@ class DelimiterExtractionMixin:
             record_attributes = split_string_by_multi_markers(
                 match.group(1), [DEFAULT_TUPLE_DELIMITER]
             )
+            record_attributes = [
+                strip_extraction_field_markup(attribute)
+                for attribute in record_attributes
+            ]
             logger.info(f"Record attributes after splitting: {record_attributes}")
 
             entity = await self._handle_single_entity_extraction(record_attributes, chunk_key)
@@ -166,6 +175,10 @@ class DelimiterExtractionMixin:
     async def _handle_single_entity_extraction(
         self, record_attributes: List[str], chunk_key: str
     ) -> Optional[Entity]:
+        record_attributes = [
+            strip_extraction_field_markup(attribute)
+            for attribute in record_attributes
+        ]
         if len(record_attributes) < 4 or record_attributes[0] != '"entity"':
             return None
 
@@ -199,6 +212,21 @@ class DelimiterExtractionMixin:
                                     entity_attributes[prop_name] = record_attributes[idx + 1]
                     break
 
+        is_valid_entity_record, invalid_entity_reason = validate_entity_record(
+            entity_name,
+            final_entity_type,
+            require_typed_entities=getattr(graph_cfg, "enable_entity_type", False),
+        )
+        if not is_valid_entity_record:
+            logger.warning(
+                "Skipping invalid extracted entity record. chunk_key=%s entity=%r entity_type=%r reason=%s",
+                chunk_key,
+                entity_name,
+                final_entity_type,
+                invalid_entity_reason,
+            )
+            return None
+
         return Entity(
             entity_name=entity_name,
             entity_type=final_entity_type,
@@ -212,6 +240,10 @@ class DelimiterExtractionMixin:
     async def _handle_single_relationship_extraction(
         self, record_attributes: List[str], chunk_key: str
     ) -> Optional[Relationship]:
+        record_attributes = [
+            strip_extraction_field_markup(attribute)
+            for attribute in record_attributes
+        ]
         if len(record_attributes) < 5 or record_attributes[0] != '"relationship"':
             return None
 
@@ -255,9 +287,28 @@ class DelimiterExtractionMixin:
                                     relation_attributes[prop_name] = record_attributes[idx + 1]
                     break
 
+        src_id = clean_str(record_attributes[1])
+        tgt_id = clean_str(record_attributes[2])
+        is_valid_relationship_record, invalid_relationship_reason = validate_relationship_record(
+            src_id,
+            tgt_id,
+            final_relation_name,
+            require_relation_name=enable_relation_name,
+        )
+        if not is_valid_relationship_record:
+            logger.warning(
+                "Skipping invalid extracted relationship record. chunk_key=%s src=%r tgt=%r relation_name=%r reason=%s",
+                chunk_key,
+                src_id,
+                tgt_id,
+                final_relation_name,
+                invalid_relationship_reason,
+            )
+            return None
+
         return Relationship(
-            src_id=clean_str(record_attributes[1]),
-            tgt_id=clean_str(record_attributes[2]),
+            src_id=src_id,
+            tgt_id=tgt_id,
             weight=float(record_attributes[weight_index]) if is_float_regex(record_attributes[weight_index]) else 1.0,
             description=clean_str(record_attributes[description_index]),
             source_id=chunk_key,

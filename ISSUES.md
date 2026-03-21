@@ -71,7 +71,7 @@ pin/install story with a tested Python 3.12-compatible bootstrap path.
 ### ISSUE-003: Real-corpus TKG smoke build still has low slot fidelity and weak typing
 
 **Observed:** 2026-03-21  
-**Status:** `confirmed`
+**Status:** `planned`
 
 The rebuilt alias architecture works on real MuSiQue data, but the first
 `MuSiQue_TKG_smoke` run surfaced a separate quality problem in the extraction
@@ -92,9 +92,9 @@ This means the current build architecture is now good enough to isolate artifact
 namespaces and provenance, but not yet good enough to claim TKG-quality schema
 fidelity on real benchmark chunks.
 
-**Next step:** create a focused extraction-quality plan for slot fidelity,
-entity typing, and schema-guided validation before any full MuSiQue rebuild or
-fixed-graph benchmark interpretation.
+**Next step:** execute [Plan #5](docs/plans/05_extraction_quality_repair.md)
+to add typed extraction validation and rerun the `MuSiQue_TKG_smoke` slice
+before any full rebuild or fixed-graph benchmark interpretation.
 
 ---
 
