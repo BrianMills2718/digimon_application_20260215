@@ -73,6 +73,8 @@
 - 2026-03-21: ADR-006 was accepted to resolve that ambiguity. DIGIMON will prove the grounded-entity policy with frozen `prompt_eval` cases that include both "drop this abstraction" and "keep this named borderline entity" examples before encoding a deterministic abstraction validator.
 - 2026-03-21: The first live grounded-entity `prompt_eval` smoke run over the mixed case set failed before scoring the actual policy question. `grounded_entity_contract` on the long `musique_doc_1_barcelona_2006_07` case produced a truncated `201360`-character response, which then caused the paired comparison to fail because the variants no longer had matching scored input IDs. The next live proof must therefore start with a short policy-focused smoke fixture before reintegrating the long structural cases.
 - 2026-03-21: The first live run on that short policy-focused smoke fixture completed cleanly (`gemini/gemini-2.5-flash-lite`, execution `dcdbe4ebda95`) and produced a small nominal improvement for `grounded_entity_contract` (`0.448` mean score vs `0.425`). But the run also exposed a deeper parser bug: every trial had `entity_validity=0.0` because legitimate typed values like `<person>` were stripped to the empty string by the current field-tag cleaner. This means the short smoke proof is now blocked on parser repair, not on policy ambiguity.
+- 2026-03-21: Slice 5 repaired that parser bug. `strip_extraction_field_markup()` now removes only known placeholder wrappers like `<entity_type>...</entity_type>` and preserves legitimate angled values like `<person>`, with deterministic unit coverage for both cases.
+- 2026-03-21: The short grounded-entity smoke fixture was rerun after the parser fix (`gemini/gemini-2.5-flash-lite`, execution `0bd80b942644`). Both variants recovered `entity_validity=1.0` across all four cases, and the grounded variant finished slightly higher (`0.989` vs `0.981`) but without a statistically meaningful advantage. The only clear policy win was the `medical_leave` case, where the grounded variant suppressed the generic `medical leave` entity while keeping `throat cancer`; both variants still missed `Silver Ball` as a standalone entity node.
 
 ### Steps
 
@@ -127,6 +129,10 @@
    - `strip_extraction_field_markup()` must remove leaked placeholder wrappers like `<entity_type>...</entity_type>` without erasing legitimate angled values like `<person>`.
    - Add deterministic unit coverage for both the leaked-wrapper and legitimate-value cases.
    - Rerun the short grounded-entity smoke fixture after the parser fix before trusting any prompt-policy comparison.
+12. Decide whether grounded-entity preference has earned promotion into the live build path.
+   - The first clean smoke rerun is a tie-to-slight-win for the grounded variant, not a decisive gain.
+   - Do not promote the grounded flag by default unless it improves the next real artifact slice, not just the tiny policy fixture.
+   - The next extraction-quality question is entity completeness: named values like `Silver Ball` can still appear only as relationship endpoints instead of entity records.
 
 ---
 

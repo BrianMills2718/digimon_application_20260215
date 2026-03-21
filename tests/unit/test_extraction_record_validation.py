@@ -100,4 +100,10 @@ def test_strip_extraction_field_markup_removes_field_wrappers_only() -> None:
 
     assert strip_extraction_field_markup("<entity_name>Barcelona") == "Barcelona"
     assert strip_extraction_field_markup("<entity_type>None") == "None"
+    assert (
+        strip_extraction_field_markup("<entity_type>person</entity_type>")
+        == "person"
+    )
+    assert strip_extraction_field_markup("<person>") == "<person>"
+    assert strip_extraction_field_markup("<organization>") == "<organization>"
     assert strip_extraction_field_markup("<4-0 away win>") == "<4-0 away win>"

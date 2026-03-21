@@ -163,7 +163,7 @@ follow-up gate rather than the first proof step.
 ### ISSUE-006: Extraction field-tag stripping erases valid angled entity-type values
 
 **Observed:** 2026-03-21  
-**Status:** `planned`
+**Status:** `resolved`
 
 The first successful grounded-entity smoke run on the short policy fixture did
 not actually measure the intended policy well because both prompt variants were
@@ -186,6 +186,38 @@ mostly measuring parser damage rather than keep/drop behavior.
 by tightening field-tag stripping so it only removes known placeholder wrappers
 instead of arbitrary lowercase angled values, then rerun the short grounded-
 entity smoke fixture.
+
+**Resolution:** 2026-03-21
+
+`strip_extraction_field_markup()` now removes only known extraction placeholder
+wrappers such as `<entity_type>` and preserves legitimate angled values such as
+`<person>`. The short grounded-entity smoke fixture was rerun after the fix
+(`execution_id=0bd80b942644`), and both prompt variants recovered
+`entity_validity=1.0` across all four cases.
+
+### ISSUE-007: Named relationship endpoints can still be missing as entity records
+
+**Observed:** 2026-03-21  
+**Status:** `planned`
+
+After the field-tag stripper was repaired and the short grounded-entity smoke
+fixture was rerun, the remaining non-perfect policy case was
+`musique_doc_9_grounded_silver_ball`:
+
+- both prompt variants recovered typed entities and scored near `1.0`
+- both variants still emitted `Silver Ball` only as a relationship endpoint and
+  not as a standalone entity record
+- the current policy fixture therefore shows a graph-completeness problem, not
+  just an abstraction-pruning problem
+
+This matters because DIGIMON's entity-graph build path should not rely on a
+named node existing only implicitly inside relationship records if the graph is
+supposed to expose that node to downstream retrieval operators.
+
+**Next step:** continue [Plan #5](docs/plans/05_extraction_quality_repair.md)
+by deciding and enforcing the entity/relationship closure rule: when a
+relationship introduces a named endpoint like `Silver Ball`, the extraction
+contract should also produce a corresponding entity record or fail validation.
 
 ---
 

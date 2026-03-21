@@ -40,7 +40,24 @@ _RELATION_VERB_TOKENS: Final[frozenset[str]] = frozenset(
 _RELATION_PREPOSITION_TOKENS: Final[frozenset[str]] = frozenset(
     {"as", "at", "by", "for", "from", "in", "of", "on", "to", "with"}
 )
-_FIELD_TAG_PATTERN: Final[re.Pattern[str]] = re.compile(r"</?[a-z_]+>")
+_EXTRACTION_FIELD_TAG_NAMES: Final[frozenset[str]] = frozenset(
+    {
+        "entity_name",
+        "entity_type",
+        "entity_description",
+        "source_entity",
+        "target_entity",
+        "relation_name",
+        "relationship_description",
+        "relationship_keywords",
+        "relationship_strength",
+    }
+)
+_FIELD_TAG_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"</?(?:"
+    + "|".join(sorted(_EXTRACTION_FIELD_TAG_NAMES))
+    + r")>"
+)
 _ANAPHORIC_ENTITY_NAMES: Final[frozenset[str]] = frozenset(
     {
         "he",
@@ -73,7 +90,7 @@ def strip_extraction_field_markup(text: str) -> str:
 
     This strips wrappers such as ``<entity_name>`` and
     ``</relationship_description>`` while preserving content-like angle-bracket
-    text such as ``<4-0 away win>``.
+    text such as ``<4-0 away win>`` or legitimate typed values like ``<person>``.
     """
 
     return _FIELD_TAG_PATTERN.sub("", text).strip()
