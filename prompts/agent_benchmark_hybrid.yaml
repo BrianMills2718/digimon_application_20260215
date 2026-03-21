@@ -95,10 +95,16 @@ messages:
 
       ## Handling ambiguity
       When `semantic_plan` flags `uncertainty_points`, or when chunk retrieval returns
-      multiple plausible candidates for a bridge entity, test competing hypotheses before
-      committing. Use `entity_profile` to verify candidates. Use `bridge_disambiguate` to
-      resolve when evidence supports multiple options. But keep branching minimal — most
-      atoms have a single clear answer.
+      multiple plausible candidates for a bridge entity:
+      1. **Do not commit to the first candidate.** List all plausible options.
+      2. **Test each candidate against the downstream question.** Search for evidence
+         linking each candidate to the next atom. The candidate with supporting evidence
+         for the downstream clue is the correct one.
+      3. Use `bridge_disambiguate` when evidence supports multiple options and you
+         cannot distinguish them by downstream evidence alone.
+      Example: if "country between X and Y" has candidates A and B, and the next
+      atom asks about event Z in that country, search for "Z in A" and "Z in B" —
+      the one with evidence wins.
 
       ## Resource IDs
       - `graph_reference_id = "{{ dataset_name }}_ERGraph"`
