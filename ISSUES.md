@@ -61,6 +61,9 @@ path:
   `llama-index-embeddings-ollama`, `umap-learn`, `scikit-learn`, plus earlier
   missing runtime packages such as `anthropic`, `instructor`, `loguru`, and
   `numpy`)
+- the same `.venv` also lacked the sibling `prompt_eval` package even though
+  Plan #5 prompt-iteration tooling now depends on it for controlled prompt
+  experiments over frozen extraction cases
 
 This is a real operational problem because benchmark/build reproducibility now
 depends on manual dependency repair rather than one truthful bootstrap path.

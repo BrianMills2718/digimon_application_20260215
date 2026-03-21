@@ -43,8 +43,11 @@
 - `Core/Prompt/GraphPrompt.py` (modify)
 - `Core/Common/graph_schema_guidance.py` (modify)
 - `Core/Schema/EntityRelation.py` or a new extraction-record schema module (modify/create)
+- `eval/extraction_prompt_eval.py` (create)
+- `eval/fixtures/musique_tkg_extraction_prompt_eval_cases.json` (create)
 - `tests/unit/test_extraction_record_validation.py` (create)
 - `tests/unit/test_musique_smoke_extraction_cases.py` (create)
+- `tests/unit/test_extraction_prompt_eval.py` (create)
 
 ---
 
@@ -54,6 +57,8 @@
 
 - 2026-03-21: Slice 1 landed. Parser-level extraction validation now rejects null typed entities in `TKG`, rejects obvious predicate phrases in subject/object slots, strips leaked field-tag wrappers before validation, and locks the observed MuSiQue smoke failures into deterministic tests.
 - 2026-03-21: Live `MuSiQue_TKG_smoke` rebuild after Slice 1 produced a materially cleaner artifact: `119` nodes / `90` edges, with no empty or single-letter IDs, no `entity name ...` pseudo-nodes, no null/placeholder typed nodes, and none of the original heuristic bad edges.
+- 2026-03-21: Slice 2 shifts extraction prompt iteration onto shared infrastructure. Frozen MuSiQue extraction cases now have a dedicated `prompt_eval` harness with deterministic structural scoring so prompt changes can be compared before another smoke rebuild.
+- 2026-03-21: A live one-case `prompt_eval` smoke run completed successfully on the frozen extraction harness. Both `current_contract` and `slot_disciplined_contract` scored `1.0` on the first case, which proves the shared experiment path works but does not yet show prompt separation.
 
 ### Steps
 
@@ -80,7 +85,11 @@
    - Reject records with null/placeholder types when the active profile requires typed entities.
    - Reject records whose subject/object slots are structurally invalid for the active contract.
    - Log rejected records with chunk ID and reason.
-5. Re-run the small MuSiQue TKG smoke build.
+5. Move prompt iteration onto `prompt_eval`.
+   - Freeze a small real-corpus extraction set instead of editing prompts ad hoc.
+   - Compare at least `current_contract` vs `slot_disciplined_contract` on those same inputs.
+   - Score outputs with deterministic structural validators before any judge-backed or larger-corpus evaluation.
+6. Re-run the small MuSiQue TKG smoke build.
    - Rebuild `MuSiQue_TKG_smoke` and check whether the known-bad cases are gone.
    - Only after this smoke slice passes should a larger rebuild or fixed-graph sanity rerun proceed.
 
@@ -95,6 +104,8 @@
 | `tests/unit/test_extraction_record_validation.py` | `test_rejects_null_entity_type_for_tkg_profile` | TKG builds fail loudly on null/placeholder entity types |
 | `tests/unit/test_extraction_record_validation.py` | `test_rejects_malformed_relationship_slots` | relation source/target/predicate validation rejects obvious slot inversions |
 | `tests/unit/test_musique_smoke_extraction_cases.py` | `test_known_bad_musique_cases_are_rejected_or_rewritten` | the captured MuSiQue smoke failures no longer survive parsing as valid graph records |
+| `tests/unit/test_extraction_prompt_eval.py` | `test_extraction_output_evaluator_penalizes_invalid_slots_and_missing_types` | prompt_eval scoring rejects the exact structural failure modes Plan #5 is targeting |
+| `tests/unit/test_extraction_prompt_eval.py` | `test_extraction_output_evaluator_rewards_structurally_valid_tkg_output` | prompt_eval scoring gives full credit to clean TKG-style extraction output |
 
 ### Existing Tests (Must Pass)
 
@@ -114,6 +125,7 @@
 - [ ] the known-bad MuSiQue relation examples are rejected or corrected before graph persistence
 - [ ] rejected extraction records are logged with chunk provenance and reason
 - [ ] `MuSiQue_TKG_smoke` can be rebuilt after the change without reintroducing empty/single-character junk nodes
+- [ ] a frozen `prompt_eval` harness exists for extraction prompt variants on the MuSiQue smoke cases
 - [ ] docs and ADRs are updated to reflect the extraction contract
 
 ---
@@ -121,5 +133,6 @@
 ## Notes
 
 - This slice is intentionally about extraction quality, not retrieval tuning.
-- Do not combine this with a storage migration, VDB redesign, or benchmark prompt work.
+- Do not combine this with a storage migration, VDB redesign, or benchmark agent prompt work.
 - The smallest proof is the 10-chunk MuSiQue smoke build, not a full rebuild.
+- `prompt_eval` is the required iteration surface for extraction prompt changes in this plan; ad hoc prompt edits without the frozen-case harness do not count as progress.
