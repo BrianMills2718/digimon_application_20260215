@@ -63,6 +63,7 @@
 - 2026-03-21: The first full 3-case paired run completed after that harness fix. `slot_disciplined_contract` scored `1.00` mean structural quality versus `0.85` for `current_contract`, with the main remaining failure on the Vilanova case caused by malformed relationship tuple endings in the baseline prompt contract.
 - 2026-03-21: Slice 3 landed as a typed build contract. `strict_extraction_slot_discipline` is now part of `GraphConfig`, the ER build override surface, the manifest snapshot, the prebuild CLI, and the live extraction prompt renderer.
 - 2026-03-21: A live `MuSiQue_TKG_smoke_strict_slots` rebuild completed successfully with the new flag and a truthful manifest (`strict_extraction_slot_discipline=true`). The artifact improved from `119` nodes / `90` edges to `105` nodes / `95` edges on the same 10-chunk slice, but it still includes semantically weak entities such as `his`, `form`, and `medical leave`, plus normalization-damaged names such as `supercopa de espa a` and `el cl sico`. This means prompt-only tightening is not sufficient.
+- 2026-03-21: Slice 4 added deterministic anaphora filtering in the extraction validator. A follow-up live rebuild to `MuSiQue_TKG_smoke_strict_slots_no_anaphora` dropped the 10-chunk smoke artifact further to `99` nodes / `78` edges and removed `his` from the persisted graph. Residual low-value abstractions such as `form` still survive, which means the next unresolved question is abstraction policy rather than pronoun handling.
 
 ### Steps
 
@@ -100,6 +101,10 @@
    - Reject pronouns and other anaphoric placeholders (`his`, `her`, `their`, `he`, `she`) before graph persistence.
    - Reject low-value abstract filler nodes when they are not stable named entities for the active profile, such as `form` or `medical leave` in open `TKG` extraction.
    - Keep this separate from canonical-name redesign; Unicode-preserving identity belongs to Plan #4, not this slice.
+8. Decide and implement the low-value abstraction policy.
+   - Define what counts as a named/groundable entity versus an abstract common-noun concept for open `TKG` extraction.
+   - Do not solve this with an ad hoc benchmark-only stoplist.
+   - Once the rule is defined, encode it in deterministic validation and rerun the 10-chunk smoke slice again.
 
 ---
 

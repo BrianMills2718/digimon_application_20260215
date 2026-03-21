@@ -94,6 +94,13 @@ layer:
   `MuSiQue_TKG_smoke_strict_slots` was rebuilt, the specific malformed-slot
   failures improved, but the artifact still contains semantically weak entities
   such as `his`, `form`, and `medical leave`
+- after deterministic anaphora filtering was added and
+  `MuSiQue_TKG_smoke_strict_slots_no_anaphora` was rebuilt, `his` disappeared
+  from the persisted graph and the artifact dropped from `105` nodes / `95`
+  edges to `99` nodes / `78` edges on the same 10-chunk slice
+- the remaining extraction-quality ambiguity is now the low-value abstraction
+  policy: entities like `form` can still survive open `TKG` extraction even
+  when slot structure and pronoun leakage are improved
 
 This means the current build architecture is now good enough to isolate artifact
 namespaces and provenance, but not yet good enough to claim TKG-quality schema

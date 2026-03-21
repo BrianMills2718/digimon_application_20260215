@@ -232,6 +232,7 @@ class DelimiterExtractionMixin:
         is_valid_entity_record, invalid_entity_reason = validate_entity_record(
             entity_name,
             final_entity_type,
+            entity_description=record_attributes[3],
             require_typed_entities=graph_cfg.enable_entity_type,
         )
         if not is_valid_entity_record:
