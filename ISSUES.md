@@ -68,6 +68,34 @@ depends on manual dependency repair rather than one truthful bootstrap path.
 **Next step:** create a focused environment repair plan or replace the broken
 pin/install story with a tested Python 3.12-compatible bootstrap path.
 
+### ISSUE-003: Real-corpus TKG smoke build still has low slot fidelity and weak typing
+
+**Observed:** 2026-03-21  
+**Status:** `confirmed`
+
+The rebuilt alias architecture works on real MuSiQue data, but the first
+`MuSiQue_TKG_smoke` run surfaced a separate quality problem in the extraction
+layer:
+
+- the artifact itself is structurally clean (`source_dataset_name=MuSiQue`,
+  `dataset_name=MuSiQue_TKG_smoke`, no empty or single-letter node IDs)
+- some extracted relations still have obvious slot inversions or malformed
+  subject/object choices, for example:
+  - `('barcelona', 'won by', 'extra time')`
+  - `('messi', 'suffered', 'tear')`
+  - `('medial collateral ligament', 'part of', 'left knee')`
+  - `('located in', 'tear', 'medial collateral ligament')`
+- some nodes still land with weak or null typing, including
+  `left knee`, `medial collateral ligament`, `sextuple`, and `silver ball`
+
+This means the current build architecture is now good enough to isolate artifact
+namespaces and provenance, but not yet good enough to claim TKG-quality schema
+fidelity on real benchmark chunks.
+
+**Next step:** create a focused extraction-quality plan for slot fidelity,
+entity typing, and schema-guided validation before any full MuSiQue rebuild or
+fixed-graph benchmark interpretation.
+
 ---
 
 ## Resolved

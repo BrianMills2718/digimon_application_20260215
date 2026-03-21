@@ -54,6 +54,8 @@
 - 2026-03-21: Phase 1/3 foundation landed. Graph builds now support explicit profile/schema contract fields, richer manifest schema metadata, and relation-name-aware delimiter extraction. See the current implementation milestone commit for code details and tests.
 - 2026-03-21: Operational subset rebuild path landed. `eval/prebuild_graph.py` now supports explicit entity-graph profile/schema arguments plus `--chunk-limit`, and a live `Synthetic_Test` smoke build proved the real server/runtime path can emit a truthful subset manifest (`TKG`, 2 selected chunks out of 4 available).
 - 2026-03-21: Artifact alias support landed for ER builds. Rebuilds can now persist into an isolated artifact namespace while grounding chunk provenance against the source dataset, and a live `Synthetic_Test -> Synthetic_Test_TKG_alias` smoke build proved the manifest and GraphML remain clean (`source_dataset_name=Synthetic_Test`, `dataset_name=Synthetic_Test_TKG_alias`, no invalid node IDs).
+- 2026-03-21: Real-corpus smoke proof landed. `MuSiQue -> MuSiQue_TKG_smoke` built successfully with `--chunk-limit 10` and a truthful manifest, confirming the new alias/provenance architecture works on the target corpus without overwriting the benchmark-facing graph.
+- 2026-03-21: The same MuSiQue smoke run also exposed the next blocker: extraction quality is still not TKG-truthful on some chunks. Slot fidelity and typing need a focused follow-up before any full rebuild or fixed-graph benchmark interpretation (`ISSUE-003`).
 
 ### Phase 0: SOTA Grounding
 
