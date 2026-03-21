@@ -1,0 +1,71 @@
+[
+  {
+    "id": "musique_doc_1_grounded_form_fitness",
+    "source_doc_id": 1,
+    "title": "FC Barcelona",
+    "focus": "Grounded-entity policy should keep Ronaldinho while suppressing vague abstractions like form and fitness.",
+    "content": "There was open feuding as Eto'o publicly criticized coach Frank Rijkaard and Ronaldinho. Ronaldinho also admitted that a lack of fitness affected his form.",
+    "expected": {
+      "min_valid_entities": 1,
+      "min_valid_relationships": 0,
+      "required_entity_names": [
+        "Ronaldinho"
+      ],
+      "forbidden_entity_names": [
+        "fitness",
+        "form"
+      ]
+    }
+  },
+  {
+    "id": "musique_doc_1_grounded_copa_del_rey",
+    "source_doc_id": 1,
+    "title": "FC Barcelona",
+    "focus": "Grounded-entity policy must still keep named competitions and clubs such as Copa del Rey.",
+    "content": "Barcelona advanced to the semi-finals of the Copa del Rey, winning the first leg against Getafe 5–2, with a goal from Messi bringing comparison to Diego Maradona's goal of the century.",
+    "expected": {
+      "min_valid_entities": 3,
+      "min_valid_relationships": 0,
+      "required_entity_names": [
+        "Barcelona",
+        "Copa del Rey",
+        "Getafe"
+      ]
+    }
+  },
+  {
+    "id": "musique_doc_5_grounded_medical_leave",
+    "source_doc_id": 5,
+    "title": "FC Barcelona",
+    "focus": "Grounded-entity policy should keep the named person and diagnosis while dropping generic leave terminology.",
+    "content": "On 19 July, it was announced that Tito Vilanova was resigning as Barcelona manager because his throat cancer had returned, and he would be receiving treatment for the second time after a three-month medical leave in December 2012.",
+    "expected": {
+      "min_valid_entities": 2,
+      "min_valid_relationships": 0,
+      "required_entity_names": [
+        "Tito Vilanova",
+        "throat cancer"
+      ],
+      "forbidden_entity_names": [
+        "medical leave"
+      ]
+    }
+  },
+  {
+    "id": "musique_doc_9_grounded_silver_ball",
+    "source_doc_id": 9,
+    "title": "Lionel Messi",
+    "focus": "Grounded-entity policy must keep named awards and competitions such as Silver Ball and the Club World Cup Final.",
+    "content": "Messi capped off the year by winning the 2015 FIFA Club World Cup Final on 20 December, collecting his fifth club trophy of 2015 as Barcelona went on to defeat River Plate 3 -- 0 in Yokohama. Messi also won the tournament's Silver Ball, despite missing the semi-final.",
+    "expected": {
+      "min_valid_entities": 4,
+      "min_valid_relationships": 0,
+      "required_entity_names": [
+        "Messi",
+        "2015 FIFA Club World Cup Final",
+        "Silver Ball",
+        "River Plate"
+      ]
+    }
+  }
+]

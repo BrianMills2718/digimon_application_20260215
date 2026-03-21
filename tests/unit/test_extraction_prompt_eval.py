@@ -26,6 +26,10 @@ from eval.extraction_prompt_eval import (
     run_cli,
 )
 
+GROUND_POLICY_SMOKE_CASES_PATH = DEFAULT_CASES_PATH.with_name(
+    "musique_tkg_grounded_entity_prompt_eval_smoke_cases.json"
+)
+
 
 def _tkg_graph_config() -> GraphConfig:
     """Return the TKG graph config used by the extraction prompt-eval harness."""
@@ -49,6 +53,19 @@ def test_load_extraction_prompt_eval_cases_freezes_expected_musique_slice() -> N
         "musique_doc_5_vilanova_2012_2013",
         "musique_doc_5_grounded_medical_leave",
         "musique_doc_9_messi_2015_2016",
+        "musique_doc_9_grounded_silver_ball",
+    ]
+
+
+def test_load_grounded_entity_smoke_cases_freezes_short_policy_slice() -> None:
+    """The focused smoke fixture should contain only the short grounded-entity cases."""
+
+    cases = load_extraction_prompt_eval_cases(GROUND_POLICY_SMOKE_CASES_PATH)
+    assert [case.source_doc_id for case in cases] == [1, 1, 5, 9]
+    assert [case.id for case in cases] == [
+        "musique_doc_1_grounded_form_fitness",
+        "musique_doc_1_grounded_copa_del_rey",
+        "musique_doc_5_grounded_medical_leave",
         "musique_doc_9_grounded_silver_ball",
     ]
 

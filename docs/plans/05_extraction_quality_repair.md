@@ -47,6 +47,7 @@
 - `Core/Schema/EntityRelation.py` or a new extraction-record schema module (modify/create)
 - `eval/extraction_prompt_eval.py` (create)
 - `eval/fixtures/musique_tkg_extraction_prompt_eval_cases.json` (create)
+- `eval/fixtures/musique_tkg_grounded_entity_prompt_eval_smoke_cases.json` (create)
 - `tests/unit/test_extraction_record_validation.py` (create)
 - `tests/unit/test_musique_smoke_extraction_cases.py` (create)
 - `tests/unit/test_extraction_prompt_eval.py` (create)
@@ -70,6 +71,8 @@
 - 2026-03-21: A live `MuSiQue_TKG_smoke_strict_slots` rebuild completed successfully with the new flag and a truthful manifest (`strict_extraction_slot_discipline=true`). The artifact improved from `119` nodes / `90` edges to `105` nodes / `95` edges on the same 10-chunk slice, but it still includes semantically weak entities such as `his`, `form`, and `medical leave`, plus normalization-damaged names such as `supercopa de espa a` and `el cl sico`. This means prompt-only tightening is not sufficient.
 - 2026-03-21: Slice 4 added deterministic anaphora filtering in the extraction validator. A follow-up live rebuild to `MuSiQue_TKG_smoke_strict_slots_no_anaphora` dropped the 10-chunk smoke artifact further to `99` nodes / `78` edges and removed `his` from the persisted graph. Residual low-value abstractions such as `form` still survive, which means the next unresolved question is abstraction policy rather than pronoun handling.
 - 2026-03-21: ADR-006 was accepted to resolve that ambiguity. DIGIMON will prove the grounded-entity policy with frozen `prompt_eval` cases that include both "drop this abstraction" and "keep this named borderline entity" examples before encoding a deterministic abstraction validator.
+- 2026-03-21: The first live grounded-entity `prompt_eval` smoke run over the mixed case set failed before scoring the actual policy question. `grounded_entity_contract` on the long `musique_doc_1_barcelona_2006_07` case produced a truncated `201360`-character response, which then caused the paired comparison to fail because the variants no longer had matching scored input IDs. The next live proof must therefore start with a short policy-focused smoke fixture before reintegrating the long structural cases.
+- 2026-03-21: The first live run on that short policy-focused smoke fixture completed cleanly (`gemini/gemini-2.5-flash-lite`, execution `dcdbe4ebda95`) and produced a small nominal improvement for `grounded_entity_contract` (`0.448` mean score vs `0.425`). But the run also exposed a deeper parser bug: every trial had `entity_validity=0.0` because legitimate typed values like `<person>` were stripped to the empty string by the current field-tag cleaner. This means the short smoke proof is now blocked on parser repair, not on policy ambiguity.
 
 ### Steps
 
@@ -117,8 +120,13 @@
    - Score both required and forbidden entity names so prompt changes are judged on pruning quality, not only tuple shape.
 10. Compare the current best prompt contract against a grounded-entity variant.
    - Baseline the comparison on the current best contract, not the original pre-slice prompt.
-   - Use `prompt_eval` over the expanded frozen case set.
+   - Start with a short policy-focused smoke fixture so the first live run measures grounded-entity behavior rather than long-case output explosion.
+   - Reintegrate the long structural cases only after the shorter live slice completes without truncation or missing-score failures.
    - Only if the grounded variant suppresses abstractions without over-pruning legitimate entities should it move into the live build path.
+11. Repair the extraction field-tag stripper so typed values survive scoring.
+   - `strip_extraction_field_markup()` must remove leaked placeholder wrappers like `<entity_type>...</entity_type>` without erasing legitimate angled values like `<person>`.
+   - Add deterministic unit coverage for both the leaked-wrapper and legitimate-value cases.
+   - Rerun the short grounded-entity smoke fixture after the parser fix before trusting any prompt-policy comparison.
 
 ---
 

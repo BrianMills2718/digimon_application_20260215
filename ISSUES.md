@@ -134,6 +134,59 @@ real entities before indexing and retrieval.
 to separate canonical identity from search normalization, then rebuild the
 entity-graph slice from that contract instead of patching names ad hoc.
 
+### ISSUE-005: Grounded-entity prompt-eval can fail on long structural cases before scoring policy behavior
+
+**Observed:** 2026-03-21  
+**Status:** `planned`
+
+The first live grounded-entity `prompt_eval` smoke run over the mixed frozen
+case set exposed a new evaluation blocker:
+
+- `grounded_entity_contract` on `musique_doc_1_barcelona_2006_07` produced a
+  truncated response (`201360` chars) instead of a scoreable extraction output
+- once one variant misses a scored input, `prompt_eval`'s paired-by-input
+  comparison fails loudly because the scored input IDs no longer match across
+  variants
+- this means the current mixed fixture is too large or too open-ended for the
+  first grounded-entity proof run, even though the shorter policy cases are the
+  actual target of ADR-006
+
+This is not evidence that the grounded-entity policy is wrong. It is evidence
+that the first proof needs a smaller live slice aligned to the policy question
+before the long structural cases are reintegrated.
+
+**Next step:** continue [Plan #5](docs/plans/05_extraction_quality_repair.md)
+by adding a short grounded-entity smoke fixture, running the first live policy
+comparison there, and treating reintegration of the full mixed case set as a
+follow-up gate rather than the first proof step.
+
+### ISSUE-006: Extraction field-tag stripping erases valid angled entity-type values
+
+**Observed:** 2026-03-21  
+**Status:** `planned`
+
+The first successful grounded-entity smoke run on the short policy fixture did
+not actually measure the intended policy well because both prompt variants were
+systematically losing typed entities during scoring:
+
+- every smoke case reported `entity_validity=0.0` for both variants
+- the raw trial outputs show entity types emitted as angled values such as
+  `<person>`
+- `strip_extraction_field_markup("<person>")` currently returns the empty
+  string, while `strip_extraction_field_markup("<Silver Ball>")` is preserved
+- that means the current field-tag stripping regex is removing any single-token
+  lowercase angled value, even when it is a legitimate entity type rather than
+  leaked prompt markup
+
+This is now the concrete blocker for meaningful grounded-entity policy
+comparison. Until typed entity values survive scoring, the prompt-eval slice is
+mostly measuring parser damage rather than keep/drop behavior.
+
+**Next step:** continue [Plan #5](docs/plans/05_extraction_quality_repair.md)
+by tightening field-tag stripping so it only removes known placeholder wrappers
+instead of arbitrary lowercase angled values, then rerun the short grounded-
+entity smoke fixture.
+
 ---
 
 ## Resolved
