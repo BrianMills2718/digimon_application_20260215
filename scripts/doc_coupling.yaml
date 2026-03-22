@@ -1,4 +1,14 @@
 # Doc-code coupling configuration
-# Minimal bootstrap: no enforced couplings yet.
 
-couplings: []
+couplings:
+  - sources:
+      - "Core/Schema/GraphBuildManifest.py"
+      - "eval/graph_manifest.py"
+      - "eval/run_agent_benchmark.py"
+    docs:
+      - "docs/GRAPH_ATTRIBUTE_MODEL.md"
+      - "docs/TOOL_CAPABILITY_MATRIX.md"
+      - "docs/adr/004-graph-build-rearchitecture.md"
+      - "docs/adr/010-tool-applicability-architecture.md"
+      - "docs/plans/04_graph_build_rearchitecture.md"
+    description: "Graph manifest and operator-applicability architecture"

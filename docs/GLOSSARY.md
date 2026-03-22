@@ -26,6 +26,14 @@ This glossary defines canonical extraction/rebuild terms used across code, plans
 - **`artifact dataset`**: A build namespace (for example `MuSiQue_TKG_open`) that keeps produced artifacts isolated from source dataset artifacts.
 - **`build manifest`**: Persisted contract describing exactly what a graph artifact contains and which retrieval tools are safely available.
 - **`tool gating`**: Runtime filtering of retrieval operators or benchmarks based on manifest-supported capabilities.
+- **`build capability`**: A capability that is part of the persisted artifact truth, such as topology, fields, provenance, or derived artifacts.
+- **`runtime resource`**: A capability that depends on what is loaded or reachable in the current process, such as a loaded graph, VDB, chunk store, or sparse matrix set.
+- **`operator requirement contract`**: The typed declaration of what a tool requires or prefers from build capabilities and runtime resources.
+- **`applicability decision`**: The result of evaluating a tool contract against build capabilities and runtime resources.
+- **`hard requirement`**: A requirement whose absence makes a tool unavailable.
+- **`soft preference`**: A quality-improving condition whose absence should degrade a tool rather than hide it.
+- **`degraded tool`**: A tool whose hard requirements are satisfied but whose soft preferences are not.
+- **`unavailable tool`**: A tool whose hard requirements are not satisfied and therefore should not be exposed.
 
 ## Lane and Trust Terms
 

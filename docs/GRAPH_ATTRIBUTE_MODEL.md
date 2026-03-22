@@ -149,6 +149,13 @@ Those need their own build path and their own manifest section.
 
 Every graph build should persist a machine-readable manifest beside the artifacts.
 
+Important boundary:
+
+- the manifest records what the build produced
+- the manifest does not record whether those artifacts are currently loaded in a
+  live process
+- runtime-loaded resources belong to a separate applicability surface
+
 Suggested fields:
 
 ```json
@@ -174,7 +181,9 @@ Suggested fields:
 }
 ```
 
-The manifest is the source of truth for tool gating and benchmark-mode tool exposure.
+The manifest is the source of truth for the **build side** of tool gating and
+benchmark-mode tool exposure. Runtime availability must be evaluated
+separately.
 
 ## Current Gaps
 

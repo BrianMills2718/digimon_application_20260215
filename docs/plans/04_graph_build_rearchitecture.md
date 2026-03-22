@@ -26,6 +26,7 @@
 - `Core/AgentTools/graph_construction_tools.py` - current build entrypoints
 - `eval/graph_manifest.py` - benchmark gating from manifest truth
 - `docs/adr/002-universal-graph-schema-and-extraction.md` - earlier schema direction
+- `docs/adr/010-tool-applicability-architecture.md` - build/runtime/operator applicability boundary
 
 ---
 
@@ -34,6 +35,10 @@
 > Initial design target. The eventual implementation should stay within this boundary unless a follow-up plan expands it.
 
 - `docs/adr/004-graph-build-rearchitecture.md` (create)
+- `docs/adr/010-tool-applicability-architecture.md` (create)
+- `docs/GRAPH_ATTRIBUTE_MODEL.md` (modify)
+- `docs/TOOL_CAPABILITY_MATRIX.md` (modify)
+- `docs/GLOSSARY.md` (modify)
 - `docs/reports/2026-03-21_graphrag_rebuild_research.md` (create)
 - `Config/GraphConfig.py` (modify)
 - `Core/Schema/GraphBuildManifest.py` (modify)
@@ -43,6 +48,7 @@
 - `Core/Common/entity_name_hygiene.py` (modify)
 - `Core/AgentTools/graph_construction_tools.py` (modify)
 - `eval/graph_manifest.py` (modify)
+- `scripts/doc_coupling.yaml` (modify)
 - tests for schema/build/gating/rebuild verification (create/modify)
 
 ---
@@ -56,6 +62,7 @@
 - 2026-03-21: Artifact alias support landed for ER builds. Rebuilds can now persist into an isolated artifact namespace while grounding chunk provenance against the source dataset, and a live `Synthetic_Test -> Synthetic_Test_TKG_alias` smoke build proved the manifest and GraphML remain clean (`source_dataset_name=Synthetic_Test`, `dataset_name=Synthetic_Test_TKG_alias`, no invalid node IDs).
 - 2026-03-21: Real-corpus smoke proof landed. `MuSiQue -> MuSiQue_TKG_smoke` built successfully with `--chunk-limit 10` and a truthful manifest, confirming the new alias/provenance architecture works on the target corpus without overwriting the benchmark-facing graph.
 - 2026-03-21: The same MuSiQue smoke run also exposed the next blocker: extraction quality is still not TKG-truthful on some chunks. Slot fidelity and typing need a focused follow-up before any full rebuild or fixed-graph benchmark interpretation (`ISSUE-003`).
+- 2026-03-22: The tool-applicability design gap was formalized before more gating code. DIGIMON now has an explicit architecture decision separating build capabilities, runtime resources, and operator requirement contracts, plus updated capability docs that distinguish hard requirements from soft quality preferences.
 
 ### Phase 0: SOTA Grounding
 
@@ -86,10 +93,18 @@
 
 ### Phase 4: Retrieval/Tool Capability Gating
 
-1. Finish manifest-driven benchmark filtering.
-2. Apply the same logic to MCP tool exposure once the existing dirty MCP worktree conflict is resolved.
-3. Remove remaining ad hoc capability guesses.
-4. Make query-mode exposure truthful to the built artifacts so named modes such as `basic`, `local`, `global`, and `hybrid` can be defined on top of actual capabilities rather than prompt convention alone.
+1. Implement a shared applicability model that separates:
+   - build capabilities from persisted manifests
+   - runtime-loaded resources
+   - operator requirement contracts
+2. Define applicability outcomes and reasons:
+   - `available`
+   - `degraded`
+   - `unavailable`
+3. Finish benchmark filtering from that shared evaluator instead of adding more one-off manifest checks.
+4. Apply the same evaluator to MCP tool exposure once the existing dirty MCP worktree conflict is resolved.
+5. Remove remaining ad hoc capability guesses.
+6. Make query-mode exposure truthful to the built artifacts so named modes such as `basic`, `local`, `global`, and `hybrid` can be defined on top of actual capabilities rather than prompt convention alone.
 
 ### Phase 5: Thin Vertical Rebuild
 
@@ -127,6 +142,8 @@
 - [ ] entity-graph extraction can run with explicit schema guidance instead of only open-ended extraction
 - [ ] `KG`, `TKG`, and `RKG` are config-driven and machine-readable
 - [ ] build manifests truthfully drive benchmark gating
+- [ ] operator applicability is modeled as build capabilities + runtime resources + operator contracts
+- [ ] hard requirements are distinguished from soft quality preferences in tool applicability
 - [ ] MuSiQue can be rebuilt from the new entity-graph path
 - [ ] known entity-hygiene regressions stay fixed
 - [ ] fixed-graph sanity batch uses only manifest-applicable tools

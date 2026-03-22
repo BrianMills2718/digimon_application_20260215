@@ -1,150 +1,148 @@
 # Tool Capability Matrix
 
-This document defines when a retrieval operator or MCP tool is applicable for a given graph build.
+This document defines when a retrieval operator or MCP tool is applicable for a
+given DIGIMON build.
 
-The rule is strict:
+The important design correction is this:
 
-- if a build does not provide the required topology, attributes, or derived artifacts, the corresponding tool should not be exposed
+- tool applicability is not just "what the build manifest says"
+- tool applicability is the combination of:
+  - what the build produced
+  - what the runtime loaded
+  - what the operator fundamentally requires
 
-This is the contract that should drive both:
+This contract should drive both:
 
 - MCP tool exposure
 - benchmark-mode tool filtering
 
-## Capability Model
+## Applicability Model
 
-Tool applicability depends on three different things:
+### Plane 1: Build Capabilities
 
-1. **Topology**
-- entity graph
-- passage graph
-- tree graph
+Build capabilities come from the persisted graph build manifest.
 
-2. **Attributes**
-- entity types
-- entity descriptions
-- relation names
-- relation descriptions
-- relation keywords
-- chunk provenance
+They answer questions such as:
 
-3. **Derived Artifacts**
-- entity VDB
-- relationship VDB
-- chunk VDB
-- sparse propagation matrices
-- community reports
+- what topology was built?
+- which node and edge fields exist?
+- is entity or relationship provenance present?
+- were entity/relationship/chunk VDB artifacts built?
+- were sparse matrices built?
+- were communities built?
 
-The current code only gates some of these. The target behavior is to gate all of them from the persisted build manifest.
+The manifest is authoritative for what was produced, not for what is currently
+loaded.
+
+### Plane 2: Runtime Resources
+
+Runtime resources come from live context and loader state.
+
+They answer questions such as:
+
+- is the graph loaded?
+- are doc chunks available?
+- is the entity VDB loaded?
+- is the relationship VDB loaded?
+- is the chunk VDB loaded?
+- are sparse matrices loaded?
+
+Runtime failures must not be encoded back into the manifest.
+
+### Plane 3: Operator Requirement Contract
+
+Each operator/tool should declare:
+
+- hard build requirements
+- hard runtime requirements
+- soft quality preferences
+
+Soft preferences improve result quality or preview richness, but do not make
+the tool invalid.
+
+## Applicability Outcomes
+
+Applicability evaluation should return one of:
+
+- **`available`**
+  - all hard requirements are met
+- **`degraded`**
+  - all hard requirements are met, but one or more soft preferences are absent
+- **`unavailable`**
+  - one or more hard requirements are missing
+
+The evaluator should also return explicit reasons, not just a boolean.
 
 ## Operator-Level Matrix
 
-| Operator / Tool Family | Requires Topology | Requires Attributes | Requires Derived Artifacts | Notes |
+| Operator / Tool Family | Hard Build Requirements | Hard Runtime Requirements | Soft Quality Preferences | Notes |
 |---|---|---|---|---|
-| `entity_string_search` / `entity_profile` / `entity_neighborhood` | entity graph | `canonical_name` at minimum; `entity_description` improves previews | none | core local graph tools |
-| `entity.vdb` / `entity_vdb_search` | entity graph | searchable entity text fields | `entity_vdb` | hide if entity VDB not built |
-| `entity.link` | entity graph | `canonical_name`, aliases/search keys | `entity_vdb` | quality depends on alias/search-key quality |
-| `entity.ppr` | entity graph | none beyond graph connectivity | sparse matrices or equivalent PPR artifact | do not expose on tree/passage builds unless separately implemented |
-| `entity.tfidf` | entity graph | `entity_description` or equivalent searchable entity text | TF-IDF index or build-time text matrix | weak without descriptions |
-| `relationship.onehop` | entity graph | none beyond connected edges | none | requires entity graph edges |
-| `relationship.vdb` / `relationship_vdb_search` | entity graph | relation text fields, ideally `relation_description` or `relation_keywords` | `relationship_vdb` | not useful if edges only have empty relation text |
-| `relationship.score_agg` | entity graph | relation provenance structure | sparse matrices | used after `entity.ppr` |
-| `chunk.from_relation` | entity graph | edge `source_chunk_ids` provenance | none | hide if relationship→chunk provenance is missing |
-| `chunk.occurrence` | entity graph | node `source_chunk_ids` provenance | none | hide if entity provenance is missing |
-| `chunk.aggregator` | entity graph | relationship and chunk linkage | sparse matrices | requires entity→relationship and relationship→chunk matrices |
-| `chunk.text_search` | any corpus-backed build | chunk text | text-search index | this is corpus retrieval, not graph-specific |
-| `chunk.vdb` / `chunk_vdb_search` | any corpus-backed build | chunk text | `chunk_vdb` | independent of graph richness |
-| `subgraph.khop_paths` / `subgraph.steiner_tree` | entity graph | connected entity graph | none or graph algorithm support | not applicable to tree-only or passage-only builds unless redefined |
-| `subgraph.agent_path` | entity graph | same as subgraph extraction | LLM plus subgraph extraction support | only expose if subgraph tools are available |
-| `community.from_entity` / `community.from_level` | entity graph | cluster/community memberships or reports | `communities` | hide if community detection was not run |
-| tree summarization / layer tools | tree graph | tree nodes and levels | tree artifacts | tree-only |
-| passage traversal / passage-neighborhood tools | passage graph | passage nodes and links | passage graph artifacts | passage-only |
+| `entity_string_search` / `entity_profile` / `entity_neighborhood` | entity graph topology | graph loaded | entity descriptions, aliases/search keys | `entity_profile` remains valid without descriptions; richer fields improve previews |
+| `entity.vdb` / `entity_vdb_search` | entity graph topology; `entity_vdb` artifact built | entity VDB loaded | descriptions, aliases/search keys, richer entity text | hide if the index was never built or is not loaded |
+| `entity.link` | entity graph topology; `entity_vdb` artifact built | entity VDB loaded | aliases/search keys, canonical-name quality | valid with exact-name matching only, but quality degrades sharply |
+| `entity.ppr` | entity graph topology | graph loaded | none | current operator uses direct graph PPR; sparse matrices are not a hard requirement |
+| `entity.tfidf` | entity graph topology | graph loaded or entity text index loaded | entity descriptions or equivalent searchable entity text | should not be advertised as strong on builds with empty entity text |
+| `relationship.onehop` | entity graph topology | graph loaded | relation names or descriptions | remains valid on minimal edge payloads |
+| `relationship.vdb` / `relationship_vdb_search` | entity graph topology; `relationship_vdb` artifact built | relationship VDB loaded | relation descriptions, keywords, non-empty relation text | rich relation text improves semantic retrieval, but the hard requirement is the built/loaded index |
+| `relationship.score_agg` | entity graph topology; sparse propagation artifact built | sparse matrices loaded; graph loaded | none | this is the real sparse-matrix-dependent relationship tool |
+| `chunk.from_relation` | entity graph topology; relationship chunk provenance built | graph loaded; chunk/doc store available | relation names or descriptions for better ranking | hide if relationship provenance is absent |
+| `chunk.occurrence` | entity graph topology; entity chunk provenance built | graph loaded; chunk/doc store available | none | hide if entity provenance is absent |
+| `chunk.aggregator` | entity graph topology; sparse propagation artifact built | sparse matrices loaded; graph loaded | none | requires entity->relationship and relationship->chunk propagation surfaces |
+| `chunk.text_search` | corpus-backed build or dataset prepared for chunk retrieval | chunk/doc store available | dedicated lexical index | this is corpus retrieval, not graph-richness retrieval |
+| `chunk.vdb` / `chunk_vdb_search` | `chunk_vdb` artifact built | chunk VDB loaded | richer chunk text, titles, doc metadata | independent of entity-graph richness |
+| `subgraph.khop_paths` / `subgraph.steiner_tree` | entity graph topology | graph loaded | well-connected graph, informative relation payloads | not applicable to passage-only or tree-only builds unless separately redefined |
+| `subgraph.agent_path` | entity graph topology | graph loaded; LLM available | same preferences as other subgraph tools | should inherit availability from the subgraph extraction surface |
+| `community.from_entity` / `community.from_level` | entity graph topology; `communities` artifact built | communities loaded | richer community summaries | hide if community detection was never run |
+| `meta.pcst_optimize` | none beyond upstream entity/relationship artifacts already produced in the current run | none beyond normal operator execution | informative scores on upstream entities/relationships | this is a composition-stage optimizer, not a build-capability-gated retrieval surface |
+| tree-specific layer/summarization tools | tree topology | tree graph loaded | summary text, layer metadata | tree-only |
+| passage-specific traversal tools | passage topology | passage graph loaded | passage relation text, passage metadata | passage-only |
 
-## Benchmark Tooling Implications
+## Benchmark Implications
 
-The benchmark harness currently does some gating for:
+Benchmark filtering should use a shared applicability evaluator and then apply a
+policy:
 
-- missing entity/relationship/chunk VDBs
-- missing sparse matrices
-- explicit `baseline` and `fixed_graph` mode tool subsets
+- hide `unavailable` tools
+- keep `degraded` tools unless the benchmark mode explicitly demands a stricter
+  policy
+- continue to apply mode-level subsets such as `baseline` and `fixed_graph`
 
-That is a start, but it is incomplete.
+The benchmark harness should stop maintaining a separate hand-written notion of
+"capability" once the shared evaluator exists.
 
-The benchmark harness should also gate on:
+## MCP Exposure Implications
 
-- missing entity provenance for `chunk.occurrence`
-- missing relationship provenance for `chunk.from_relation`
-- missing relation text for relationship-search tools
-- missing communities for community tools
-- graph topology mismatch for tree/passage-only tools
+MCP discovery should consume the same evaluator, but with a user-facing policy:
 
-## MCP Exposure Rules
-
-These are the recommended exposure rules for user-facing tools.
-
-### Always Safe
-
-These can be shown whenever their backing artifact exists:
-
-- `chunk_text_search`
-- `chunk_vdb_search`
-- `chunk_get_text_by_chunk_ids`
-- `submit_answer`
-
-### Entity-Graph Core
-
-Show only for entity-graph builds:
-
-- `entity_string_search`
-- `entity_profile`
-- `entity_neighborhood`
-- `entity_onehop`
-- `relationship_onehop`
-
-### Rich-Relation Tools
-
-Show only when the build has usable relationship text or keywords plus the relevant artifact:
-
-- `relationship_vdb_search`
-- `chunk_from_relationships`
-- any relation-keyword-driven tool
-
-### Propagation / Graph-Scoring Tools
-
-Show only when sparse propagation artifacts exist:
-
-- `entity_ppr`
-- `relationship_score_aggregator`
-- `chunk_aggregator`
-
-### Community Tools
-
-Show only when community reports exist:
-
-- `community_from_entity`
-- `community_from_level`
+- hide `unavailable` tools
+- expose `degraded` tools with explicit reasons when possible
+- avoid pretending that a preferred field is a hard requirement if the tool can
+  still run truthfully
 
 ## Current Gaps
 
 Current implementation does not yet fully satisfy this contract:
 
-- `OperatorDescriptor` only models a few coarse requirements
-- `list_operators` exposes those coarse flags but not build-manifest truth
-- `BaseGraph.capabilities` still overstates some capabilities, especially description-related ones
-- benchmark-mode filtering does not yet use a persisted build manifest
+- `OperatorDescriptor` does not yet model a full applicability contract
+- benchmark filtering is split between manifest checks and runtime ad hoc checks
+- MCP exposure does not yet consume the same applicability decision surface
+- some existing docs overstate hard requirements instead of distinguishing hard
+  requirements from soft quality preferences
 
 ## Required Next Step
 
-Introduce a `GraphBuildManifest` and make both MCP tool registration and benchmark tool filtering depend on it.
+Implement one shared applicability evaluator with typed inputs for:
 
-Suggested manifest sections:
+- build manifest capabilities
+- runtime-loaded resources
+- operator requirement contract
 
-- `topology_kind`
-- `graph_profile`
-- `node_fields`
-- `edge_fields`
-- `artifacts`
-- `provenance`
-- `enrichments`
+That evaluator should return:
 
-Without that manifest, tool exposure remains partially guess-based.
+- `available` / `degraded` / `unavailable`
+- missing hard requirements
+- missing soft preferences
+- human-readable reasons
+
+Without that layer, DIGIMON will keep adding partial gating logic instead of a
+clean architecture.
