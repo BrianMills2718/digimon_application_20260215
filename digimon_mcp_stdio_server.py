@@ -11,6 +11,7 @@ Usage:
 Add to ~/.claude/mcp_servers.json to use with Claude Code.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -160,6 +161,66 @@ def _compact_tool_schemas() -> None:
             for prop in params.get("properties", {}).values():
                 if isinstance(prop, dict):
                     prop.pop("title", None)
+
+
+async def _apply_benchmark_manifest_tool_filter() -> tuple[str | None, list[str], list[str]]:
+    """Remove benchmark tools whose hard requirements are not satisfied.
+
+    This benchmark-only startup filter reuses the shared applicability evaluator
+    so the MCP-exposed tool surface matches the persisted graph manifest plus the
+    resources actually loaded for the preloaded dataset.
+    """
+
+    dataset_name = os.environ.get("DIGIMON_PRELOAD_DATASET", "").strip()
+    if not dataset_name:
+        logger.warning(
+            "Benchmark applicability filter skipped because DIGIMON_PRELOAD_DATASET is not set."
+        )
+        return None, [], []
+
+    await _ensure_initialized()
+
+    from Core.Common.tool_applicability import ToolApplicabilityStatus
+    from eval.graph_manifest import (
+        build_runtime_resource_snapshot_from_operator_context,
+        evaluate_tool_names_by_graph_manifest,
+        load_required_graph_manifest,
+    )
+
+    config = _state["config"]
+    graph_type = getattr(getattr(config, "graph", None), "type", "er_graph")
+    working_dir = str(getattr(config, "working_dir", "./results"))
+    manifest = load_required_graph_manifest(
+        dataset_name=dataset_name,
+        graph_type=graph_type,
+        working_dir=working_dir,
+    )
+    operator_ctx = await _build_operator_context_for_dataset(dataset_name)
+    runtime_resources = build_runtime_resource_snapshot_from_operator_context(
+        operator_ctx
+    )
+    tool_names = tuple(mcp._tool_manager._tools.keys())
+    decisions = evaluate_tool_names_by_graph_manifest(
+        tool_names,
+        manifest,
+        runtime_resources,
+    )
+
+    unavailable_tool_names = [
+        decision.tool_name
+        for decision in decisions
+        if decision.status is ToolApplicabilityStatus.UNAVAILABLE
+    ]
+    degraded_tool_names = [
+        decision.tool_name
+        for decision in decisions
+        if decision.status is ToolApplicabilityStatus.DEGRADED
+    ]
+    for tool_name in unavailable_tool_names:
+        mcp.remove_tool(tool_name)
+
+    summary_label = f"{manifest.graph_type}/{manifest.graph_profile.value}"
+    return summary_label, unavailable_tool_names, degraded_tool_names
 
 
 # Explicit mode boundaries for chunk_get_text to avoid silent branch selection.
@@ -6424,6 +6485,8 @@ if BENCHMARK_MODE:
 
 if __name__ == "__main__":
     if BENCHMARK_MODE:
+        from Core.Common.benchmark_tool_modes import filter_tool_names_for_benchmark_mode
+
         for tool_name in _BENCHMARK_HIDDEN_TOOLS:
             try:
                 mcp.remove_tool(tool_name)
@@ -6435,10 +6498,48 @@ if __name__ == "__main__":
                     mcp.remove_tool(tool_name)
                 except Exception:
                     pass
+        (
+            applicability_label,
+            unavailable_tool_names,
+            degraded_tool_names,
+        ) = asyncio.run(_apply_benchmark_manifest_tool_filter())
+        mode_name = os.environ.get("DIGIMON_BENCHMARK_MODE_NAME", "").strip()
+        mode_filtered_tool_names = set(
+            filter_tool_names_for_benchmark_mode(
+                tuple(mcp._tool_manager._tools.keys()),
+                mode_name,
+            )
+        )
+        if mode_filtered_tool_names and mode_name:
+            for tool_name in tuple(mcp._tool_manager._tools.keys()):
+                if tool_name not in mode_filtered_tool_names:
+                    mcp.remove_tool(tool_name)
         _compact_tool_schemas()
         n_remaining = len(mcp._tool_manager._tools)
         print(
             f"Benchmark mode level {BENCHMARK_MODE}: {n_remaining} tools (compact schemas)",
             file=sys.stderr,
         )
+        if mode_filtered_tool_names and mode_name:
+            print(
+                f"Benchmark mode profile {mode_name}: {len(mode_filtered_tool_names)} tools after mode filter",
+                file=sys.stderr,
+            )
+        if applicability_label is not None:
+            print(
+                "Benchmark applicability "
+                f"{applicability_label}: removed {len(unavailable_tool_names)} unavailable tools"
+                + (
+                    f", retained {len(degraded_tool_names)} degraded tools"
+                    if degraded_tool_names
+                    else ""
+                ),
+                file=sys.stderr,
+            )
+        if degraded_tool_names:
+            print(
+                "Benchmark applicability degraded tools retained: "
+                + ", ".join(sorted(degraded_tool_names)),
+                file=sys.stderr,
+            )
     mcp.run(transport="stdio")

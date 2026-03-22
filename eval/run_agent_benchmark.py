@@ -50,6 +50,7 @@ from eval.graph_manifest import (
     filter_tool_names_by_graph_manifest,
     load_required_graph_manifest,
 )
+from Core.Common.benchmark_tool_modes import filter_tool_names_for_benchmark_mode
 from Core.Common.tool_applicability import ToolApplicabilityStatus
 from llm_client import MCPAgentResult
 from llm_client import (
@@ -811,6 +812,9 @@ def _build_mcp_servers(
     digimon_log_level = os.environ.get("DIGIMON_LOG_LEVEL", "")
     if digimon_log_level:
         env["DIGIMON_LOG_LEVEL"] = digimon_log_level
+    benchmark_mode_name = os.environ.get("DIGIMON_BENCHMARK_MODE_NAME", "").strip()
+    if benchmark_mode_name:
+        env["DIGIMON_BENCHMARK_MODE_NAME"] = benchmark_mode_name
     if dataset_name:
         env["DIGIMON_PRELOAD_DATASET"] = dataset_name
     if embed_model:
@@ -1032,19 +1036,20 @@ async def _init_direct_tools(dataset_name: str, disable_embedding_tools: bool = 
 
     # Mode-based tool filtering
     mode_env = os.environ.get("DIGIMON_BENCHMARK_MODE_NAME", "")
-    if mode_env == "baseline":
-        # Non-graph baseline: only chunk search + submit
-        baseline_tools = {"chunk_text_search", "chunk_vdb_search", "submit_answer",
-                          "list_available_resources"}
-        _BENCHMARK_TOOLS = [t for t in _BENCHMARK_TOOLS if t.__name__ in baseline_tools]
-        print(f"Baseline mode: {len(_BENCHMARK_TOOLS)} tools (no graph)", file=sys.stderr)
-    elif mode_env == "fixed_graph":
-        # Fixed graph pipeline: entity search + neighborhood + chunk + submit
-        fixed_tools = {"entity_string_search", "entity_neighborhood", "entity_profile",
-                       "chunk_text_search", "chunk_get_text_by_chunk_ids",
-                       "list_available_resources", "submit_answer"}
-        _BENCHMARK_TOOLS = [t for t in _BENCHMARK_TOOLS if t.__name__ in fixed_tools]
-        print(f"Fixed graph mode: {len(_BENCHMARK_TOOLS)} tools", file=sys.stderr)
+    mode_filtered_tool_names = set(
+        filter_tool_names_for_benchmark_mode(
+            (tool.__name__ for tool in _BENCHMARK_TOOLS),
+            mode_env,
+        )
+    )
+    if mode_filtered_tool_names and mode_env:
+        _BENCHMARK_TOOLS = [
+            tool for tool in _BENCHMARK_TOOLS if tool.__name__ in mode_filtered_tool_names
+        ]
+        print(
+            f"{mode_env} mode: {len(_BENCHMARK_TOOLS)} tools after mode filter",
+            file=sys.stderr,
+        )
 
     tool_names = [t.__name__ for t in _BENCHMARK_TOOLS]
     short_descs = getattr(dms, "_BENCHMARK_SHORT_DESCS", {})
@@ -2354,6 +2359,7 @@ async def main() -> None:
     # Suppress DIGIMON internal logging on stderr unless --verbose
     if not args.verbose:
         os.environ["DIGIMON_LOG_LEVEL"] = "WARNING"
+    os.environ["DIGIMON_BENCHMARK_MODE_NAME"] = effective_mode
 
     # Rebuild MCP servers with correct benchmark mode + dataset pre-loading
     global DIGIMON_MCP_SERVERS, DIRECT_TOOLS
@@ -2452,7 +2458,7 @@ async def main() -> None:
     # Initialize direct backend only after question selection resolves.
     if args.backend == "direct":
         # Pass mode name to tool init for mode-based filtering
-        os.environ["DIGIMON_BENCHMARK_MODE_NAME"] = args.mode
+        os.environ["DIGIMON_BENCHMARK_MODE_NAME"] = effective_mode
         if effective_embed_model:
             os.environ["DIGIMON_EMBED_MODEL"] = effective_embed_model
         if isinstance(args.embed_dimensions, int) and args.embed_dimensions > 0:

@@ -64,6 +64,7 @@
 - 2026-03-21: The same MuSiQue smoke run also exposed the next blocker: extraction quality is still not TKG-truthful on some chunks. Slot fidelity and typing need a focused follow-up before any full rebuild or fixed-graph benchmark interpretation (`ISSUE-003`).
 - 2026-03-22: The tool-applicability design gap was formalized before more gating code. DIGIMON now has an explicit architecture decision separating build capabilities, runtime resources, and operator requirement contracts, plus updated capability docs that distinguish hard requirements from soft quality preferences.
 - 2026-03-22: The first implementation slice of that design landed for benchmark filtering. DIGIMON now has typed runtime-resource snapshots and tool-applicability decisions, and the direct benchmark backend uses a shared evaluator instead of separate manifest/VDB/sparse-matrix heuristics.
+- 2026-03-22: The same applicability evaluator now gates benchmark MCP exposure at stdio-server startup for preloaded datasets, and shared mode-specific tool whitelists now keep direct and MCP benchmark backends aligned. Both surfaces remove only truly unavailable tools and retain degraded ones.
 
 ### Phase 0: SOTA Grounding
 
