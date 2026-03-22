@@ -98,7 +98,6 @@ _BENCHMARK_TOOL_CONTRACTS: dict[str, ToolApplicabilityContract] = {
         required_runtime_resources=("graph_loaded", "doc_store_available"),
     ),
     "extract_date_mentions": ToolApplicabilityContract(),
-    "extract_date_mentions_from_artifacts": ToolApplicabilityContract(),
     "chunk_text_search": ToolApplicabilityContract(
         required_runtime_resources=("doc_store_available",),
     ),

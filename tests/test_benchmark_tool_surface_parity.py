@@ -9,7 +9,6 @@ import pytest
 
 DATASET_NAME = "MuSiQue"
 BENCHMARK_MODES = ("hybrid", "baseline", "fixed_graph")
-DIRECT_BACKEND_ONLY_TOOL_NAMES = {"extract_date_mentions_from_artifacts"}
 
 
 @pytest.mark.integration
@@ -47,11 +46,7 @@ def test_real_musique_tool_surface_matches_between_direct_and_mcp(
                 DATASET_NAME,
                 disable_embedding_tools=True,
             )
-            direct_tool_names = sorted(
-                tool.__name__
-                for tool in direct_tools
-                if tool.__name__ not in DIRECT_BACKEND_ONLY_TOOL_NAMES
-            )
+            direct_tool_names = sorted(tool.__name__ for tool in direct_tools)
             (
                 mcp_tool_names,
                 applicability_label,
@@ -62,7 +57,6 @@ def test_real_musique_tool_surface_matches_between_direct_and_mcp(
             assert sorted(mcp_tool_names) == direct_tool_names, (
                 f"mode={mode_name} "
                 f"applicability={applicability_label} "
-                f"ignored_direct_only={sorted(DIRECT_BACKEND_ONLY_TOOL_NAMES)} "
                 f"direct={direct_tool_names} "
                 f"mcp={sorted(mcp_tool_names)} "
                 f"unavailable={sorted(unavailable_tool_names)} "
