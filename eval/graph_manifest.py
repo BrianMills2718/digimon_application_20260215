@@ -1,44 +1,145 @@
 """Benchmark helpers for consuming persisted graph build manifests.
 
-These helpers keep benchmark-time graph capability checks lightweight and
-truthful. The benchmark harness should filter tools from the persisted manifest
-instead of re-deriving graph richness from scattered config flags and files.
+These helpers now evaluate benchmark tools against both persisted build truth
+and live runtime-loaded resources. The goal is to stop hand-maintaining
+multiple partial notions of "capability" in the benchmark harness.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
+from Core.Common.tool_applicability import (
+    RuntimeResourceSnapshot,
+    ToolApplicabilityContract,
+    ToolApplicabilityDecision,
+    evaluate_tool_applicability,
+    runtime_resource_snapshot_from_operator_context,
+)
 from Core.Schema.GraphBuildManifest import GraphBuildManifest, GraphTopologyKind
 
-_ENTITY_GRAPH_ONLY_TOOL_NAMES = {
-    "entity_vdb_search",
-    "entity_string_search",
-    "entity_neighborhood",
-    "entity_onehop",
-    "entity_ppr",
-    "entity_link",
-    "entity_resolve_names_to_ids",
-    "entity_profile",
-    "entity_select_candidate",
-    "entity_tfidf",
-    "relationship_onehop",
-    "relationship_score_aggregator",
-    "relationship_vdb_search",
-    "chunk_from_relationships",
-    "chunk_occurrence",
-    "chunk_get_text_by_entity_ids",
-    "search_then_expand_onehop",
-    "subgraph_khop_paths",
-    "subgraph_steiner_tree",
-    "meta_pcst_optimize",
+_BENCHMARK_TOOL_CONTRACTS: dict[str, ToolApplicabilityContract] = {
+    "entity_vdb_search": ToolApplicabilityContract(
+        required_topology_kinds=(GraphTopologyKind.ENTITY,),
+        required_artifacts=("entity_vdb",),
+        required_runtime_resources=("graph_loaded", "entity_vdb_loaded"),
+    ),
+    "entity_string_search": ToolApplicabilityContract(
+        required_topology_kinds=(GraphTopologyKind.ENTITY,),
+        required_runtime_resources=("graph_loaded",),
+    ),
+    "entity_neighborhood": ToolApplicabilityContract(
+        required_topology_kinds=(GraphTopologyKind.ENTITY,),
+        required_runtime_resources=("graph_loaded",),
+    ),
+    "entity_onehop": ToolApplicabilityContract(
+        required_topology_kinds=(GraphTopologyKind.ENTITY,),
+        required_runtime_resources=("graph_loaded",),
+    ),
+    "entity_ppr": ToolApplicabilityContract(
+        required_topology_kinds=(GraphTopologyKind.ENTITY,),
+        required_runtime_resources=("graph_loaded",),
+    ),
+    "entity_link": ToolApplicabilityContract(
+        required_topology_kinds=(GraphTopologyKind.ENTITY,),
+        required_artifacts=("entity_vdb",),
+        required_runtime_resources=("entity_vdb_loaded",),
+        soft_runtime_resources=("graph_loaded",),
+    ),
+    "entity_resolve_names_to_ids": ToolApplicabilityContract(
+        required_topology_kinds=(GraphTopologyKind.ENTITY,),
+        required_runtime_resources=("graph_loaded",),
+        soft_artifacts=("entity_vdb",),
+        soft_runtime_resources=("entity_vdb_loaded",),
+    ),
+    "entity_profile": ToolApplicabilityContract(
+        required_topology_kinds=(GraphTopologyKind.ENTITY,),
+        required_runtime_resources=("graph_loaded",),
+        soft_node_fields=("entity_type", "description"),
+    ),
+    "entity_select_candidate": ToolApplicabilityContract(),
+    "entity_tfidf": ToolApplicabilityContract(
+        required_topology_kinds=(GraphTopologyKind.ENTITY,),
+        required_runtime_resources=("graph_loaded",),
+        soft_node_fields=("description",),
+    ),
+    "relationship_onehop": ToolApplicabilityContract(
+        required_topology_kinds=(GraphTopologyKind.ENTITY,),
+        required_runtime_resources=("graph_loaded",),
+    ),
+    "relationship_score_aggregator": ToolApplicabilityContract(
+        required_topology_kinds=(GraphTopologyKind.ENTITY,),
+        required_artifacts=("sparse_matrices",),
+        required_runtime_resources=("graph_loaded", "sparse_matrices_loaded"),
+    ),
+    "relationship_vdb_search": ToolApplicabilityContract(
+        required_topology_kinds=(GraphTopologyKind.ENTITY,),
+        required_artifacts=("relationship_vdb",),
+        required_runtime_resources=("graph_loaded", "relationship_vdb_loaded"),
+        soft_edge_fields=("description", "keywords"),
+    ),
+    "chunk_from_relationships": ToolApplicabilityContract(
+        required_topology_kinds=(GraphTopologyKind.ENTITY,),
+        required_artifacts=("relationship_chunk_provenance",),
+        required_runtime_resources=("graph_loaded", "doc_store_available"),
+    ),
+    "chunk_occurrence": ToolApplicabilityContract(
+        required_topology_kinds=(GraphTopologyKind.ENTITY,),
+        required_artifacts=("entity_chunk_provenance",),
+        required_runtime_resources=("graph_loaded", "doc_store_available"),
+    ),
+    "chunk_get_text_by_chunk_ids": ToolApplicabilityContract(
+        required_runtime_resources=("doc_store_available",),
+    ),
+    "chunk_get_text_by_entity_ids": ToolApplicabilityContract(
+        required_topology_kinds=(GraphTopologyKind.ENTITY,),
+        required_artifacts=("entity_chunk_provenance",),
+        required_runtime_resources=("graph_loaded", "doc_store_available"),
+    ),
+    "extract_date_mentions": ToolApplicabilityContract(),
+    "extract_date_mentions_from_artifacts": ToolApplicabilityContract(),
+    "chunk_text_search": ToolApplicabilityContract(
+        required_runtime_resources=("doc_store_available",),
+    ),
+    "chunk_vdb_search": ToolApplicabilityContract(
+        required_artifacts=("chunk_vdb",),
+        required_runtime_resources=("chunk_vdb_loaded",),
+    ),
+    "search_then_expand_onehop": ToolApplicabilityContract(
+        required_topology_kinds=(GraphTopologyKind.ENTITY,),
+        required_runtime_resources=("graph_loaded", "doc_store_available"),
+    ),
+    "chunk_aggregator": ToolApplicabilityContract(
+        required_topology_kinds=(GraphTopologyKind.ENTITY,),
+        required_artifacts=("sparse_matrices",),
+        required_runtime_resources=("graph_loaded", "doc_store_available", "sparse_matrices_loaded"),
+    ),
+    "list_available_resources": ToolApplicabilityContract(),
+    "subgraph_khop_paths": ToolApplicabilityContract(
+        required_topology_kinds=(GraphTopologyKind.ENTITY,),
+        required_runtime_resources=("graph_loaded",),
+    ),
+    "subgraph_steiner_tree": ToolApplicabilityContract(
+        required_topology_kinds=(GraphTopologyKind.ENTITY,),
+        required_runtime_resources=("graph_loaded",),
+    ),
+    "meta_pcst_optimize": ToolApplicabilityContract(),
+    "community_from_entity": ToolApplicabilityContract(
+        required_topology_kinds=(GraphTopologyKind.ENTITY,),
+        required_artifacts=("communities",),
+        required_runtime_resources=("graph_loaded", "communities_loaded"),
+    ),
+    "community_from_level": ToolApplicabilityContract(
+        required_topology_kinds=(GraphTopologyKind.ENTITY,),
+        required_artifacts=("communities",),
+        required_runtime_resources=("graph_loaded", "communities_loaded"),
+    ),
+    "semantic_plan": ToolApplicabilityContract(),
+    "todo_write": ToolApplicabilityContract(),
+    "bridge_disambiguate": ToolApplicabilityContract(),
+    "submit_answer": ToolApplicabilityContract(),
 }
-_COMMUNITY_TOOL_NAMES = {"community_from_entity", "community_from_level"}
-_ENTITY_DESCRIPTION_TOOL_NAMES = {"entity_tfidf"}
-_RELATION_TEXT_TOOL_NAMES = {"relationship_vdb_search"}
-_ENTITY_PROVENANCE_TOOL_NAMES = {"chunk_occurrence", "chunk_get_text_by_entity_ids"}
-_RELATION_PROVENANCE_TOOL_NAMES = {"chunk_from_relationships"}
 
 
 def load_required_graph_manifest(
@@ -57,32 +158,44 @@ def load_required_graph_manifest(
     return GraphBuildManifest.load_from_dir(artifact_dir)
 
 
+def build_runtime_resource_snapshot_from_operator_context(ctx: Any) -> RuntimeResourceSnapshot:
+    """Convert an OperatorContext-like object into benchmark applicability state."""
+
+    return runtime_resource_snapshot_from_operator_context(ctx)
+
+
+def evaluate_tool_names_by_graph_manifest(
+    tool_names: Iterable[str],
+    manifest: GraphBuildManifest,
+    runtime_resources: RuntimeResourceSnapshot,
+) -> list[ToolApplicabilityDecision]:
+    """Evaluate benchmark tool names against build and runtime truth."""
+
+    decisions: list[ToolApplicabilityDecision] = []
+    for tool_name in tool_names:
+        contract = _BENCHMARK_TOOL_CONTRACTS.get(tool_name, ToolApplicabilityContract())
+        decisions.append(
+            evaluate_tool_applicability(
+                tool_name=tool_name,
+                contract=contract,
+                manifest=manifest,
+                runtime_resources=runtime_resources,
+            )
+        )
+    return decisions
+
+
 def filter_tool_names_by_graph_manifest(
     tool_names: Iterable[str],
     manifest: GraphBuildManifest,
+    runtime_resources: RuntimeResourceSnapshot,
 ) -> list[str]:
-    """Return the subset of tool names that the manifest says are applicable."""
+    """Return the subset of tool names whose hard requirements are satisfied."""
 
-    allowed = list(tool_names)
-    allowed_set = set(allowed)
-
-    if manifest.topology_kind is not GraphTopologyKind.ENTITY:
-        allowed_set -= _ENTITY_GRAPH_ONLY_TOOL_NAMES
-
-    if "description" not in manifest.node_fields:
-        allowed_set -= _ENTITY_DESCRIPTION_TOOL_NAMES
-
-    edge_text_fields = {"relation_name", "description", "keywords"}
-    if not edge_text_fields.intersection(manifest.edge_fields):
-        allowed_set -= _RELATION_TEXT_TOOL_NAMES
-
-    if not manifest.artifacts.entity_chunk_provenance:
-        allowed_set -= _ENTITY_PROVENANCE_TOOL_NAMES
-
-    if not manifest.artifacts.relationship_chunk_provenance:
-        allowed_set -= _RELATION_PROVENANCE_TOOL_NAMES
-
-    if not manifest.artifacts.communities:
-        allowed_set -= _COMMUNITY_TOOL_NAMES
-
-    return [tool_name for tool_name in allowed if tool_name in allowed_set]
+    decisions = evaluate_tool_names_by_graph_manifest(
+        tool_names,
+        manifest,
+        runtime_resources,
+    )
+    allowed_set = {decision.tool_name for decision in decisions if decision.is_usable}
+    return [tool_name for tool_name in tool_names if tool_name in allowed_set]

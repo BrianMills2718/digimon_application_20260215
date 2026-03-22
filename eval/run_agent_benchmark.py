@@ -45,9 +45,12 @@ os.chdir(str(Path(__file__).parent.parent))
 from eval.benchmark import exact_match, llm_judge, token_f1
 from eval.data_prep import load_question_ids_file, load_questions
 from eval.graph_manifest import (
+    build_runtime_resource_snapshot_from_operator_context,
+    evaluate_tool_names_by_graph_manifest,
     filter_tool_names_by_graph_manifest,
     load_required_graph_manifest,
 )
+from Core.Common.tool_applicability import ToolApplicabilityStatus
 from llm_client import MCPAgentResult
 from llm_client import (
     activate_feature_profile as llm_activate_feature_profile,
@@ -976,39 +979,48 @@ async def _init_direct_tools(dataset_name: str, disable_embedding_tools: bool = 
             graph_type=graph_type,
             working_dir=working_dir,
         )
+        operator_ctx = await dms._build_operator_context_for_dataset(dataset_name)
+        runtime_resources = build_runtime_resource_snapshot_from_operator_context(
+            operator_ctx
+        )
+        applicability = evaluate_tool_names_by_graph_manifest(
+            (tool.__name__ for tool in _BENCHMARK_TOOLS),
+            manifest,
+            runtime_resources,
+        )
         manifest_allowed_tool_names = set(
             filter_tool_names_by_graph_manifest(
                 (tool.__name__ for tool in _BENCHMARK_TOOLS),
                 manifest,
+                runtime_resources,
             )
         )
         _BENCHMARK_TOOLS = [
             tool for tool in _BENCHMARK_TOOLS if tool.__name__ in manifest_allowed_tool_names
         ]
+        degraded_tool_names = [
+            decision.tool_name
+            for decision in applicability
+            if decision.status is ToolApplicabilityStatus.DEGRADED
+            and decision.tool_name in manifest_allowed_tool_names
+        ]
         print(
-            "Direct backend: graph manifest "
+            "Direct backend: graph applicability "
             f"{manifest.graph_type}/{manifest.graph_profile.value} filtered tools to "
-            f"{len(_BENCHMARK_TOOLS)} entries",
+            f"{len(_BENCHMARK_TOOLS)} entries"
+            + (
+                f" ({len(degraded_tool_names)} degraded retained)"
+                if degraded_tool_names
+                else ""
+            ),
             file=sys.stderr,
         )
-
-        vdbs = ctx.list_vdbs() if hasattr(ctx, "list_vdbs") else []
-        vdb_names = " ".join(vdbs)
-
-        if "entities" not in vdb_names:
-            _BENCHMARK_TOOLS = [
-                t for t in _BENCHMARK_TOOLS
-                if t.__name__ not in {"entity_vdb_search", "entity_link"}
-            ]
-        if "relationship" not in vdb_names:
-            _BENCHMARK_TOOLS = [t for t in _BENCHMARK_TOOLS if t.__name__ != "relationship_vdb_search"]
-        if "chunk" not in vdb_names:
-            _BENCHMARK_TOOLS = [t for t in _BENCHMARK_TOOLS if t.__name__ != "chunk_vdb_search"]
-
-        # chunk_aggregator needs sparse matrices
-        e2r_path, r2c_path = dms._sparse_matrix_paths(dataset_name)
-        if not (e2r_path.exists() and r2c_path.exists()):
-            _BENCHMARK_TOOLS = [t for t in _BENCHMARK_TOOLS if t.__name__ != "chunk_aggregator"]
+        if degraded_tool_names:
+            print(
+                "Direct backend: degraded tools retained: "
+                + ", ".join(sorted(degraded_tool_names)),
+                file=sys.stderr,
+            )
 
     if disable_embedding_tools:
         disabled = {"entity_vdb_search", "chunk_vdb_search", "entity_link"}
