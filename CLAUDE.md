@@ -87,6 +87,13 @@ meta_decompose_question("Who founded the company that employed Jane Doe?")
 
 Both route through `llm_client.acall_llm` — smart retry, fallback chains, cost tracking. API keys auto-loaded from `~/.secrets/api_keys.env`. Use `get_config` to inspect, `set_agentic_model` to override at runtime.
 
+## Extraction Iteration Policy
+
+- Decision-grade extraction prompt/schema/build iteration is pinned to `gemini/gemini-2.5-flash`.
+- Do not switch production extraction lanes while judging extraction-quality improvements. Stronger models or SDK agents may be used only as diagnostic tools to classify failures or generate hypotheses.
+- Group frozen extraction cases by failure family. Change prompts, schemas, or validators to fix a failure family, not a single benchmark question.
+- Treat single-pass wins as insufficient evidence when stochasticity is possible. Promote an extraction change only after it improves the frozen case set without regressing protected sentinels.
+
 ## Graph Building
 
 **Graph types**: ER (general-purpose), RK (keyword-enriched), Tree/Tree-Balanced (hierarchical), Passage (document-centric).

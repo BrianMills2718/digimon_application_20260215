@@ -4,6 +4,8 @@
     "source_doc_id": 1,
     "title": "FC Barcelona",
     "focus": "Grounded-entity policy should keep Ronaldinho while suppressing vague abstractions like form and fitness.",
+    "failure_family": "grounded_abstraction_policy",
+    "case_role": "sentinel",
     "content": "There was open feuding as Eto'o publicly criticized coach Frank Rijkaard and Ronaldinho. Ronaldinho also admitted that a lack of fitness affected his form.",
     "expected": {
       "min_valid_entities": 1,
@@ -22,6 +24,8 @@
     "source_doc_id": 1,
     "title": "FC Barcelona",
     "focus": "Grounded-entity policy must still keep named competitions and clubs such as Copa del Rey.",
+    "failure_family": "grounded_abstraction_policy",
+    "case_role": "sentinel",
     "content": "Barcelona advanced to the semi-finals of the Copa del Rey, winning the first leg against Getafe 5–2, with a goal from Messi bringing comparison to Diego Maradona's goal of the century.",
     "expected": {
       "min_valid_entities": 3,
@@ -38,6 +42,8 @@
     "source_doc_id": 3,
     "title": "FC Barcelona",
     "focus": "Grounded-entity policy should keep the named clubs and competition while dropping umbrella category phrases like European club and continental football.",
+    "failure_family": "grounded_abstraction_policy",
+    "case_role": "sentinel",
     "content": "Barcelona is the only European club to have played continental football every season since 1955, and one of three clubs to have never been relegated from La Liga, along with Athletic Bilbao and Real Madrid.",
     "expected": {
       "min_valid_entities": 4,
@@ -59,6 +65,8 @@
     "source_doc_id": 3,
     "title": "FC Barcelona",
     "focus": "Grounded-entity policy should keep the named competitions while avoiding summary achievement labels like treble and sextuple as standalone nodes.",
+    "failure_family": "grounded_abstraction_policy",
+    "case_role": "sentinel",
     "content": "In 2009, Barcelona became the first club in Spain to win the treble consisting of La Liga, Copa del Rey, and the Champions League. That same year, it also became the first football club ever to win six out of six competitions in a single year, thus completing the sextuple, comprising the aforementioned treble and the Spanish Super Cup, UEFA Super Cup and FIFA Club World Cup.",
     "expected": {
       "min_valid_entities": 6,
@@ -83,6 +91,8 @@
     "source_doc_id": 5,
     "title": "FC Barcelona",
     "focus": "Grounded-entity policy should keep the named person and diagnosis while dropping generic leave terminology.",
+    "failure_family": "grounded_named_endpoint_completeness",
+    "case_role": "sentinel",
     "content": "On 19 July, it was announced that Tito Vilanova was resigning as Barcelona manager because his throat cancer had returned, and he would be receiving treatment for the second time after a three-month medical leave in December 2012.",
     "expected": {
       "min_valid_entities": 2,
@@ -101,6 +111,8 @@
     "source_doc_id": 9,
     "title": "Lionel Messi",
     "focus": "Grounded-entity policy must keep named awards and competitions such as Silver Ball and the Club World Cup Final.",
+    "failure_family": "grounded_named_endpoint_completeness",
+    "case_role": "sentinel",
     "content": "Messi capped off the year by winning the 2015 FIFA Club World Cup Final on 20 December, collecting his fifth club trophy of 2015 as Barcelona went on to defeat River Plate 3 -- 0 in Yokohama. Messi also won the tournament's Silver Ball, despite missing the semi-final.",
     "expected": {
       "min_valid_entities": 4,

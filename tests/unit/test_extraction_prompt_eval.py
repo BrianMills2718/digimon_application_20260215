@@ -58,6 +58,24 @@ def test_load_extraction_prompt_eval_cases_freezes_expected_musique_slice() -> N
         "musique_doc_9_messi_2015_2016",
         "musique_doc_9_grounded_silver_ball",
     ]
+    assert [case.failure_family for case in cases] == [
+        "structural_slot_fidelity",
+        "grounded_abstraction_policy",
+        "grounded_abstraction_policy",
+        "structural_slot_fidelity",
+        "grounded_named_endpoint_completeness",
+        "structural_slot_fidelity",
+        "grounded_named_endpoint_completeness",
+    ]
+    assert [case.case_role for case in cases] == [
+        "target",
+        "sentinel",
+        "sentinel",
+        "target",
+        "sentinel",
+        "target",
+        "sentinel",
+    ]
 
 
 def test_load_grounded_entity_smoke_cases_freezes_short_policy_slice() -> None:
@@ -73,6 +91,15 @@ def test_load_grounded_entity_smoke_cases_freezes_short_policy_slice() -> None:
         "musique_doc_5_grounded_medical_leave",
         "musique_doc_9_grounded_silver_ball",
     ]
+    assert [case.failure_family for case in cases] == [
+        "grounded_abstraction_policy",
+        "grounded_abstraction_policy",
+        "grounded_abstraction_policy",
+        "grounded_abstraction_policy",
+        "grounded_named_endpoint_completeness",
+        "grounded_named_endpoint_completeness",
+    ]
+    assert all(case.case_role == "sentinel" for case in cases)
 
 
 def test_build_prompt_variants_adds_grounded_entity_variant() -> None:

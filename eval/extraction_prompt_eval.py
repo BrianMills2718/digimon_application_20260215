@@ -15,7 +15,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -89,6 +89,19 @@ class ExtractionPromptEvalCase(BaseModel):
     source_doc_id: int
     title: str
     focus: str
+    failure_family: str = Field(
+        description=(
+            "Named failure family this case belongs to. Prompt/schema/validator "
+            "changes should target families rather than one-off benchmark questions."
+        )
+    )
+    case_role: Literal["target", "sentinel"] = Field(
+        default="target",
+        description=(
+            "Whether this case is a primary target for improvement or a protected "
+            "sentinel guarding against regression on an adjacent tradeoff."
+        ),
+    )
     content: str
     expected: ExtractionPromptEvalExpectation = Field(
         default_factory=ExtractionPromptEvalExpectation
