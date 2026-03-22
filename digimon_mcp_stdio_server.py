@@ -163,64 +163,77 @@ def _compact_tool_schemas() -> None:
                     prop.pop("title", None)
 
 
-async def _apply_benchmark_manifest_tool_filter() -> tuple[str | None, list[str], list[str]]:
-    """Remove benchmark tools whose hard requirements are not satisfied.
+async def _benchmark_visible_mcp_tool_names_for_current_env() -> tuple[list[str], str | None, list[str], list[str]]:
+    """Compute the benchmark MCP tool surface for the current environment.
 
-    This benchmark-only startup filter reuses the shared applicability evaluator
-    so the MCP-exposed tool surface matches the persisted graph manifest plus the
-    resources actually loaded for the preloaded dataset.
+    Returns the visible tool names after benchmark pruning, manifest/runtime
+    applicability filtering, and benchmark-mode-specific whitelists. This does
+    not mutate the live MCP registry, so tests can compare the computed surface
+    against other backends without starting a stdio server process.
     """
 
+    from Core.Common.benchmark_tool_modes import filter_tool_names_for_benchmark_mode
+
+    tool_names = [
+        tool_name
+        for tool_name in mcp._tool_manager._tools.keys()
+        if tool_name not in _BENCHMARK_HIDDEN_TOOLS
+    ]
+    if BENCHMARK_MODE >= 2:
+        tool_names = [
+            tool_name
+            for tool_name in tool_names
+            if tool_name not in _BENCHMARK_HIDDEN_TOOLS_LEVEL2
+        ]
+
+    applicability_label: str | None = None
+    unavailable_tool_names: list[str] = []
+    degraded_tool_names: list[str] = []
     dataset_name = os.environ.get("DIGIMON_PRELOAD_DATASET", "").strip()
-    if not dataset_name:
-        logger.warning(
-            "Benchmark applicability filter skipped because DIGIMON_PRELOAD_DATASET is not set."
+    if dataset_name:
+        await _ensure_initialized()
+        from eval.graph_manifest import (
+            build_runtime_resource_snapshot_from_operator_context,
+            evaluate_tool_names_by_graph_manifest,
+            load_required_graph_manifest,
         )
-        return None, [], []
+        from Core.Common.tool_applicability import ToolApplicabilityStatus
 
-    await _ensure_initialized()
+        config = _state["config"]
+        graph_type = getattr(getattr(config, "graph", None), "type", "er_graph")
+        working_dir = str(getattr(config, "working_dir", "./results"))
+        manifest = load_required_graph_manifest(
+            dataset_name=dataset_name,
+            graph_type=graph_type,
+            working_dir=working_dir,
+        )
+        operator_ctx = await _build_operator_context_for_dataset(dataset_name)
+        runtime_resources = build_runtime_resource_snapshot_from_operator_context(
+            operator_ctx
+        )
+        decisions = evaluate_tool_names_by_graph_manifest(
+            tool_names,
+            manifest,
+            runtime_resources,
+        )
+        unavailable_tool_names = [
+            decision.tool_name
+            for decision in decisions
+            if decision.status is ToolApplicabilityStatus.UNAVAILABLE
+        ]
+        degraded_tool_names = [
+            decision.tool_name
+            for decision in decisions
+            if decision.status is ToolApplicabilityStatus.DEGRADED
+        ]
+        tool_names = [
+            tool_name for tool_name in tool_names if tool_name not in unavailable_tool_names
+        ]
+        applicability_label = f"{manifest.graph_type}/{manifest.graph_profile.value}"
 
-    from Core.Common.tool_applicability import ToolApplicabilityStatus
-    from eval.graph_manifest import (
-        build_runtime_resource_snapshot_from_operator_context,
-        evaluate_tool_names_by_graph_manifest,
-        load_required_graph_manifest,
-    )
-
-    config = _state["config"]
-    graph_type = getattr(getattr(config, "graph", None), "type", "er_graph")
-    working_dir = str(getattr(config, "working_dir", "./results"))
-    manifest = load_required_graph_manifest(
-        dataset_name=dataset_name,
-        graph_type=graph_type,
-        working_dir=working_dir,
-    )
-    operator_ctx = await _build_operator_context_for_dataset(dataset_name)
-    runtime_resources = build_runtime_resource_snapshot_from_operator_context(
-        operator_ctx
-    )
-    tool_names = tuple(mcp._tool_manager._tools.keys())
-    decisions = evaluate_tool_names_by_graph_manifest(
-        tool_names,
-        manifest,
-        runtime_resources,
-    )
-
-    unavailable_tool_names = [
-        decision.tool_name
-        for decision in decisions
-        if decision.status is ToolApplicabilityStatus.UNAVAILABLE
-    ]
-    degraded_tool_names = [
-        decision.tool_name
-        for decision in decisions
-        if decision.status is ToolApplicabilityStatus.DEGRADED
-    ]
-    for tool_name in unavailable_tool_names:
-        mcp.remove_tool(tool_name)
-
-    summary_label = f"{manifest.graph_type}/{manifest.graph_profile.value}"
-    return summary_label, unavailable_tool_names, degraded_tool_names
+    mode_name = os.environ.get("DIGIMON_BENCHMARK_MODE_NAME", "").strip()
+    tool_names = filter_tool_names_for_benchmark_mode(tool_names, mode_name)
+    return tool_names, applicability_label, unavailable_tool_names, degraded_tool_names
 
 
 # Explicit mode boundaries for chunk_get_text to avoid silent branch selection.
@@ -6485,44 +6498,26 @@ if BENCHMARK_MODE:
 
 if __name__ == "__main__":
     if BENCHMARK_MODE:
-        from Core.Common.benchmark_tool_modes import filter_tool_names_for_benchmark_mode
-
-        for tool_name in _BENCHMARK_HIDDEN_TOOLS:
-            try:
-                mcp.remove_tool(tool_name)
-            except Exception:
-                pass  # tool wasn't registered (already hidden by other guards)
-        if BENCHMARK_MODE >= 2:
-            for tool_name in _BENCHMARK_HIDDEN_TOOLS_LEVEL2:
-                try:
-                    mcp.remove_tool(tool_name)
-                except Exception:
-                    pass
         (
+            visible_tool_names,
             applicability_label,
             unavailable_tool_names,
             degraded_tool_names,
-        ) = asyncio.run(_apply_benchmark_manifest_tool_filter())
+        ) = asyncio.run(_benchmark_visible_mcp_tool_names_for_current_env())
         mode_name = os.environ.get("DIGIMON_BENCHMARK_MODE_NAME", "").strip()
-        mode_filtered_tool_names = set(
-            filter_tool_names_for_benchmark_mode(
-                tuple(mcp._tool_manager._tools.keys()),
-                mode_name,
-            )
-        )
-        if mode_filtered_tool_names and mode_name:
-            for tool_name in tuple(mcp._tool_manager._tools.keys()):
-                if tool_name not in mode_filtered_tool_names:
-                    mcp.remove_tool(tool_name)
+        visible_tool_names_set = set(visible_tool_names)
+        for tool_name in tuple(mcp._tool_manager._tools.keys()):
+            if tool_name not in visible_tool_names_set:
+                mcp.remove_tool(tool_name)
         _compact_tool_schemas()
         n_remaining = len(mcp._tool_manager._tools)
         print(
             f"Benchmark mode level {BENCHMARK_MODE}: {n_remaining} tools (compact schemas)",
             file=sys.stderr,
         )
-        if mode_filtered_tool_names and mode_name:
+        if mode_name:
             print(
-                f"Benchmark mode profile {mode_name}: {len(mode_filtered_tool_names)} tools after mode filter",
+                f"Benchmark mode profile {mode_name}: {len(visible_tool_names)} tools after mode filter",
                 file=sys.stderr,
             )
         if applicability_label is not None:

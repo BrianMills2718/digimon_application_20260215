@@ -171,8 +171,9 @@ def evaluate_tool_names_by_graph_manifest(
 ) -> list[ToolApplicabilityDecision]:
     """Evaluate benchmark tool names against build and runtime truth."""
 
+    tool_name_list = list(tool_names)
     decisions: list[ToolApplicabilityDecision] = []
-    for tool_name in tool_names:
+    for tool_name in tool_name_list:
         contract = _BENCHMARK_TOOL_CONTRACTS.get(tool_name, ToolApplicabilityContract())
         decisions.append(
             evaluate_tool_applicability(
@@ -192,10 +193,11 @@ def filter_tool_names_by_graph_manifest(
 ) -> list[str]:
     """Return the subset of tool names whose hard requirements are satisfied."""
 
+    tool_name_list = list(tool_names)
     decisions = evaluate_tool_names_by_graph_manifest(
-        tool_names,
+        tool_name_list,
         manifest,
         runtime_resources,
     )
     allowed_set = {decision.tool_name for decision in decisions if decision.is_usable}
-    return [tool_name for tool_name in tool_names if tool_name in allowed_set]
+    return [tool_name for tool_name in tool_name_list if tool_name in allowed_set]

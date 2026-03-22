@@ -86,6 +86,37 @@ def test_entity_resolve_names_to_ids_is_available_but_degraded_without_entity_vd
     assert "runtime=entity_vdb_loaded" in decisions[0].missing_soft_preferences
 
 
+def test_filter_tool_names_by_graph_manifest_handles_generator_inputs() -> None:
+    """Filtering helpers should materialize iterables before multiple passes."""
+
+    manifest = GraphBuildManifest.from_graph_config(
+        dataset_name="MuSiQue",
+        graph_type="er_graph",
+        graph_config=GraphConfig(),
+    )
+
+    filtered = filter_tool_names_by_graph_manifest(
+        (
+            tool_name
+            for tool_name in [
+                "entity_string_search",
+                "chunk_text_search",
+                "relationship_vdb_search",
+            ]
+        ),
+        manifest,
+        RuntimeResourceSnapshot(
+            graph_loaded=True,
+            doc_store_available=True,
+        ),
+    )
+
+    assert filtered == [
+        "entity_string_search",
+        "chunk_text_search",
+    ]
+
+
 def test_entity_ppr_stays_available_without_sparse_matrices() -> None:
     """Direct graph PPR should not be hidden just because sparse matrices are absent."""
 

@@ -65,6 +65,7 @@
 - 2026-03-22: The tool-applicability design gap was formalized before more gating code. DIGIMON now has an explicit architecture decision separating build capabilities, runtime resources, and operator requirement contracts, plus updated capability docs that distinguish hard requirements from soft quality preferences.
 - 2026-03-22: The first implementation slice of that design landed for benchmark filtering. DIGIMON now has typed runtime-resource snapshots and tool-applicability decisions, and the direct benchmark backend uses a shared evaluator instead of separate manifest/VDB/sparse-matrix heuristics.
 - 2026-03-22: The same applicability evaluator now gates benchmark MCP exposure at stdio-server startup for preloaded datasets, and shared mode-specific tool whitelists now keep direct and MCP benchmark backends aligned. Both surfaces remove only truly unavailable tools and retain degraded ones.
+- 2026-03-22: A real-data parity proof now exists for the shared benchmark tool surface on `MuSiQue` across `hybrid`, `baseline`, and `fixed_graph` modes. The proof also fixed two hidden blockers discovered along the way: `Core.Operators` no longer eagerly imports optional operator dependencies when only `OperatorContext` is needed, and manifest-based tool filtering now materializes iterable inputs instead of silently exhausting generators. The parity check intentionally ignores the direct-only `extract_date_mentions_from_artifacts` adapter because it depends on `python_tools=` runtime artifact injection, not MCP transport.
 
 ### Phase 0: SOTA Grounding
 
