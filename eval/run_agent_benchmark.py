@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import importlib
 import json
 import logging
 import os
@@ -33,7 +34,6 @@ import random
 import re
 import sys
 import time
-import inspect
 from datetime import datetime, timezone
 from hashlib import md5, sha256
 from pathlib import Path
@@ -414,39 +414,77 @@ def _sha256_file(path: Path) -> str | None:
     return sha256(path.read_bytes()).hexdigest()
 
 
-def _tool_surface() -> tuple[list[dict[str, str]], str]:
-    """Return a stable tool surface manifest and hash for this run."""
-    surface: list[dict[str, str]] = []
-    if DIRECT_TOOLS:
-        for tool in sorted(DIRECT_TOOLS, key=lambda fn: fn.__name__):
-            try:
-                signature = str(inspect.signature(tool))
-            except (TypeError, ValueError):
-                signature = "()"
-            doc = inspect.getdoc(tool) or ""
-            desc = doc.splitlines()[0].strip() if doc else ""
-            surface.append({
-                "name": tool.__name__,
-                "signature": signature,
-                "description": desc,
-            })
-    else:
-        surface = [{"name": name} for name in sorted(_BENCHMARK_TOOL_NAME_CANDIDATES)]
+def _canonical_tool_name_surface(tool_names: list[str]) -> tuple[list[dict[str, str]], str]:
+    """Return a stable, transport-independent benchmark tool surface.
+
+    Benchmark provenance should capture the actual tool names exposed for the
+    run after applicability and mode filtering. It should not hash backend
+    transport wrappers such as Python signatures or MCP parameter-schema noise.
+    """
+
+    unique_names = sorted(set(tool_names))
+    surface = [{"name": name} for name in unique_names]
     return surface, _sha256_json(surface)
 
 
-def _build_run_provenance(
+async def _resolved_benchmark_tool_names(
+    *,
+    backend: str,
+    dataset_name: str,
+    benchmark_mode: int,
+    disable_embedding_tools: bool,
+) -> list[str]:
+    """Return the resolved benchmark tool names for the active run condition."""
+
+    if backend == "direct":
+        if not DIRECT_TOOLS:
+            raise RuntimeError(
+                "Direct benchmark provenance requested before direct tools were initialized."
+            )
+        return [tool.__name__ for tool in DIRECT_TOOLS]
+
+    os.environ["DIGIMON_BENCHMARK_MODE"] = str(benchmark_mode)
+    if dataset_name:
+        os.environ["DIGIMON_PRELOAD_DATASET"] = dataset_name
+    if disable_embedding_tools:
+        os.environ["DIGIMON_SKIP_VDB_PRELOAD"] = "1"
+    else:
+        os.environ.pop("DIGIMON_SKIP_VDB_PRELOAD", None)
+
+    dms = importlib.import_module("digimon_mcp_stdio_server")
+    dms = importlib.reload(dms)
+    tool_names, _applicability_label, _unavailable, _degraded = (
+        await dms._benchmark_visible_mcp_tool_names_for_current_env()
+    )
+    return tool_names
+
+
+async def _build_run_provenance(
     *,
     dataset_path: Path,
     questions: list[dict],
+    dataset_name: str,
+    backend: str,
+    benchmark_mode: int,
+    disable_embedding_tools: bool,
     mode: str,
     prompt_variant: str = "default",
 ) -> dict[str, object]:
+    """Build run-level provenance including the resolved benchmark tool surface."""
+
     effective_mode, _ = _resolve_mode(mode)
     variant = (prompt_variant or "default").strip().lower()
     template_key = "codex_compact" if variant == "codex_compact" else effective_mode
     template_path = PROMPT_TEMPLATES[template_key]
-    tool_surface, tool_schema_sha = _tool_surface()
+    resolved_tool_names = await _resolved_benchmark_tool_names(
+        backend=backend,
+        dataset_name=dataset_name,
+        benchmark_mode=benchmark_mode,
+        disable_embedding_tools=disable_embedding_tools,
+    )
+    tool_surface, tool_surface_sha = _canonical_tool_name_surface(
+        resolved_tool_names
+    )
     dataset_projection = [
         {
             "id": q.get("id"),
@@ -463,7 +501,8 @@ def _build_run_provenance(
         "prompt_template_key": template_key,
         "prompt_template_path": str(template_path.resolve()),
         "prompt_template_sha256": _sha256_file(template_path),
-        "tool_schema_sha256": tool_schema_sha,
+        "tool_surface_format": "canonical_benchmark_tool_names_v1",
+        "tool_surface_sha256": tool_surface_sha,
         "tool_surface": tool_surface,
         "tool_contracts_sha256": _sha256_json(_BENCHMARK_TOOL_CONTRACTS),
         "tool_contracts": _BENCHMARK_TOOL_CONTRACTS,
@@ -2396,9 +2435,13 @@ async def main() -> None:
             disable_embedding_tools=args.disable_embedding_tools,
         )
 
-    run_provenance = _build_run_provenance(
+    run_provenance = await _build_run_provenance(
         dataset_path=dataset_path,
         questions=questions,
+        dataset_name=args.dataset,
+        backend=args.backend,
+        benchmark_mode=benchmark_mode,
+        disable_embedding_tools=bool(args.disable_embedding_tools),
         mode=args.mode,
         prompt_variant=("codex_compact" if (_is_codex_model(args.model) and effective_codex_profile == "compact") else "default"),
     )

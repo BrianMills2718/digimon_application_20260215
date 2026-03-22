@@ -40,13 +40,24 @@ def test_real_musique_tool_surface_matches_between_direct_and_mcp(
     import eval.run_agent_benchmark as benchmark_runner
 
     async def _run_parity_check() -> None:
+        dataset_path = repo_root / "Data" / DATASET_NAME
+        provenance_questions = [
+            {
+                "id": "provenance-smoke",
+                "question": "provenance smoke question",
+                "answer": "provenance smoke answer",
+            }
+        ]
+
         for mode_name in BENCHMARK_MODES:
             monkeypatch.setenv("DIGIMON_BENCHMARK_MODE_NAME", mode_name)
             direct_tools = await benchmark_runner._init_direct_tools(
                 DATASET_NAME,
                 disable_embedding_tools=True,
             )
+            benchmark_runner.DIRECT_TOOLS = direct_tools
             direct_tool_names = sorted(tool.__name__ for tool in direct_tools)
+            expected_surface = [{"name": name} for name in direct_tool_names]
             (
                 mcp_tool_names,
                 applicability_label,
@@ -62,5 +73,40 @@ def test_real_musique_tool_surface_matches_between_direct_and_mcp(
                 f"unavailable={sorted(unavailable_tool_names)} "
                 f"degraded={sorted(degraded_tool_names)}"
             )
+
+            if mode_name == BENCHMARK_MODES[0]:
+                direct_provenance = await benchmark_runner._build_run_provenance(
+                    dataset_path=dataset_path,
+                    questions=provenance_questions,
+                    dataset_name=DATASET_NAME,
+                    backend="direct",
+                    benchmark_mode=1,
+                    disable_embedding_tools=True,
+                    mode=mode_name,
+                )
+                mcp_provenance = await benchmark_runner._build_run_provenance(
+                    dataset_path=dataset_path,
+                    questions=provenance_questions,
+                    dataset_name=DATASET_NAME,
+                    backend="mcp",
+                    benchmark_mode=1,
+                    disable_embedding_tools=True,
+                    mode=mode_name,
+                )
+
+                assert direct_provenance["tool_surface"] == expected_surface
+                assert mcp_provenance["tool_surface"] == expected_surface
+                assert (
+                    direct_provenance["tool_surface_sha256"]
+                    == mcp_provenance["tool_surface_sha256"]
+                )
+                assert (
+                    direct_provenance["tool_surface_format"]
+                    == "canonical_benchmark_tool_names_v1"
+                )
+                assert (
+                    mcp_provenance["tool_surface_format"]
+                    == "canonical_benchmark_tool_names_v1"
+                )
 
     asyncio.run(_run_parity_check())

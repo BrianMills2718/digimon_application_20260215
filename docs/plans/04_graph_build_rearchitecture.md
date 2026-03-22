@@ -66,6 +66,7 @@
 - 2026-03-22: The first implementation slice of that design landed for benchmark filtering. DIGIMON now has typed runtime-resource snapshots and tool-applicability decisions, and the direct benchmark backend uses a shared evaluator instead of separate manifest/VDB/sparse-matrix heuristics.
 - 2026-03-22: The same applicability evaluator now gates benchmark MCP exposure at stdio-server startup for preloaded datasets, and shared mode-specific tool whitelists now keep direct and MCP benchmark backends aligned. Both surfaces remove only truly unavailable tools and retain degraded ones.
 - 2026-03-22: A real-data parity proof now exists for the benchmark tool surface on `MuSiQue` across `hybrid`, `baseline`, and `fixed_graph` modes. The proof also fixed two hidden blockers discovered along the way: `Core.Operators` no longer eagerly imports optional operator dependencies when only `OperatorContext` is needed, and manifest-based tool filtering now materializes iterable inputs instead of silently exhausting generators. The direct-only `extract_date_mentions_from_artifacts` adapter was removed rather than replicated across transports, so the shared benchmark tool surface is now literally aligned instead of aligned-with-exception.
+- 2026-03-22: Benchmark provenance now records the resolved benchmark tool surface rather than the generic candidate list. The provenance contract is intentionally transport-independent: it hashes the canonical resolved benchmark tool names after applicability and mode filtering, and a real `MuSiQue` proof now shows the recorded provenance surface matches the live direct and MCP benchmark surfaces on a representative mode.
 
 ### Phase 0: SOTA Grounding
 
@@ -108,6 +109,7 @@
 4. Apply the same evaluator to MCP tool exposure once the existing dirty MCP worktree conflict is resolved.
 5. Remove remaining ad hoc capability guesses.
 6. Make query-mode exposure truthful to the built artifacts so named modes such as `basic`, `local`, `global`, and `hybrid` can be defined on top of actual capabilities rather than prompt convention alone.
+7. Make benchmark provenance record the resolved benchmark tool surface for the active condition, not the generic pre-filter candidate list or backend-specific transport wrappers.
 
 ### Phase 5: Thin Vertical Rebuild
 
@@ -150,6 +152,7 @@
 - [ ] MuSiQue can be rebuilt from the new entity-graph path
 - [ ] known entity-hygiene regressions stay fixed
 - [ ] fixed-graph sanity batch uses only manifest-applicable tools
+- [ ] benchmark provenance records the actual resolved benchmark tool surface for the run
 - [ ] the rebuild leaves a truthful contract for later named method packs and query modes
 - [ ] docs and ADRs are updated to match the rebuilt architecture
 
