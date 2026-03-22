@@ -151,12 +151,17 @@ This is development evidence only, but it does not currently support the adaptiv
 
 ## Future Work
 
-### Schema-Constrained Extraction (DEFERRED)
+### Schema Guidance
 
-Three schema modes designed but not wired (ADR-002):
-- **Open** (current): No constraints
-- **Closed**: Prompt constrains to fixed type list
-- **Mixed**: Prefers seed types, allows `[NEW]`
+ADR-002 defines schema-aware extraction as an implemented slice with three canonical modes:
+- **Open**: No schema constraints are enforced in prompts.
+- **Schema-Guided**: Declared schema is preferred; novel types may appear.
+- **Schema-Constrained**: Prompt stays within declared type lists when provided.
+
+The canonical vocabulary is:
+- `open`
+- `schema_guided`
+- `schema_constrained`
 
 See `docs/adr/002-universal-graph-schema-and-extraction.md`.
 

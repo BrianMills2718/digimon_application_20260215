@@ -48,17 +48,17 @@ class ERGraphConfigOverrides(BaseModel):
     schema_mode: Optional[GraphSchemaMode] = Field(
         default=None,
         validation_alias=AliasChoices("schema_mode", "extraction_schema_mode"),
-        description="Schema guidance mode: open, guided, or closed.",
+        description="Schema guidance mode: open, schema_guided, or schema_constrained (legacy aliases accepted).",
     )
     schema_entity_types: Optional[list[str]] = Field(
         default=None,
         validation_alias=AliasChoices("schema_entity_types", "guided_entity_types", "allowed_entity_types"),
-        description="Entity types to use for guided or closed extraction.",
+        description="Entity types to use for schema-guided or schema-constrained extraction.",
     )
     schema_relation_types: Optional[list[str]] = Field(
         default=None,
         validation_alias=AliasChoices("schema_relation_types", "guided_relation_types", "allowed_relation_types"),
-        description="Relation types to use for guided or closed extraction.",
+        description="Relation types to use for schema-guided or schema-constrained extraction.",
     )
     strict_extraction_slot_discipline: Optional[bool] = Field(
         default=None,
@@ -167,15 +167,18 @@ class RKGraphConfigOverrides(BaseModel):
     )
     schema_mode: Optional[GraphSchemaMode] = Field(
         default=None,
-        description="Schema guidance mode: open, guided, or closed.",
+        validation_alias=AliasChoices("schema_mode", "extraction_schema_mode"),
+        description="Schema guidance mode: open, schema_guided, or schema_constrained (legacy aliases accepted).",
     )
     schema_entity_types: Optional[list[str]] = Field(
         default=None,
-        description="Entity types to use for guided or closed extraction.",
+        validation_alias=AliasChoices("schema_entity_types", "guided_entity_types", "allowed_entity_types"),
+        description="Entity types to use for schema-guided or schema-constrained extraction.",
     )
     schema_relation_types: Optional[list[str]] = Field(
         default=None,
-        description="Relation types to use for guided or closed extraction.",
+        validation_alias=AliasChoices("schema_relation_types", "guided_relation_types", "allowed_relation_types"),
+        description="Relation types to use for schema-guided or schema-constrained extraction.",
     )
     enable_edge_keywords: Optional[bool] = Field(default=None, description="Selects between ENTITY_EXTRACTION and ENTITY_EXTRACTION_KEYWORD prompts.")
     max_gleaning: Optional[int] = Field(default=None, description="Maximum number of gleaning iterations or items.")

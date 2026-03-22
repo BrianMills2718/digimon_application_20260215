@@ -29,7 +29,7 @@ def test_parse_args_accepts_profile_schema_and_chunk_limit() -> None:
             "--graph-profile",
             "tkg",
             "--schema-mode",
-            "guided",
+            "schema_guided",
             "--schema-entity-type",
             "person",
             "--schema-relation-type",
@@ -47,7 +47,7 @@ def test_parse_args_accepts_profile_schema_and_chunk_limit() -> None:
     assert args.dataset == "MuSiQue"
     assert args.artifact_dataset_name == "MuSiQue_tkg_smoke"
     assert args.graph_profile == "tkg"
-    assert args.schema_mode == "guided"
+    assert args.schema_mode == GraphSchemaMode.SCHEMA_GUIDED
     assert args.schema_entity_type == ["person"]
     assert args.schema_relation_type == ["located_in"]
     assert args.strict_extraction_slot_discipline is True
@@ -75,7 +75,7 @@ def test_build_er_config_overrides_converts_cli_strings_to_enums() -> None:
             "--graph-profile",
             "rkg",
             "--schema-mode",
-            "closed",
+            "schema_constrained",
             "--schema-entity-type",
             "person",
             "--schema-relation-type",
@@ -89,12 +89,32 @@ def test_build_er_config_overrides_converts_cli_strings_to_enums() -> None:
     overrides = build_er_config_overrides(args)
 
     assert overrides["graph_profile"] is GraphProfile.RKG
-    assert overrides["schema_mode"] is GraphSchemaMode.CLOSED
+    assert overrides["schema_mode"] is GraphSchemaMode.SCHEMA_CONSTRAINED
     assert overrides["schema_entity_types"] == ["person"]
     assert overrides["schema_relation_types"] == ["works_for"]
     assert overrides["strict_extraction_slot_discipline"] is True
     assert overrides["two_pass_extraction"] is True
     assert overrides["prefer_grounded_named_entities"] is True
+
+
+def test_build_er_config_overrides_accepts_legacy_schema_aliases() -> None:
+    """Legacy schema aliases should still parse to the new enum names."""
+
+    guided_alias_args = parse_args(
+        [
+            "MuSiQue",
+            "--schema-mode",
+            "guided",
+            "--schema-entity-type",
+            "person",
+            "--schema-relation-type",
+            "works_for",
+        ]
+    )
+    closed_alias_args = parse_args(["MuSiQue", "--schema-mode", "closed"])
+
+    assert guided_alias_args.schema_mode is GraphSchemaMode.SCHEMA_GUIDED
+    assert closed_alias_args.schema_mode is GraphSchemaMode.SCHEMA_CONSTRAINED
 
 
 def test_build_requires_fresh_graph_for_explicit_contract() -> None:

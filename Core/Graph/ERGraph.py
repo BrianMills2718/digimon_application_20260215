@@ -14,6 +14,7 @@ from collections import defaultdict
 from typing import Any, List
 from Core.Graph.BaseGraph import BaseGraph
 from Core.Graph.DelimiterExtraction import DelimiterExtractionMixin
+from Core.Schema.GraphBuildTypes import GraphSchemaMode
 from Core.Common.graph_schema_guidance import resolve_entity_type_names, resolve_relation_type_names
 from Core.Common.entity_name_hygiene import classify_entity_name
 from Core.Common.Logger import logger
@@ -69,7 +70,7 @@ class ERGraph(DelimiterExtractionMixin, BaseGraph):
             return ""
 
         schema_mode = getattr(self.config, "schema_mode", "open")
-        if getattr(schema_mode, "value", schema_mode) == "closed":
+        if GraphSchemaMode.parse(schema_mode) is GraphSchemaMode.SCHEMA_CONSTRAINED:
             intro = "IMPORTANT: Only use these relationship types:"
         else:
             intro = "IMPORTANT: Prefer these relationship types when applicable:"

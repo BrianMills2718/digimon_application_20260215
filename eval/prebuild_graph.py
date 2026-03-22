@@ -57,20 +57,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--schema-mode",
-        choices=[mode.value for mode in GraphSchemaMode],
-        help="Schema guidance mode for extraction: open, guided, or closed.",
+        type=GraphSchemaMode.parse,
+        help=(
+            "Schema guidance mode for extraction: open, schema_guided, or "
+            "schema_constrained. Legacy aliases guided/closed are accepted."
+        ),
     )
     parser.add_argument(
         "--schema-entity-type",
         action="append",
         default=[],
-        help="Allowed entity type for guided/closed extraction. Repeat the flag for multiple values.",
+        help=(
+            "Allowed entity type for schema-guided/schema-constrained extraction. "
+            "Repeat the flag for multiple values."
+        ),
     )
     parser.add_argument(
         "--schema-relation-type",
         action="append",
         default=[],
-        help="Allowed relation type for guided/closed extraction. Repeat the flag for multiple values.",
+        help=(
+            "Allowed relation type for schema-guided/schema-constrained extraction. "
+            "Repeat the flag for multiple values."
+        ),
     )
     parser.add_argument(
         "--chunk-limit",
@@ -124,14 +133,14 @@ def build_er_config_overrides(args: argparse.Namespace) -> dict[str, Any]:
 
     if (args.schema_entity_type or args.schema_relation_type) and args.schema_mode is None:
         raise ValueError(
-            "Schema types require --schema-mode guided or --schema-mode closed"
+            "Schema types require --schema-mode schema_guided or --schema-mode schema_constrained"
         )
 
     overrides: dict[str, Any] = {}
     if args.graph_profile is not None:
         overrides["graph_profile"] = GraphProfile(args.graph_profile.upper())
     if args.schema_mode is not None:
-        overrides["schema_mode"] = GraphSchemaMode(args.schema_mode)
+        overrides["schema_mode"] = args.schema_mode
     if args.schema_entity_type:
         overrides["schema_entity_types"] = list(args.schema_entity_type)
     if args.schema_relation_type:

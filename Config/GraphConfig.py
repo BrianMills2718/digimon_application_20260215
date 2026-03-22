@@ -45,11 +45,11 @@ class GraphConfig(YamlModel):
     )
     schema_entity_types: list[str] = Field(
         default_factory=list,
-        description="Declared entity types for guided or closed extraction modes.",
+        description="Declared entity types for schema-guided or schema-constrained extraction.",
     )
     schema_relation_types: list[str] = Field(
         default_factory=list,
-        description="Declared relation types for guided or closed extraction modes.",
+        description="Declared relation types for schema-guided or schema-constrained extraction.",
     )
     strict_extraction_slot_discipline: bool = Field(
         default=False,

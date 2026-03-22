@@ -261,8 +261,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--schema-mode",
-        choices=[mode.value for mode in GraphSchemaMode],
-        default=GraphSchemaMode.OPEN.value,
+        type=GraphSchemaMode.parse,
+        default=GraphSchemaMode.OPEN,
         help="Schema-guidance mode to apply while building prompt variants.",
     )
     parser.add_argument(
@@ -335,7 +335,7 @@ async def run_cli(args: argparse.Namespace) -> int:
     graph_config = GraphConfig(
         type="er_graph",
         graph_profile=GraphProfile(args.graph_profile.upper()),
-        schema_mode=GraphSchemaMode(args.schema_mode),
+        schema_mode=args.schema_mode,
     )
     subject_model = args.model or get_model("graph_building")
     experiment = build_extraction_prompt_experiment(

@@ -62,35 +62,35 @@ def build_schema_guidance_text(
 ) -> str:
     """Return prompt guidance text for the configured schema mode.
 
-    `open` mode keeps extraction unconstrained. `guided` mode encourages the
-    listed types without forbidding new ones. `closed` mode requires the prompt
-    to stay within the declared type lists when they are provided.
+    `open` mode keeps extraction unconstrained. `schema_guided` mode encourages
+    the listed types without forbidding new ones. `schema_constrained` mode
+    requires the prompt to stay within the declared type lists when they are
+    provided.
     """
 
     schema_mode = getattr(graph_config, "schema_mode", GraphSchemaMode.OPEN)
-    if not isinstance(schema_mode, GraphSchemaMode):
-        schema_mode = GraphSchemaMode(str(schema_mode))
+    schema_mode = GraphSchemaMode.parse(schema_mode)
 
     if schema_mode is GraphSchemaMode.OPEN:
         return ""
 
     guidance_lines: list[str] = ["-Schema Guidance-"]
 
-    if schema_mode is GraphSchemaMode.GUIDED:
+    if schema_mode is GraphSchemaMode.SCHEMA_GUIDED:
         guidance_lines.append("Prefer the declared schema when labeling entities and relationships.")
     else:
         guidance_lines.append("Use only the declared schema when labeling entities and relationships.")
 
     if entity_types:
         joined_entity_types = ", ".join(entity_types)
-        if schema_mode is GraphSchemaMode.CLOSED:
+        if schema_mode is GraphSchemaMode.SCHEMA_CONSTRAINED:
             guidance_lines.append(f"Allowed entity types: {joined_entity_types}")
         else:
             guidance_lines.append(f"Preferred entity types: {joined_entity_types}")
 
     if relation_types:
         joined_relation_types = ", ".join(relation_types)
-        if schema_mode is GraphSchemaMode.CLOSED:
+        if schema_mode is GraphSchemaMode.SCHEMA_CONSTRAINED:
             guidance_lines.append(f"Allowed relation types: {joined_relation_types}")
         else:
             guidance_lines.append(f"Preferred relation types: {joined_relation_types}")

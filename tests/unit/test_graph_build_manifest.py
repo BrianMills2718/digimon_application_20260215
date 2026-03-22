@@ -92,14 +92,14 @@ def test_entity_graph_manifest_persists_explicit_schema_contract() -> None:
         graph_type="er_graph",
         graph_config=GraphConfig(
             graph_profile=GraphProfile.TKG,
-            schema_mode=GraphSchemaMode.GUIDED,
+            schema_mode=GraphSchemaMode.SCHEMA_GUIDED,
             schema_entity_types=["person", "organization"],
             schema_relation_types=["employed_by", "located_in"],
         ),
     )
 
     assert manifest.graph_profile is GraphProfile.TKG
-    assert manifest.schema_contract.mode is GraphSchemaMode.GUIDED
+    assert manifest.schema_contract.mode is GraphSchemaMode.SCHEMA_GUIDED
     assert manifest.schema_contract.entity_types == ["person", "organization"]
     assert manifest.schema_contract.relation_types == ["employed_by", "located_in"]
 
