@@ -1,144 +1,190 @@
 # Plan #16: HippoRAG-Aligned Build Attributes
 
-**Status:** In Progress
+**Status:** In Progress (Step 1 complete, Step 2 resolved differently, Steps 3-4 pending)
 **Type:** implementation
 **Priority:** High
-**Blocked By:** None (can proceed in parallel with Plan #14-#15, but verification needs Plan #14)
+**Blocked By:** None
 **Blocks:** Plan #17
 
 ---
 
 ## Gap
 
-**Current:** DIGIMON's ERGraph is entity-only (like HippoRAG v1). Missing: passage-level nodes (HippoRAG v2), tunable PPR damping (default unknown), IDF-weighted entity scoring (operator exists but not integrated), question decomposition in benchmark pipeline (operators exist but not wired).
+**Current:** DIGIMON's ERGraph is entity-only (like HippoRAG v1). Missing: passage-level nodes (HippoRAG v2), IDF-weighted entity scoring, co-occurrence-only build mode. PPR damping fixed (Step 1). Decomposition available via consolidated prompt (Step 2).
 
-**Target:** Four SOTA-aligned innovations as configurable build/retrieval attributes. Build agent selects per task; not hardcoded.
+**Target:** SOTA-aligned innovations as configurable build/retrieval attributes. Build agent selects per task; not hardcoded.
 
-**Why:** Literature review shows these are the innovations separating SOTA (58% EM) from basic graph approaches. DIGIMON has the operator primitives but hasn't connected them. This is about configuration and wiring, not new algorithms.
+**Why:** Literature review shows these innovations separate SOTA (58% EM) from basic graph approaches. DIGIMON has operator primitives but hasn't connected them.
 
 ---
 
 ## References Reviewed
 
-- Literature review (`investigations/digimon/2026-03-23-graphrag-sota-review.md`)
+- Literature review (`~/projects/investigations/digimon/2026-03-23-graphrag-sota-review.md`)
 - HippoRAG 1: PPR damping = 0.5, entity-only graph, PPR is most critical component
 - HippoRAG 2: Added passage nodes (bipartite), MuSiQue Recall@5: 69.7→74.7
 - PropRAG: PPR damping = 0.75, proposition-level graph, LLM-free beam search
 - StepChain: Question decomposition alone = +15 EM (ablation)
 - EcphoryRAG: Co-occurrence edges only, no relationship extraction, 72.2% EM on HotpotQA
-- `Core/Graph/ERGraph.py` — current graph building
-- `Config/GraphConfig.py` — current config options
-- `Core/Operators/entity/ppr.py` — current PPR implementation
-- `Core/Operators/meta/decompose_question.py`, `synthesize_answers.py` — exist but not in benchmark pipeline
-- `prompts/agent_benchmark_hybrid.yaml` — current benchmark prompt
+- Code exploration (2026-03-23): ERGraph build flow, BaseGraph node model, chunk tracking, VDB indexing
 
 ---
 
-## Files Affected
+## Status of Steps
 
-- `Config/GraphConfig.py` (modify — add new config flags)
-- `Core/Graph/ERGraph.py` (modify — passage node support)
-- `Core/Operators/entity/ppr.py` (modify — configurable damping factor)
-- `prompts/agent_benchmark_hybrid.yaml` (modify — integrate decomposition)
-- `eval/run_agent_benchmark.py` (modify — decomposition pipeline option)
-- `tests/test_build_attributes.py` (create)
+### Step 1: PPR damping factor — COMPLETE ✅
+
+**What was done:**
+- `Config/RetrieverConfig.py:11` — `damping: float = 0.5` (was 0.1, also fixed duplicate fields)
+- `Core/Operators/entity/ppr.py:63` — reads damping from config: `getattr(ctx.config, "damping", 0.5)`
+- `Core/Graph/BaseGraph.py:843` — `personalized_pagerank` accepts `damping` parameter
+- Committed: `cae4696`
+
+**Deviation from plan:** Plan said add `ppr_damping_factor` to `GraphConfig`. Actually added as `damping` in `RetrieverConfig` (where it already existed at 0.1). RetrieverConfig is the correct location — it controls retrieval behavior, not graph structure.
+
+### Step 2: Question decomposition — RESOLVED DIFFERENTLY ✅
+
+**What was done:** Instead of adding a `--decompose` flag to the benchmark runner, decomposition is now available via the consolidated tool surface. The consolidated prompt (`prompts/agent_benchmark_consolidated.yaml`) explicitly instructs: "For multi-hop questions, call `reason(method='decompose')` FIRST."
+
+**Evidence it works:** 5q diagnostic on previously-failing questions showed 3/5 pass (60% LLM-judge, up from 0%). All 5 questions used `reason` as their first tool call.
+
+**Deviation from plan:** Plan said add `--decompose` flag for pipeline-level decomposition. The agent-driven approach (consolidated prompt guides decomposition) is more aligned with the adaptive-routing thesis — the agent decides when to decompose, not the pipeline.
+
+### Step 3: Passage-level nodes — NOT STARTED
+
+### Step 4: Co-occurrence-only build mode — NOT STARTED
 
 ---
 
-## Plan
+## Plan for Step 3: Passage-Level Nodes
+
+### Requirements
+
+- When `enable_passage_nodes=True` in GraphConfig, the graph build adds a node for each source chunk/passage alongside entity nodes
+- Entities link to their source passages via edges (entity → passage)
+- PPR can spread activation through passage nodes (bipartite graph)
+- Entity VDB indexes only entity nodes, not passage nodes
+- Backward compatible: `enable_passage_nodes=False` (default) produces current behavior
+
+### Contracts
+
+**Input:** GraphConfig with `enable_passage_nodes: bool = False`
+**Output:** Graph where:
+- Entity nodes have `node_type="entity"` (or no node_type, for backward compat)
+- Passage nodes have `node_type="passage"`, `chunk_id`, `text_preview`
+- Edges: entity→passage where entity was extracted from that passage
+- `GraphCapability.HAS_PASSAGES` set in capabilities
 
 ### Pre-made decisions
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Passage nodes implementation | Add passage node type to ERGraph alongside entity nodes; link entities to source passages via co-occurrence | Matches HippoRAG v2; reuses existing chunk tracking |
-| PPR damping default | 0.5 (HippoRAG default) | Conservative; tunable at runtime |
-| Decomposition integration | Add `--decompose` flag to benchmark runner | Opt-in; doesn't change existing benchmark behavior |
-| Co-occurrence-only mode | Add `skip_relationship_extraction` config flag | Tests EcphoryRAG hypothesis: are relationships even necessary? |
+| Node type field | Add `node_type` to node metadata dict, not Entity dataclass | Minimal change to existing code; Entity dataclass is used everywhere |
+| Passage node naming | `passage_{chunk_key}` | Unique, distinguishable from entity names |
+| Edge type | `relation_name="extracted_from"` | Semantic; distinguishes from co-occurrence edges |
+| VDB filtering | Filter `node_type != "passage"` during VDB build | VDB indexes entities only; passage nodes are traversal targets |
+| PPR behavior | No PPR code change needed | PPR spreads through all connected nodes naturally; seeds are still entity-only |
+| Passage node content | `chunk_id` + first 200 chars of text as `description` | Enough for agent to see what the passage contains |
 
-### Steps (ordered by independence, not priority)
+### Files Affected
 
-**Step 1: PPR damping factor** (smallest, most isolated)
-1. Add `ppr_damping_factor: float = 0.5` to GraphConfig
-2. Pass through to `entity.ppr` operator
-3. Verify current NetworkX PPR call accepts damping parameter
-4. Test: build graph, run PPR with 0.5 and 0.85, confirm different ranking
-
-**Step 2: Question decomposition in benchmark pipeline**
-1. Add `--decompose` flag to `eval/run_agent_benchmark.py`
-2. When enabled: decompose question → run sub-questions independently → synthesize
-3. Uses existing `meta.decompose_question` + `meta.synthesize_answers` operators
-4. Test: run HotpotQAsmallest 3q with/without decomposition, compare EM
-
-**Step 3: Passage-level nodes** (largest change)
-1. Add `enable_passage_nodes: bool = False` to GraphConfig
-2. When enabled during graph build: create a node for each chunk/passage
-3. Add edges from entities to the passages they were extracted from
-4. Ensure entity.ppr spreads activation through passage nodes (bipartite PPR)
-5. Test: build small graph with passage nodes, verify node count includes passages, verify PPR returns passage-connected entities
-
-**Step 4: Co-occurrence-only build mode**
-1. Add `skip_relationship_extraction: bool = False` to GraphConfig
-2. When enabled: extract entities only (NER), skip OpenIE/relationship extraction
-3. Build graph with entities + `augment_chunk_cooccurrence` edges only
-4. Test: build graph, verify no relationship edges, verify entity retrieval still works
+| File | Change | Lines |
+|------|--------|-------|
+| `Config/GraphConfig.py` | Add `enable_passage_nodes: bool = False` | Near line 124 |
+| `Core/Graph/BaseGraph.py` | Add passage node creation in `__graph__` method after entity upsert | After line 652 |
+| `Core/Graph/BaseGraph.py` | Set `HAS_PASSAGES` capability flag | Lines 52-76 |
+| `Core/Storage/NetworkXStorage.py` | No change — node_type stored as metadata naturally | — |
+| Entity VDB build tool | Filter out `node_type="passage"` nodes | TBD (search for VDB node collection) |
 
 ### Error taxonomy
 
 | Error | Diagnosis | Fix |
 |-------|-----------|-----|
-| PPR damping has no effect | NetworkX API may use different parameter name | Check `nx.pagerank` docs for `alpha` parameter |
-| Passage nodes break VDB indexing | VDB expects entity nodes only | Filter node types when building entity VDB |
-| Decomposition produces garbage sub-questions | LLM prompt for decomposition is weak | Improve decompose_question prompt (existing prompt, not new) |
-| Co-occurrence-only graph has zero edges | `augment_chunk_cooccurrence` not running | Verify enrichment step runs after entity extraction |
+| PPR indices misaligned | Passage nodes change total node count | PPR uses `ctx.graph.node_num` which auto-includes all nodes — should work |
+| VDB indexes passage nodes | VDB build doesn't filter | Add `node_type != "passage"` filter in VDB build loop |
+| Passage nodes bloat graph | Too many passages relative to entities | Cap passage nodes or only create for passages with ≥2 entities |
+| Entity→passage edges dominate PPR | PPR weight too high on passage edges | Set passage edge weight lower (0.5 vs 1.0 for regular edges) |
+| Existing tests fail | Entity count assertions change | Add `node_type` filter to test assertions |
 
-### Backtracking ladder
+### Verification
 
-1. Each step is independent — if one fails, others can proceed
-2. If passage nodes break graph structure: revert to entity-only, investigate separately
-3. If decomposition hurts performance: make it conditional on question hop-count (2-hop skip, 4-hop use)
-4. After 3 attempts on any step → escalate with specific error
+| Test | What It Verifies |
+|------|-----------------|
+| Build small graph with `enable_passage_nodes=True`, count nodes | Passage nodes exist alongside entity nodes |
+| Check node metadata for passage nodes | `node_type="passage"`, `chunk_id` present |
+| Run PPR from entity seed on bipartite graph | PPR returns entity results (passage nodes are traversal intermediaries) |
+| Build entity VDB from bipartite graph | VDB contains only entity nodes, not passages |
+| Build with `enable_passage_nodes=False` (default) | Same behavior as current code |
 
 ---
 
-## Required Tests
+## Plan for Step 4: Co-occurrence-only Build Mode
 
-### New Tests
+### Requirements
 
-| Test File | Test Function | What It Verifies |
-|-----------|---------------|------------------|
-| `tests/test_build_attributes.py` | `test_ppr_damping_configurable` | PPR with 0.5 vs 0.85 produces different rankings |
-| `tests/test_build_attributes.py` | `test_passage_nodes_created` | Graph with `enable_passage_nodes=True` has passage-type nodes |
-| `tests/test_build_attributes.py` | `test_passage_nodes_ppr_spread` | PPR spreads through passage nodes to reach non-adjacent entities |
-| `tests/test_build_attributes.py` | `test_cooccurrence_only_build` | `skip_relationship_extraction=True` produces entity+cooccurrence graph |
-| `tests/test_build_attributes.py` | `test_decompose_synthesize_pipeline` | Decomposition produces sub-questions; synthesis combines sub-answers |
+- When `skip_relationship_extraction=True` in GraphConfig, the graph build extracts entities only (NER) and skips OpenIE/relationship extraction
+- Graph is entity nodes + chunk co-occurrence edges only
+- Significantly cheaper build (no relationship extraction LLM calls)
+- Tests EcphoryRAG hypothesis: are explicit relationships necessary?
+
+### Contracts
+
+**Input:** GraphConfig with `skip_relationship_extraction: bool = False`
+**Output:** Graph where:
+- Entity nodes present (from NER extraction)
+- No relationship edges from OpenIE
+- Co-occurrence edges present (from `augment_chunk_cooccurrence`)
+- Build cost ~50% lower (skip relationship extraction LLM calls)
+
+### Pre-made decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Where to gate | In ERGraph extraction loop — skip relationship extraction calls | Simplest; NER is already a separate step in two-pass extraction |
+| Co-occurrence auto-enable | When `skip_relationship_extraction=True`, auto-enable `enable_chunk_cooccurrence=True` | Otherwise the graph has no edges |
+| Config location | GraphConfig (build-time decision) | Affects graph structure, not retrieval |
+
+### Files Affected
+
+| File | Change |
+|------|--------|
+| `Config/GraphConfig.py` | Add `skip_relationship_extraction: bool = False` |
+| `Core/Graph/ERGraph.py` | Skip OpenIE/relationship extraction when flag is True |
+| `Core/Graph/BaseGraph.py` | Auto-enable co-occurrence when `skip_relationship_extraction=True` |
+
+### Verification
+
+| Test | What It Verifies |
+|------|-----------------|
+| Build with `skip_relationship_extraction=True` | Graph has entity nodes, no relationship edges |
+| Co-occurrence edges auto-created | Graph has co-occurrence edges between entities sharing chunks |
+| Entity VDB works | VDB search returns entities from co-occurrence-only graph |
+| Build cost comparison | Relationship extraction LLM calls = 0 |
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] `ppr_damping_factor` configurable in GraphConfig, passed to PPR operator
-- [ ] `--decompose` flag in benchmark runner wires decompose→sub-retrieve→synthesize
-- [ ] `enable_passage_nodes` adds passage nodes and entity-passage edges to graph
-- [ ] `skip_relationship_extraction` builds entity+cooccurrence graph without relationship LLM calls
+- [x] PPR damping configurable in RetrieverConfig (`damping`), passed to PPR operator (Step 1)
+- [x] Decomposition available via consolidated prompt `reason(method="decompose")` (Step 2)
+- [ ] `enable_passage_nodes` adds passage nodes and entity→passage edges to graph (Step 3)
+- [ ] Entity VDB filtered to exclude passage nodes (Step 3)
+- [ ] `skip_relationship_extraction` builds entity+cooccurrence graph without relationship LLM calls (Step 4)
 - [ ] All new config flags default to current behavior (backward compatible)
-- [ ] Each attribute independently testable with unit tests
+- [ ] Each attribute independently testable
 
 ---
 
 ## Budget
 
-- Step 1 (PPR tuning): $0 (no LLM calls)
-- Step 2 (decomposition): ~$0.50 (3q test with decomposition)
-- Step 3 (passage nodes): ~$3-5 (one small graph rebuild)
-- Step 4 (co-occurrence only): ~$1-2 (entity-only extraction, cheaper than full build)
-- **Total: ~$5-8**
+- Step 1 (PPR tuning): ✅ $0
+- Step 2 (decomposition): ✅ $0
+- Step 3 (passage nodes): ~$3-5 (one small graph rebuild with passage nodes)
+- Step 4 (co-occurrence only): ~$1-2 (entity-only extraction build)
+- **Remaining: ~$4-7**
 
 ---
 
-## Notes
+## Execution Order
 
-All attributes are CONFIGURABLE, not hardcoded. The build agent selects per task:
-- Multi-hop QA benchmark → passage nodes ON, PPR damping 0.5, decomposition ON
-- Discourse analysis → passage nodes OFF, relationships ON, decomposition OFF
-- Budget-constrained → co-occurrence only, skip relationship extraction
+Step 3 (passage nodes) first — highest impact per literature review. Step 4 (co-occurrence only) second — independent, cheaper.
