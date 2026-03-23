@@ -57,6 +57,14 @@ except ImportError:
 
 from mcp.server.fastmcp import FastMCP
 from Core.Common.entity_name_hygiene import classify_entity_name, score_entity_candidate
+from Core.MCP.progressive_disclosure import (
+    ALWAYS_LOADED_TOOLS,
+    EXECUTE_CHAIN_TOOL_NAME,
+    SEARCH_TOOL_NAME,
+    DeferredToolRegistry,
+    search_available_tools_impl,
+    should_defer_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +80,14 @@ elif _bm_raw in ("1", "true", "yes"):
     BENCHMARK_MODE = 1
 else:
     BENCHMARK_MODE = 0
+
+# Progressive disclosure mode: only expose core tools + search, defer the rest.
+# Activated via DIGIMON_PROGRESSIVE_DISCLOSURE=1. Without it, all tools exposed as today.
+_pd_raw = os.environ.get("DIGIMON_PROGRESSIVE_DISCLOSURE", "").strip().lower()
+PROGRESSIVE_DISCLOSURE = _pd_raw in ("1", "true", "yes")
+
+# Singleton deferred tool registry — populated at entry point when disclosure is active.
+_deferred_registry = DeferredToolRegistry()
 
 # Tools hidden in benchmark mode. In benchmark, only retrieval + submit_answer are exposed.
 # This list is checked after MCP server init to remove unnecessary tools.
@@ -6493,6 +6509,214 @@ if BENCHMARK_MODE:
 
 
 # =============================================================================
+# PROGRESSIVE DISCLOSURE: search tool
+# =============================================================================
+
+@mcp.tool()
+async def search_available_tools(query: str, top_k: int = 5) -> str:
+    """Search for DIGIMON tools by keyword or capability.
+
+    Use this when you need a tool that isn't in your current visible set.
+    Returns matching tool names with descriptions and input schemas.
+    In non-disclosure mode, returns a note that all tools are already loaded.
+
+    Args:
+        query: Free-text search (e.g. 'vector database', 'entity_vdb', 'chunk text')
+        top_k: Maximum number of results to return (default 5)
+
+    Returns:
+        JSON list of matching tools with name, description, and parameters.
+    """
+    if not PROGRESSIVE_DISCLOSURE or len(_deferred_registry) == 0:
+        return json.dumps({
+            "note": "All tools are already loaded. Use list_operators for operator discovery.",
+            "results": [],
+        })
+    results = search_available_tools_impl(query, _deferred_registry, top_k=top_k)
+    return json.dumps({
+        "results": results,
+        "total_deferred_tools": len(_deferred_registry),
+    }, indent=2)
+
+
+# =============================================================================
+# PROGRAMMATIC TOOL CALLING: execute_operator_chain
+# =============================================================================
+
+@mcp.tool()
+async def execute_operator_chain(code: str) -> str:
+    """Execute Python code that calls DIGIMON operators as async functions.
+
+    Write Python code using `await operator_name(...)` to chain operators.
+    Intermediate results stay in local variables -- only the final print()
+    output is returned. This is much more token-efficient than calling
+    operators one at a time.
+
+    Available operators (all async, all return JSON strings):
+    - entity_vdb_search(query_text, top_k=5)
+    - entity_onehop(entity_ids, graph_reference_id)
+    - entity_ppr(graph_reference_id, seed_entity_ids, damping=0.85)
+    - entity_link(entity_names, dataset_name)
+    - entity_tfidf(candidate_entity_ids, query_text)
+    - entity_resolve_names_to_ids(entity_names, dataset_name)
+    - entity_profile(entity_id, dataset_name)
+    - entity_select_candidate(candidate_entity_ids, ...)
+    - entity_string_search(query_text, dataset_name)
+    - entity_neighborhood(entity_name, dataset_name)
+    - relationship_onehop(entity_ids, graph_reference_id)
+    - relationship_score_aggregator(entity_scores, graph_reference_id)
+    - relationship_vdb_search(vdb_reference_id, query_text)
+    - chunk_from_relationships(target_relationships, dataset_name)
+    - chunk_occurrence(entity_names, dataset_name)
+    - chunk_get_text_by_chunk_ids(chunk_ids, dataset_name)
+    - chunk_get_text_by_entity_ids(entity_ids, dataset_name)
+    - chunk_text_search(query_text, dataset_name)
+    - chunk_vdb_search(query_text, dataset_name)
+    - chunk_aggregator(relationship_scores, graph_reference_id)
+    - search_then_expand_onehop(query_text, dataset_name)
+    - extract_date_mentions(entity_names, dataset_name)
+    - meta_generate_answer(query_text, context_chunks)
+    - meta_extract_entities(query_text)
+    - meta_decompose_question(query_text)
+    - meta_synthesize_answers(query_text, sub_answers)
+    - meta_pcst_optimize(entity_ids, entity_scores, ...)
+    - subgraph_khop_paths(graph_reference_id, source_entity_id, target_entity_id)
+    - subgraph_steiner_tree(graph_reference_id, entity_ids)
+    - list_available_resources()
+    - list_operators()
+    - get_compatible_successors(operator_id)
+
+    Example:
+        entities = json.loads(await entity_vdb_search(query_text="Shield AI"))
+        names = [e["entity_name"] for e in entities["similar_entities"][:5]]
+        rels = json.loads(await relationship_onehop(
+            entity_ids=names, graph_reference_id=""))
+        chunks = json.loads(await chunk_occurrence(
+            entity_names=names, dataset_name=""))
+        answer = await meta_generate_answer(
+            query_text="What contracts does Shield AI have?",
+            context_chunks=[c["text_content"] for c in json.loads(chunks).get("chunks", [])]
+        )
+        print(answer)
+
+    Args:
+        code: Python code to execute. Use `await` for operator calls, `print()` for output.
+
+    Returns:
+        Captured stdout from print() calls. On error, returns the traceback text.
+    """
+    import io
+    import traceback
+
+    # Build namespace with all operator callables
+    namespace = _build_operator_chain_namespace()
+
+    # Capture stdout
+    captured = io.StringIO()
+
+    # Wrap user code in an async function so `await` works
+    indented_code = "\n".join("    " + line for line in code.splitlines())
+    wrapped = f"async def _ptc_main():\n{indented_code}\n"
+
+    try:
+        exec(compile(wrapped, "<execute_operator_chain>", "exec"), namespace)
+        main_fn = namespace["_ptc_main"]
+
+        # Redirect print to our capture buffer
+        original_print = namespace.get("print", print)
+
+        def captured_print(*args: object, **kwargs: object) -> None:
+            """Print to capture buffer instead of stdout."""
+            kwargs["file"] = captured  # type: ignore[assignment]
+            original_print(*args, **kwargs)
+
+        namespace["print"] = captured_print
+
+        # Re-exec with captured print so the function closes over the right print
+        exec(compile(wrapped, "<execute_operator_chain>", "exec"), namespace)
+        main_fn = namespace["_ptc_main"]
+
+        await main_fn()
+    except Exception:
+        captured.write(traceback.format_exc())
+
+    result = captured.getvalue()
+    return result if result else "(no output — did you forget to print()?)"
+
+
+def _build_operator_chain_namespace() -> dict[str, Any]:
+    """Build the exec namespace for execute_operator_chain.
+
+    Collects all retrieval/query operator functions defined in this module
+    and makes them available alongside json and other safe builtins.
+
+    Returns:
+        Dict mapping function names to their async callables, plus safe builtins.
+    """
+    # All operator functions that should be available in PTC code.
+    # These are the same functions used by _init_direct_tools in the benchmark runner.
+    _ptc_operators: list[str] = [
+        "entity_vdb_search",
+        "entity_string_search",
+        "entity_neighborhood",
+        "entity_onehop",
+        "entity_ppr",
+        "entity_link",
+        "entity_resolve_names_to_ids",
+        "entity_profile",
+        "entity_select_candidate",
+        "entity_tfidf",
+        "relationship_onehop",
+        "relationship_score_aggregator",
+        "relationship_vdb_search",
+        "chunk_from_relationships",
+        "chunk_occurrence",
+        "chunk_get_text_by_chunk_ids",
+        "chunk_get_text_by_entity_ids",
+        "extract_date_mentions",
+        "chunk_text_search",
+        "chunk_vdb_search",
+        "search_then_expand_onehop",
+        "chunk_aggregator",
+        "list_available_resources",
+        "subgraph_khop_paths",
+        "subgraph_steiner_tree",
+        "meta_pcst_optimize",
+        "meta_extract_entities",
+        "meta_generate_answer",
+        "meta_decompose_question",
+        "meta_synthesize_answers",
+        "list_operators",
+        "get_compatible_successors",
+    ]
+
+    namespace: dict[str, Any] = {"json": json, "__builtins__": {}}
+
+    # Add safe builtins
+    import builtins
+    safe_builtins = [
+        "print", "len", "range", "enumerate", "zip", "map", "filter",
+        "sorted", "reversed", "list", "dict", "set", "tuple", "str",
+        "int", "float", "bool", "isinstance", "type", "hasattr", "getattr",
+        "min", "max", "sum", "any", "all", "abs", "round",
+        "ValueError", "TypeError", "KeyError", "IndexError", "Exception",
+    ]
+    for name in safe_builtins:
+        obj = getattr(builtins, name, None)
+        if obj is not None:
+            namespace["__builtins__"][name] = obj  # type: ignore[index]
+
+    # Bind operator functions from this module's globals
+    module_globals = globals()
+    for op_name in _ptc_operators:
+        fn = module_globals.get(op_name)
+        if fn is not None and callable(fn):
+            namespace[op_name] = fn
+
+    return namespace
+
+
+# =============================================================================
 # ENTRY POINT
 # =============================================================================
 
@@ -6537,4 +6761,26 @@ if __name__ == "__main__":
                 + ", ".join(sorted(degraded_tool_names)),
                 file=sys.stderr,
             )
+
+    # Progressive disclosure: remove deferred tools and store their metadata
+    # in _deferred_registry so search_available_tools can find them.
+    if PROGRESSIVE_DISCLOSURE:
+        deferred_count = 0
+        for tool_name in tuple(mcp._tool_manager._tools.keys()):
+            if should_defer_tool(tool_name):
+                tool_obj = mcp._tool_manager._tools[tool_name]
+                _deferred_registry.register(
+                    name=tool_name,
+                    description=tool_obj.description or "",
+                    parameters=tool_obj.parameters if isinstance(tool_obj.parameters, dict) else {},
+                )
+                mcp.remove_tool(tool_name)
+                deferred_count += 1
+        n_visible = len(mcp._tool_manager._tools)
+        print(
+            f"Progressive disclosure: {n_visible} tools visible, "
+            f"{deferred_count} deferred (searchable via search_available_tools)",
+            file=sys.stderr,
+        )
+
     mcp.run(transport="stdio")

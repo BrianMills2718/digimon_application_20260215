@@ -919,6 +919,10 @@ async def _init_direct_tools(dataset_name: str, disable_embedding_tools: bool = 
         dms.meta_pcst_optimize,
     ]
 
+    # PTC execution environment — always available in benchmark mode
+    if hasattr(dms, "execute_operator_chain"):
+        _BENCHMARK_TOOLS.append(dms.execute_operator_chain)
+
     # Benchmark planning/disambiguation controls (if available in server mode)
     for maybe_tool in (
         "semantic_plan",
