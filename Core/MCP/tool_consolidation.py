@@ -167,7 +167,7 @@ def build_consolidated_tools(dms: Any) -> list:
     import json as _json
 
     async def entity_search(
-        method: str,
+        method: str = "semantic",
         query: str,
         dataset_name: str = "",
         top_k: int = 5,
@@ -210,7 +210,7 @@ def build_consolidated_tools(dms: Any) -> list:
             return _json.dumps({"error": f"Invalid method '{method}'. Use: semantic, string, tfidf"})
 
     async def entity_traverse(
-        method: str,
+        method: str = "onehop",
         entity_ids: list[str] | str | None = None,
         entity_names: list[str] | str | None = None,
         graph_reference_id: str = "",
@@ -309,7 +309,7 @@ def build_consolidated_tools(dms: Any) -> list:
             return _json.dumps({"error": f"Invalid method '{method}'. Use: profile, resolve"})
 
     async def relationship_search(
-        method: str,
+        method: str = "graph",
         entity_ids: list[str] | str | None = None,
         graph_reference_id: str = "",
         query_text: str = "",
@@ -351,7 +351,7 @@ def build_consolidated_tools(dms: Any) -> list:
             return _json.dumps({"error": f"Invalid method '{method}'. Use: graph, semantic, score"})
 
     async def chunk_retrieve(
-        method: str,
+        method: str = "text",
         query_text: str = "",
         dataset_name: str = "",
         top_k: int = 5,
@@ -502,7 +502,7 @@ def build_consolidated_tools(dms: Any) -> list:
             return _json.dumps({"error": f"Invalid method '{method}'. Use: from_entities, from_level"})
 
     async def reason(
-        method: str,
+        method: str = "answer",
         query_text: str = "",
         context_chunks: list[str] | None = None,
         sub_answers: list[str] | None = None,
