@@ -177,6 +177,7 @@ def _install_asyncio_log_filter() -> None:
 CANONICAL_MODE = "hybrid"
 PROMPT_TEMPLATES = {
     "hybrid": Path(__file__).parent.parent / "prompts" / "agent_benchmark_hybrid.yaml",
+    "consolidated": Path(__file__).parent.parent / "prompts" / "agent_benchmark_consolidated.yaml",
     "ptc": Path(__file__).parent.parent / "prompts" / "agent_benchmark_ptc.yaml",
     "codex_compact": Path(__file__).parent.parent / "prompts" / "agent_benchmark_codex_compact.yaml",
     "baseline": Path(__file__).parent.parent / "prompts" / "agent_benchmark_baseline.yaml",
@@ -389,11 +390,17 @@ def _resolve_mode(mode: str) -> tuple[str, bool]:
     """Resolve legacy prompt modes to the canonical mode.
 
     Returns (effective_mode, was_aliased).
+    When consolidated tools are active and mode is "hybrid", auto-upgrade
+    to "consolidated" prompt which references the correct tool names.
     """
     requested = (mode or CANONICAL_MODE).strip().lower()
     effective = LEGACY_MODE_ALIASES.get(requested, requested)
     if effective not in PROMPT_TEMPLATES:
         return CANONICAL_MODE, True
+    # Auto-upgrade to consolidated prompt when consolidated tools are active
+    use_consolidated = os.environ.get("DIGIMON_CONSOLIDATED_TOOLS", "1") == "1"
+    if use_consolidated and effective == "hybrid":
+        return "consolidated", True
     return effective, requested != effective
 
 
