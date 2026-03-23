@@ -80,10 +80,20 @@ async def entity_vdb_build_tool(
                     status="VDB already exists"
                 )
             
-            # Get nodes data from graph
+            # Get nodes data from graph (filter out passage nodes for entity VDB)
             with monitor.measure_operation("retrieve_nodes_data"):
-                nodes_data = await graph_instance.nodes_data()
-                logger.info(f"Retrieved {len(nodes_data)} nodes from graph")
+                all_nodes = await graph_instance.nodes_data()
+                nodes_data = [
+                    n for n in all_nodes
+                    if n.get("node_type", "entity") != "passage"
+                ]
+                if len(nodes_data) < len(all_nodes):
+                    logger.info(
+                        f"Retrieved {len(all_nodes)} nodes, filtered to {len(nodes_data)} entities "
+                        f"(excluded {len(all_nodes) - len(nodes_data)} passage nodes)"
+                    )
+                else:
+                    logger.info(f"Retrieved {len(nodes_data)} nodes from graph")
             
             # Prepare entity data for VDB
             with monitor.measure_operation("prepare_entity_data"):

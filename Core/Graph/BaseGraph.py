@@ -73,6 +73,8 @@ class BaseGraph(ABC):
             caps.add(GraphCapability.HAS_COMMUNITIES)
         if getattr(self, "_is_passage_graph", False):
             caps.add(GraphCapability.HAS_PASSAGES)
+        if getattr(self.graph_config, "enable_passage_nodes", False):
+            caps.add(GraphCapability.HAS_PASSAGES)
         return caps
 
     async def load_persisted_graph(self, force: bool = False) -> bool:
@@ -650,6 +652,47 @@ class BaseGraph(ABC):
 
         # Asynchronously merge and upsert nodes
         await asyncio.gather(*[self._merge_nodes_then_upsert(k, v) for k, v in maybe_nodes.items()])
+
+        # Add passage nodes if enabled (HippoRAG v2 bipartite graph)
+        if getattr(self.config, "enable_passage_nodes", False):
+            passage_count = 0
+            chunk_to_entities_for_passages: dict[str, list[str]] = defaultdict(list)
+            for entity_name, entity_list in maybe_nodes.items():
+                for entity in entity_list:
+                    for chunk_id in entity.source_id.split(GRAPH_FIELD_SEP):
+                        if chunk_id:
+                            chunk_to_entities_for_passages[chunk_id].append(entity_name)
+
+            for chunk_id, entity_names in chunk_to_entities_for_passages.items():
+                passage_node_id = f"passage_{chunk_id}"
+                # Create passage node with node_type marker
+                await self._graph.upsert_node(
+                    passage_node_id,
+                    node_data={
+                        "entity_name": passage_node_id,
+                        "node_type": "passage",
+                        "source_id": chunk_id,
+                        "entity_type": "passage",
+                        "description": f"Source passage {chunk_id}",
+                    },
+                )
+                # Create edges from each entity to its source passage
+                unique_entities = list(set(entity_names))
+                for ent_name in unique_entities:
+                    maybe_edges[tuple(sorted((ent_name, passage_node_id)))].append(
+                        Relationship(
+                            src_id=ent_name,
+                            tgt_id=passage_node_id,
+                            source_id=chunk_id,
+                            relation_name="extracted_from",
+                            weight=0.3,
+                            description="",
+                        )
+                    )
+                passage_count += 1
+
+            if passage_count:
+                logger.info(f"Added {passage_count} passage nodes with entity→passage edges")
 
         # Asynchronously merge and upsert edges
         await asyncio.gather(*[self._merge_edges_then_upsert(k[0], k[1], v) for k, v in maybe_edges.items()])

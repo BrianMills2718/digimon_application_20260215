@@ -123,6 +123,10 @@ class GraphConfig(YamlModel):
     # Post-extraction edge enrichment
     enable_chunk_cooccurrence: bool = False
 
+    # HippoRAG-aligned build attributes (Plan #16)
+    enable_passage_nodes: bool = False  # Add passage/chunk nodes alongside entity nodes (HippoRAG v2 bipartite graph)
+    skip_relationship_extraction: bool = False  # Entity+cooccurrence only, no OpenIE (EcphoryRAG hypothesis)
+
     # For graph augmentation
     similarity_threshold: float = 0.8
     similarity_top_k: int = 10
