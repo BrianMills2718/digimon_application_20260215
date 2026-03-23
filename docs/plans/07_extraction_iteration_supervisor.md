@@ -76,10 +76,13 @@ external stop/continue mechanics.
   - the checked-in agent task label used the non-canonical `coding` alias
   - the checked-in agent model used `codex`, but the repo `.venv` had plain
     editable `llm_client` without the Codex SDK extra
-  The supervisor now normalizes `coding -> code_generation`, fails fast before
-  baseline prompt-eval spend when a Codex-backed agent lane lacks
-  `openai_codex_sdk`, and the checked-in config now uses the supported
-  non-Codex lane `gpt-5.2-pro` for the default fix-agent path.
+  A follow-up live proof also established that the supervisor fix-agent path
+  fundamentally requires an agent SDK model because it passes
+  `working_directory`, `yolo_mode`, and `max_turns` for live repo edits.
+  DIGIMON now normalizes `coding -> code_generation`, fails fast before
+  baseline prompt-eval spend when the resolved fix-agent model is not
+  agent-SDK-backed, and fails fast when a Codex-backed lane lacks
+  `openai_codex_sdk`.
 
 ---
 

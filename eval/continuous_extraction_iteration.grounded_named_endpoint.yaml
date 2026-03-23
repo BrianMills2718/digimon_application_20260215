@@ -21,7 +21,7 @@ family:
 
 agent:
   selection_task: code_generation
-  model: gpt-5.2-pro
+  model: codex
   reasoning_effort: medium
   max_turns: 24
   max_budget: 0.0

@@ -181,7 +181,7 @@ def _build_config(
         ),
         agent=AgentConfig(
             selection_task="code_generation",
-            model="gpt-5.2-pro",
+            model="codex",
             reasoning_effort="medium",
             max_turns=4,
             max_budget=0.0,
@@ -268,6 +268,37 @@ def test_validate_agent_runtime_dependencies_rejects_missing_codex_sdk(
     )
 
     with pytest.raises(RuntimeError, match="requires the Codex SDK"):
+        validate_agent_runtime_dependencies(config)
+
+
+def test_validate_agent_runtime_dependencies_rejects_non_agent_model(tmp_path: Path) -> None:
+    """The supervisor should fail before baseline validation when the fix lane cannot edit code."""
+
+    config = _build_config(
+        tmp_path,
+        smoke_build=SmokeBuildConfig(
+            source_dataset="MuSiQue",
+            artifact_dataset_name="MuSiQue_supervisor_smoke",
+            graph_profile=GraphProfile.TKG,
+            working_dir=Path("results"),
+            required_artifacts=[
+                Path("er_graph/nx_data.graphml"),
+            ],
+        ),
+    ).model_copy(
+        update={
+            "agent": AgentConfig(
+                selection_task="code_generation",
+                model="gpt-5.2-pro",
+                reasoning_effort="medium",
+                max_turns=4,
+                max_budget=0.0,
+                yolo_mode=True,
+            )
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="requires an agent SDK model"):
         validate_agent_runtime_dependencies(config)
 
 
@@ -532,6 +563,11 @@ def test_run_loop_reverts_no_improvement_and_persists_state(
         "eval.run_extraction_iteration_supervisor.install_signal_stop_flag",
         lambda: {"stop": False},
     )
+    # mock-ok: this test isolates loop behavior after edits, not SDK dependency wiring.
+    monkeypatch.setattr(
+        "eval.run_extraction_iteration_supervisor.validate_agent_runtime_dependencies",
+        lambda config: None,
+    )
 
     def fake_validation(*, session_dir: Path, label: str, **_: object) -> tuple[Path, Path]:
         """Emit deterministic prompt-eval artifacts for one supervisor cycle."""
@@ -596,6 +632,11 @@ def test_run_loop_reverts_when_sentinel_regresses(
     monkeypatch.setattr(
         "eval.run_extraction_iteration_supervisor.install_signal_stop_flag",
         lambda: {"stop": False},
+    )
+    # mock-ok: this test isolates supervisor gating, not SDK dependency wiring.
+    monkeypatch.setattr(
+        "eval.run_extraction_iteration_supervisor.validate_agent_runtime_dependencies",
+        lambda config: None,
     )
 
     def fake_validation(*, session_dir: Path, label: str, **_: object) -> tuple[Path, Path]:
@@ -667,6 +708,11 @@ def test_run_loop_commits_verified_improvement(
     monkeypatch.setattr(
         "eval.run_extraction_iteration_supervisor.install_signal_stop_flag",
         lambda: {"stop": False},
+    )
+    # mock-ok: this test isolates commit behavior, not SDK dependency wiring.
+    monkeypatch.setattr(
+        "eval.run_extraction_iteration_supervisor.validate_agent_runtime_dependencies",
+        lambda config: None,
     )
 
     def fake_validation(*, session_dir: Path, label: str, **_: object) -> tuple[Path, Path]:
@@ -759,6 +805,11 @@ def test_run_loop_reverts_when_smoke_build_fails_after_prompt_eval_gain(
     monkeypatch.setattr(
         "eval.run_extraction_iteration_supervisor.install_signal_stop_flag",
         lambda: {"stop": False},
+    )
+    # mock-ok: this test isolates smoke-gate failure handling, not SDK dependency wiring.
+    monkeypatch.setattr(
+        "eval.run_extraction_iteration_supervisor.validate_agent_runtime_dependencies",
+        lambda config: None,
     )
 
     def fake_validation(*, session_dir: Path, label: str, **_: object) -> tuple[Path, Path]:

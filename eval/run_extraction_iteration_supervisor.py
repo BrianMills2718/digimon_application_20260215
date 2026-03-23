@@ -656,12 +656,35 @@ def _model_uses_codex_sdk(model: str) -> bool:
     )
 
 
+def _model_uses_agent_sdk(model: str) -> bool:
+    """Return whether a model routes through an agent SDK instead of plain litellm."""
+
+    normalized = model.strip().lower()
+    return (
+        _model_uses_codex_sdk(model)
+        or normalized == "claude-code"
+        or normalized.startswith("claude-code/")
+        or normalized == "openai-agents"
+        or normalized.startswith("openai-agents/")
+    )
+
+
+def resolve_supervisor_agent_model(config: ExtractionIterationConfig) -> str:
+    """Resolve the exact model name the supervisor will use for its fix-agent lane."""
+
+    return config.agent.model or get_model(config.agent.selection_task)
+
+
 def validate_agent_runtime_dependencies(config: ExtractionIterationConfig) -> None:
     """Fail early when the configured agent lane requires missing runtime dependencies."""
 
-    model = config.agent.model
-    if model is None:
-        return
+    model = resolve_supervisor_agent_model(config)
+    if not _model_uses_agent_sdk(model):
+        raise RuntimeError(
+            "Extraction supervisor fix-agent lane requires an agent SDK model "
+            "because it passes working_directory, yolo_mode, and max_turns for "
+            f"live repo edits. Resolved model {model!r} is not agent-SDK-backed."
+        )
     if _model_uses_codex_sdk(model) and importlib.util.find_spec("openai_codex_sdk") is None:
         raise RuntimeError(
             "Extraction supervisor agent.model requires the Codex SDK, but "
@@ -773,7 +796,7 @@ async def run_fix_agent(
 ) -> str:
     """Invoke the coding agent against the active extraction-family context."""
 
-    agent_model = config.agent.model or get_model(config.agent.selection_task)
+    agent_model = resolve_supervisor_agent_model(config)
     prompt_template = _repo_path(repo_root, config.prompt_template)
     messages = render_prompt(
         prompt_template,
