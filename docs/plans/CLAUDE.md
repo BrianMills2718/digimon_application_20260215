@@ -20,6 +20,7 @@ Historical planning artifacts outside `docs/plans/` are not authoritative unless
 | 10 | [Truthful Open-Schema Type Contract for TKG Extraction](10_open_schema_type_contract.md) | High | ✅ Complete | Further grounded-endpoint supervisor cycles, trustworthy open-TKG prompt iteration |
 | 11 | [Strengthen Completeness Promotion Gating](11_completeness_promotion_gate.md) | High | ✅ Complete | Further unattended grounded-endpoint supervisor cycles |
 | 12 | [MuSiQue Representation Audit](12_musique_representation_audit.md) | High | 🚧 In Progress | Further extraction-policy changes, retrieval-strategy changes, and renewed 10-20 question iteration |
+| 13 | [Evidence-Backed Benchmark Anchor Resolution](13_benchmark_anchor_resolution.md) | High | 🚧 In Progress | Trustworthy multi-hop anchor selection on audited MuSiQue cases |
 
 ## Status Key
 

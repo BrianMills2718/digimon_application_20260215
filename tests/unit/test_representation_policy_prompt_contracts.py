@@ -41,6 +41,16 @@ def test_hybrid_benchmark_prompt_mentions_non_exhaustive_graph_representation() 
     assert "Absence of a standalone node does not imply absence of evidence." in prompt_text
 
 
+def test_hybrid_benchmark_prompt_requires_canonical_anchor_resolution() -> None:
+    """Hybrid prompt should define when an anchor atom is actually resolved."""
+
+    prompt_path = Path(__file__).resolve().parents[2] / "prompts" / "agent_benchmark_hybrid.yaml"
+    prompt_text = prompt_path.read_text(encoding="utf-8")
+
+    assert "An anchor atom is resolved only after you have one canonical entity ID" in prompt_text
+    assert "`entity_select_candidate` or `search_then_expand_onehop`" in prompt_text
+
+
 def test_fixed_graph_prompt_mentions_chunk_pivot_for_missing_qualifiers() -> None:
     """Fixed-graph retrieval prompt should direct the agent to chunk evidence when needed."""
 
@@ -59,3 +69,4 @@ def test_codex_compact_prompt_mentions_relationship_or_chunk_fallback() -> None:
 
     assert "retrieval-optimized representation, not an exhaustive ontology" in prompt_text
     assert "check relationship descriptions or chunk text" in prompt_text
+    assert "An anchor or bridge step is not done until you have one canonical entity ID" in prompt_text

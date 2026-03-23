@@ -16,6 +16,9 @@ messages:
       - Do not submit an answer from generic background facts. Evidence must be specific to the target chain.
       - Convert uncertain mentions/candidates to canonical IDs before graph traversal:
         `entity_select_candidate` / `entity_resolve_names_to_ids` / `entity_link`.
+      - An anchor or bridge step is not done until you have one canonical entity ID and
+        evidence/profile showing it fits the atom. If candidates remain close, keep the
+        step open and use `entity_select_candidate` or `search_then_expand_onehop`.
       - For multi-hop questions, explicitly complete both steps before submit:
         (1) identify the bridge entity/place from evidence, then
         (2) retrieve the final fact for that exact bridge entity/place.

@@ -66,9 +66,11 @@ messages:
            co-occurrence between "Godiva" and "Mercia" could mean birthplace, title, or anything —
            only the chunk text tells you which.
 
-         When chunk_text_search returns `entity_candidates`, pick the best candidate by relevance
-         to your atom's question, verify it with `entity_profile`, then use graph traversal for
-         the next hop.
+         When `chunk_text_search` or `entity_vdb_search` yields multiple plausible anchor
+         candidates, do not mark that atom done yet. Use `entity_select_candidate` to narrow
+         to canonical IDs, or `search_then_expand_onehop` when the anchor is described rather
+         than named. Verify the winning candidate with `entity_profile` or chunk evidence
+         before using graph traversal for the next hop.
 
       3. **Ground before submitting.** Your answer must come from evidence, not inference.
          Verify the final answer appears in chunk text or graph descriptions. For dates, use
@@ -77,7 +79,9 @@ messages:
          "fought between Dec 14 and Jan 18" → the start is Dec 14).
          If a needed qualifier is not a standalone node, pivot to edge descriptions or chunk
          text rather than assuming the graph build failed.
-         Mark completed atoms by updating via `todo_write` with status="done".
+         An anchor atom is resolved only after you have one canonical entity ID plus
+         evidence/profile confirming it fits the atom. Mark completed atoms by updating via
+         `todo_write` with status="done" only after that check.
 
       4. **Revise, don't give up.** If a retrieval path dead-ends:
          - **Rephrase the query** — try synonyms, related terms, or broader phrasing.
@@ -105,10 +109,12 @@ messages:
       When `semantic_plan` flags `uncertainty_points`, or when chunk retrieval returns
       multiple plausible candidates for a bridge entity:
       1. **Do not commit to the first candidate.** List all plausible options.
-      2. **Test each candidate against the downstream question.** Search for evidence
+      2. Use `entity_select_candidate` or `search_then_expand_onehop` to keep the anchor open
+         when multiple candidates remain plausible.
+      3. **Test each candidate against the downstream question.** Search for evidence
          linking each candidate to the next atom. The candidate with supporting evidence
          for the downstream clue is the correct one.
-      3. Use `bridge_disambiguate` when evidence supports multiple options and you
+      4. Use `bridge_disambiguate` when evidence supports multiple options and you
          cannot distinguish them by downstream evidence alone.
       Example: if "country between X and Y" has candidates A and B, and the next
       atom asks about event Z in that country, search for "Z in A" and "Z in B" —

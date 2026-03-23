@@ -3012,8 +3012,16 @@ async def entity_select_candidate(
     dataset_name: str = "",
     top_k: int = 3,
     min_candidate_score: float = 0.0,
+    require_unambiguous: bool = False,
+    ambiguity_score_gap: float = 0.08,
 ) -> str:
-    """Select canonical entity IDs from candidate entity sets."""
+    """Select canonical entity IDs from candidate entity sets.
+
+    This tool is used both as a lightweight resolver and as a stricter
+    benchmark-time anchor selector. In `require_unambiguous` mode it must fail
+    loudly with `status="needs_revision"` when multiple plausible top
+    candidates remain too close to select safely.
+    """
     await _ensure_initialized()
 
     pool: list[dict[str, Any]] = []
@@ -3254,11 +3262,52 @@ async def entity_select_candidate(
     if filtered_generic:
         candidates_for_selection = filtered_generic
     threshold = float(min_candidate_score or 0.0)
-    selected = [
+    selected_pool = [
         item for item in candidates_for_selection
         if float(item.get("candidate_score") or 0.0) >= threshold
     ]
-    selected = selected[: max(1, int(top_k))]
+    selected = selected_pool[: max(1, int(top_k))]
+
+    if require_unambiguous and len(selected_pool) >= 2:
+        top_candidate = selected_pool[0]
+        runner_up = selected_pool[1]
+        top_score = float(top_candidate.get("candidate_score") or 0.0)
+        runner_up_score = float(runner_up.get("candidate_score") or 0.0)
+        observed_gap = top_score - runner_up_score
+        requested_name = (entity_name or "").strip().lower()
+        top_name = str(top_candidate.get("entity_name") or top_candidate.get("entity_id") or "").strip().lower()
+        top_id = str(top_candidate.get("entity_id") or "").strip().lower()
+        exact_anchor_match = bool(requested_name and requested_name in {top_name, top_id})
+        if observed_gap <= float(ambiguity_score_gap) and not exact_anchor_match:
+            return json.dumps(
+                {
+                    "status": "needs_revision",
+                    "selected_entities": [],
+                    "n_selected": 0,
+                    "n_candidates_considered": len(pool),
+                    "expected_coarse_types": sorted(expected_types_norm) if expected_types_norm else [],
+                    "expected_coarse_types_source": expected_types_source or None,
+                    "n_type_matches": len(type_matched),
+                    "type_filter_applied": type_filter_applied,
+                    "require_unambiguous": True,
+                    "ambiguity_score_gap": float(ambiguity_score_gap),
+                    "observed_top_score_gap": round(observed_gap, 6),
+                    "top_candidates": selected_pool[: min(5, len(selected_pool))],
+                    "recovery_policy": {
+                        "new_evidence_required_before_retry": True,
+                    },
+                    "suggested_next_actions": [
+                        "Ground the anchor in chunk evidence before selecting a canonical entity.",
+                        "Use entity_profile on the plausible candidates and compare them against the atom.",
+                        "If the bridge remains ambiguous, test the candidates against the downstream clue or use bridge_disambiguate.",
+                    ],
+                    "status_message": (
+                        "Multiple plausible anchor candidates remain too close to select safely."
+                    ),
+                },
+                indent=2,
+                default=str,
+            )
 
     return json.dumps(
         {
@@ -4306,12 +4355,23 @@ async def search_then_expand_onehop(
     query_text: str,
     dataset_name: str,
     graph_reference_id: str = "",
+    atom_id: str = "",
+    task_text: str = "",
+    operation: str = "",
+    expected_coarse_types: list[str] | str | None = None,
     top_k_chunks: int = 6,
     max_candidates_per_chunk: int = 4,
     max_entities: int = 5,
     neighbor_limit_per_entity: int = 20,
+    require_unambiguous: bool = False,
+    ambiguity_score_gap: float = 0.08,
 ) -> str:
-    """Composite search->candidate selection->entity one-hop expansion."""
+    """Composite search->candidate selection->entity one-hop expansion.
+
+    This helper is useful for descriptive anchors that do not have a clean
+    surface-form lookup. It can optionally require ambiguity-safe candidate
+    selection before traversing the graph.
+    """
     await _ensure_initialized()
 
     step_summaries: list[dict[str, Any]] = []
@@ -4344,9 +4404,15 @@ async def search_then_expand_onehop(
 
     select_raw = await entity_select_candidate(
         candidate_entities=candidates,
+        atom_id=atom_id,
+        task_text=task_text or query_text,
+        operation=operation,
+        expected_coarse_types=expected_coarse_types,
         top_k=max(1, int(max_entities)),
         dataset_name=dataset_name,
         min_candidate_score=0.0,
+        require_unambiguous=require_unambiguous,
+        ambiguity_score_gap=ambiguity_score_gap,
     )
     try:
         select_payload = json.loads(select_raw)
@@ -4378,6 +4444,10 @@ async def search_then_expand_onehop(
                 "chunks": chunks,
                 "entity_candidates": candidates,
                 "selected_entities": [],
+                "selection_status": select_payload.get("status") if isinstance(select_payload, dict) else None,
+                "selection_status_message": select_payload.get("status_message") if isinstance(select_payload, dict) else None,
+                "selection_top_candidates": select_payload.get("top_candidates") if isinstance(select_payload, dict) else None,
+                "selection_suggested_next_actions": select_payload.get("suggested_next_actions") if isinstance(select_payload, dict) else None,
                 "neighbors": {},
                 "substeps": step_summaries,
                 "status_message": "No canonical entity candidates selected; expansion skipped.",
