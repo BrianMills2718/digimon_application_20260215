@@ -889,60 +889,85 @@ async def _init_direct_tools(dataset_name: str, disable_embedding_tools: bool = 
     # Initialize DIGIMON context (loads config, graph, VDB)
     await dms._ensure_initialized()
 
-    # Collect benchmark-relevant tool functions from the MCP server module.
-    # These are the same functions registered with @mcp.tool() minus hidden ones.
-    _BENCHMARK_TOOLS = [
-        dms.entity_vdb_search,
-        dms.entity_string_search,
-        dms.entity_neighborhood,
-        dms.entity_onehop,
-        dms.entity_ppr,
-        dms.entity_link,
-        dms.entity_resolve_names_to_ids,
-        dms.entity_profile,
-        dms.entity_select_candidate,
-        dms.entity_tfidf,
-        dms.relationship_onehop,
-        dms.relationship_score_aggregator,
-        dms.relationship_vdb_search,
-        dms.chunk_from_relationships,
-        dms.chunk_occurrence,
-        dms.chunk_get_text_by_chunk_ids,
-        dms.chunk_get_text_by_entity_ids,
-        dms.extract_date_mentions,
-        dms.chunk_text_search,
-        dms.chunk_vdb_search,
-        dms.search_then_expand_onehop,
-        dms.chunk_aggregator,
-        dms.list_available_resources,
-        dms.subgraph_khop_paths,
-        dms.subgraph_steiner_tree,
-        dms.meta_pcst_optimize,
-    ]
+    # Choose between consolidated tools (10 tools) or individual tools (26+)
+    use_consolidated = os.environ.get("DIGIMON_CONSOLIDATED_TOOLS", "1") == "1"
+    mode_name = os.environ.get("DIGIMON_BENCHMARK_MODE_NAME", "").strip()
 
-    # PTC execution environment — always available in benchmark mode
-    if hasattr(dms, "execute_operator_chain"):
-        _BENCHMARK_TOOLS.append(dms.execute_operator_chain)
-
-    # Benchmark planning/disambiguation controls (if available in server mode)
-    for maybe_tool in (
-        "semantic_plan",
-        "todo_write",
-        "bridge_disambiguate",
-    ):
-        if hasattr(dms, maybe_tool):
-            _BENCHMARK_TOOLS.append(getattr(dms, maybe_tool))
-
-    # submit_answer is conditionally defined in BENCHMARK_MODE.
-    if hasattr(dms, "submit_answer"):
-        _BENCHMARK_TOOLS.append(dms.submit_answer)
+    if use_consolidated and mode_name != "ptc":
+        from Core.MCP.tool_consolidation import build_consolidated_tools
+        _BENCHMARK_TOOLS = build_consolidated_tools(dms)
+        print(
+            f"Consolidated mode: {len(_BENCHMARK_TOOLS)} tools (28 operators → 10 tools)",
+            file=sys.stderr,
+        )
     else:
-        async def submit_answer(reasoning: str, answer: str) -> str:
-            """Submit your final answer. Call once with your best answer."""
-            dms._reset_chunk_dedup()
-            return json.dumps({"status": "submitted", "answer": answer})
+        # Legacy individual tool surface
+        _BENCHMARK_TOOLS = [
+            dms.entity_vdb_search,
+            dms.entity_string_search,
+            dms.entity_neighborhood,
+            dms.entity_onehop,
+            dms.entity_ppr,
+            dms.entity_link,
+            dms.entity_resolve_names_to_ids,
+            dms.entity_profile,
+            dms.entity_select_candidate,
+            dms.entity_tfidf,
+            dms.relationship_onehop,
+            dms.relationship_score_aggregator,
+            dms.relationship_vdb_search,
+            dms.chunk_from_relationships,
+            dms.chunk_occurrence,
+            dms.chunk_get_text_by_chunk_ids,
+            dms.chunk_get_text_by_entity_ids,
+            dms.extract_date_mentions,
+            dms.chunk_text_search,
+            dms.chunk_vdb_search,
+            dms.search_then_expand_onehop,
+            dms.chunk_aggregator,
+            dms.list_available_resources,
+            dms.subgraph_khop_paths,
+            dms.subgraph_steiner_tree,
+            dms.meta_pcst_optimize,
+        ]
 
-        _BENCHMARK_TOOLS.append(submit_answer)
+        # PTC execution environment — always available in benchmark mode
+        if hasattr(dms, "execute_operator_chain"):
+            _BENCHMARK_TOOLS.append(dms.execute_operator_chain)
+
+        # Benchmark planning/disambiguation controls (if available in server mode)
+        for maybe_tool in (
+            "semantic_plan",
+            "todo_write",
+            "bridge_disambiguate",
+        ):
+            if hasattr(dms, maybe_tool):
+                _BENCHMARK_TOOLS.append(getattr(dms, maybe_tool))
+
+        # PTC-only mode: remove individual operator tools, force code composition.
+        if mode_name == "ptc":
+            _PTC_ALLOWED = {
+                "execute_operator_chain", "semantic_plan", "submit_answer",
+                "todo_write", "bridge_disambiguate", "list_available_resources",
+            }
+            _BENCHMARK_TOOLS = [
+                t for t in _BENCHMARK_TOOLS if t.__name__ in _PTC_ALLOWED
+            ]
+            print(
+                f"PTC-only mode: {len(_BENCHMARK_TOOLS)} tools (individual operators removed)",
+                file=sys.stderr,
+            )
+
+        # submit_answer is conditionally defined in BENCHMARK_MODE.
+        if hasattr(dms, "submit_answer"):
+            _BENCHMARK_TOOLS.append(dms.submit_answer)
+        else:
+            async def submit_answer(reasoning: str, answer: str) -> str:
+                """Submit your final answer. Call once with your best answer."""
+                dms._reset_chunk_dedup()
+                return json.dumps({"status": "submitted", "answer": answer})
+
+            _BENCHMARK_TOOLS.append(submit_answer)
 
     # Dynamic filtering: only include tools whose prerequisites exist
     ctx = dms._state.get("context")
