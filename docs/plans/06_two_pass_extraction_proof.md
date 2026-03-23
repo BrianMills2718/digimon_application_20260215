@@ -1,6 +1,6 @@
 # Plan #6: Two-Pass Extraction Proof for Entity Completeness
 
-**Status:** In Progress
+**Status:** Blocked — paused pending Plan #17 strategic pivot results
 **Type:** implementation
 **Priority:** High
 **Blocked By:** None

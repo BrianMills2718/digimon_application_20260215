@@ -1,6 +1,6 @@
 # Plan #12: MuSiQue Representation Audit
 
-**Status:** In Progress
+**Status:** Blocked — paused pending Plan #17 strategic pivot results
 **Type:** investigation
 **Priority:** High
 **Blocked By:** None

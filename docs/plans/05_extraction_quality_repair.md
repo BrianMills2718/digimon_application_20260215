@@ -1,6 +1,6 @@
 # Plan #5: Extraction Quality Repair for Entity-Graph Builds
 
-**Status:** In Progress
+**Status:** Blocked — paused pending Plan #17 strategic pivot results
 **Type:** implementation
 **Priority:** High
 **Blocked By:** None

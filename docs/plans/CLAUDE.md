@@ -4,23 +4,35 @@ Track current implementation work here.
 
 Historical planning artifacts outside `docs/plans/` are not authoritative unless explicitly linked from this index.
 
+## Strategic Roadmap
+
+See [ROADMAP.md](ROADMAP.md) for phase sequence, gates, budget, and escalation criteria.
+
+**Active workstream** (Plans #14-#18): Strategic pivot to fix the agent drowning problem before re-testing the adaptive routing thesis. Literature review confirmed graph value is real but DIGIMON is missing key SOTA innovations and the 50-tool surface overwhelms the routing agent.
+
+**Paused workstream** (Plans #3-#6, #12-#13): Extraction quality and representation audit work. Will resume based on Plan #17 gate results — if graph value is confirmed but extraction is identified as the bottleneck.
+
 ## Gap Summary
 
 | # | Name | Priority | Status | Blocks |
 |---|------|----------|--------|--------|
-| 1 | [Example Plan](01_example.md) | Medium | 📋 Planned | - |
-| 2 | [DIGIMON V2 Greenfield Planning Phase](02_digimon_v2_greenfield_planning_phase.md) | High | ✅ Complete | - |
-| 3 | [Prove Adaptive Routing](03_prove_adaptive_routing.md) | High | 🚧 In Progress | All future investment |
-| 4 | [Graph Build Rearchitecture](04_graph_build_rearchitecture.md) | High | 🚧 In Progress | Clean graph rebuild |
-| 5 | [Extraction Quality Repair for Entity-Graph Builds](05_extraction_quality_repair.md) | High | 🚧 In Progress | Full MuSiQue rebuild, fixed-graph sanity rerun |
-| 6 | [Two-Pass Extraction Proof for Entity Completeness](06_two_pass_extraction_proof.md) | High | 🚧 In Progress | Next live entity-graph smoke rebuild |
-| 7 | [Extraction Iteration Supervisor](07_extraction_iteration_supervisor.md) | High | ✅ Complete | Reliable long-running autonomous extraction iteration |
-| 8 | [Supervisor Sentinel Gating](08_supervisor_sentinel_gating.md) | High | ✅ Complete | Trustworthy unattended extraction-family promotion |
-| 9 | [Typed Smoke-Build Gate for the Extraction Supervisor](09_supervisor_smoke_build_gate.md) | High | ✅ Complete | Trustworthy unattended promotion beyond prompt-eval-only evidence |
-| 10 | [Truthful Open-Schema Type Contract for TKG Extraction](10_open_schema_type_contract.md) | High | ✅ Complete | Further grounded-endpoint supervisor cycles, trustworthy open-TKG prompt iteration |
-| 11 | [Strengthen Completeness Promotion Gating](11_completeness_promotion_gate.md) | High | ✅ Complete | Further unattended grounded-endpoint supervisor cycles |
-| 12 | [MuSiQue Representation Audit](12_musique_representation_audit.md) | High | 🚧 In Progress | Further extraction-policy changes, retrieval-strategy changes, and renewed 10-20 question iteration |
-| 13 | [Evidence-Backed Benchmark Anchor Resolution](13_benchmark_anchor_resolution.md) | High | 🚧 In Progress | Trustworthy multi-hop anchor selection on audited MuSiQue cases |
+| 2 | [DIGIMON V2 Greenfield Planning](02_digimon_v2_greenfield_planning_phase.md) | High | ✅ Complete | - |
+| 3 | [Prove Adaptive Routing](03_prove_adaptive_routing.md) | High | ⏸️ Blocked | Superseded by #17 |
+| 4 | [Graph Build Rearchitecture](04_graph_build_rearchitecture.md) | High | ⏸️ Blocked | Partially superseded by #16 |
+| 5 | [Extraction Quality Repair](05_extraction_quality_repair.md) | High | ⏸️ Blocked | Resumes if #17 identifies extraction bottleneck |
+| 6 | [Two-Pass Extraction Proof](06_two_pass_extraction_proof.md) | High | ⏸️ Blocked | Resumes if #17 identifies extraction bottleneck |
+| 7 | [Extraction Iteration Supervisor](07_extraction_iteration_supervisor.md) | High | ✅ Complete | - |
+| 8 | [Supervisor Sentinel Gating](08_supervisor_sentinel_gating.md) | High | ✅ Complete | - |
+| 9 | [Supervisor Smoke-Build Gate](09_supervisor_smoke_build_gate.md) | High | ✅ Complete | - |
+| 10 | [Open-Schema Type Contract](10_open_schema_type_contract.md) | High | ✅ Complete | - |
+| 11 | [Completeness Promotion Gate](11_completeness_promotion_gate.md) | High | ✅ Complete | - |
+| 12 | [MuSiQue Representation Audit](12_musique_representation_audit.md) | High | ⏸️ Blocked | Resumes if #17 identifies routing bottleneck |
+| 13 | [Benchmark Anchor Resolution](13_benchmark_anchor_resolution.md) | High | ⏸️ Blocked | Resumes if #17 identifies routing bottleneck |
+| 14 | [Fix llm_client / Unblock Benchmark Runner](14_fix_llm_client_benchmark_runner.md) | High | 📋 Planned | #15, #17 |
+| 15 | [Operator Consolidation (28→8-10 tools)](15_operator_consolidation.md) | High | 📋 Planned | #17 |
+| 16 | [HippoRAG-Aligned Build Attributes](16_build_attributes_sota_alignment.md) | High | 📋 Planned | #17 |
+| 17 | [Re-Test Thesis with Clean Architecture](17_retest_thesis.md) | High | 📋 Planned | - |
+| 18 | [PTC Validation (conditional)](18_ptc_validation.md) | Medium | 📋 Planned | - |
 
 ## Status Key
 

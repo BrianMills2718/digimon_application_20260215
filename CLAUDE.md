@@ -153,7 +153,9 @@ See `docs/adr/013-answer-critical-fact-representation.md`.
 - Fixed Graph: 32.0% EM, 54.0% LLM_EM
 - Hybrid: 32.0% EM, 44.0% LLM_EM
 
-This is development evidence only, but it does not currently support the adaptive-routing thesis.
+This is development evidence only. The adaptive-routing thesis is **not yet testable under fair conditions** — the 50-tool surface overwhelms the routing agent, confounding any comparison. See ROADMAP and Plans #14-#17 for the strategic pivot.
+
+**Routing model**: `openrouter/openai/gpt-5.4-mini` (400K context, strong tool calling, $1.69/M blended). Replaces gemini-2.5-flash as the recommended benchmark agent model.
 
 **Test datasets**: `Data/Social_Discourse_Test` (best for dev), `Data/Synthetic_Test`, `Data/MySampleTexts`.
 
@@ -176,6 +178,27 @@ This is development evidence only, but it does not currently support the adaptiv
 - All LLM/embedding calls logged to `~/projects/data/llm_observability.db` with `trace_id` correlation
 - `PipelineExecutor` propagates `trace_id` from `OperatorContext` to adapters
 - Query costs: `python -m llm_client cost --project Digimon_for_KG_application`
+
+## Literature Review (2026-03-23)
+
+Full review: `investigations/digimon/2026-03-23-graphrag-sota-review.md`
+
+**Key findings**:
+- Graphs unambiguously help for multi-hop QA (vanilla RAG 27% → SOTA 58% EM)
+- DIGIMON is missing: passage-level nodes (HippoRAG v2), PPR tuning (damping=0.5), IDF scoring, question decomposition in pipeline
+- Question decomposition is the single biggest lever (+15 EM in StepChain ablation)
+- Co-occurrence edges may suffice — EcphoryRAG gets 72.2% EM without relationship extraction
+- No system in literature does per-question composable operator routing — DIGIMON's thesis is novel and untested
+
+**Competitive scoreboard** (SOTA on multi-hop QA):
+| System | Avg EM | Architecture |
+|--------|--------|-------------|
+| StepChain | 57.7 | On-the-fly graph + BFS + decomposition (GPT-4o) |
+| HopRAG | 53.8 | Passage graph + logical edges |
+| EcphoryRAG | 47.4 | Entity-only + associative search (Phi-4) |
+| HippoRAG 2 | 39.0* | Phrase+passage bipartite + PPR |
+
+**Active strategic plan**: Plans #14-#18 (ROADMAP.md). Fix tool surface → add SOTA build attributes → re-test thesis.
 
 ## Future Work
 

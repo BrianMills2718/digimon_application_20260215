@@ -1,6 +1,6 @@
 # Plan #13: Evidence-Backed Benchmark Anchor Resolution
 
-**Status:** In Progress
+**Status:** Blocked — paused pending Plan #17 strategic pivot results
 **Type:** implementation
 **Priority:** High
 **Blocked By:** None

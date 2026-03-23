@@ -1,6 +1,6 @@
 # Plan #4: Graph Build Rearchitecture
 
-**Status:** In Progress
+**Status:** Blocked — paused pending Plan #17 strategic pivot results
 **Type:** design
 **Priority:** High
 **Blocked By:** None

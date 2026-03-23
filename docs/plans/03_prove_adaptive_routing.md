@@ -1,6 +1,6 @@
 # Plan #3: Prove Adaptive Operator Routing
 
-**Status:** In Progress — negative dev evidence, locked-eval decision pending
+**Status:** Blocked — paused pending Plan #17 strategic pivot results
 **Type:** implementation
 **Priority:** High
 **Blocked By:** None
