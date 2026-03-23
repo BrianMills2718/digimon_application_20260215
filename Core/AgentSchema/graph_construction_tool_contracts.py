@@ -127,6 +127,14 @@ class ERGraphConfigOverrides(BaseModel):
         validation_alias=AliasChoices('enable_chunk_cooccurrence', 'chunk_cooccurrence', 'cooccurrence_edges'),
         description="Add implicit edges between entities that co-occur in the same source chunk."
     )
+    enable_passage_nodes: Optional[bool] = Field(
+        default=None,
+        description="Add passage/chunk nodes alongside entity nodes (HippoRAG v2 bipartite graph). PPR spreads through passage nodes to find cross-document entity connections."
+    )
+    skip_relationship_extraction: Optional[bool] = Field(
+        default=None,
+        description="Extract entities only (NER), skip relationship extraction. Build graph with co-occurrence edges only. ~50% cheaper builds."
+    )
     custom_ontology_path_override: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices('custom_ontology_path_override', 'custom_ontology_path', 'ontology_path'),
