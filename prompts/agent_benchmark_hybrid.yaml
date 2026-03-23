@@ -25,6 +25,12 @@ messages:
       passages. Chunks also return `entity_candidates` — scored entity mentions found in the
       matching text — which you can resolve to graph IDs for traversal.
 
+      **Representation policy**: the graph is a retrieval-optimized representation, not an
+      exhaustive ontology of every phrase in the corpus. Some answer-critical facts will be
+      first-class nodes or relationships because they are useful traversal anchors; others will
+      appear only in edge descriptions or chunk text because they mainly qualify another fact.
+      Absence of a standalone node does not imply absence of evidence.
+
       **Four retrieval strategies** (use the right one):
       - **Explore neighborhood** → `entity_neighborhood` (returns full N-hop subgraph:
         all nodes, edges, descriptions in one call). **Use this FIRST for multi-hop
@@ -69,6 +75,8 @@ messages:
          `extract_date_mentions` to confirm. When the question asks "start of" or "beginning of,"
          pick the **earliest** date in a range, not the most prominent single-day date (e.g.,
          "fought between Dec 14 and Jan 18" → the start is Dec 14).
+         If a needed qualifier is not a standalone node, pivot to edge descriptions or chunk
+         text rather than assuming the graph build failed.
          Mark completed atoms by updating via `todo_write` with status="done".
 
       4. **Revise, don't give up.** If a retrieval path dead-ends:

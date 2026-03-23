@@ -25,6 +25,10 @@ messages:
 
       ## Constraints
 
+      - The graph is a retrieval-optimized view, not a list of every fact phrase in the corpus.
+        Some answer-critical details will only appear in relationship descriptions or chunk text.
+      - Absence of a standalone node does not imply absence of evidence; pivot to text grounding
+        when a needed qualifier is not directly represented as a node.
       - Use tools; never answer from prior knowledge.
       - Always finish with `submit_answer(reasoning, answer)`.
       - Submit only the fact requested (name/date/number/yes/no).

@@ -8,6 +8,8 @@ messages:
       Return a short factual span (name/date/number/yes/no), grounded in evidence.
 
       Rules:
+      - The graph is a retrieval-optimized representation, not an exhaustive ontology. If a needed
+        qualifier is missing as a standalone node, check relationship descriptions or chunk text.
       - Do not answer from prior knowledge; use tools.
       - Every tool call MUST include `tool_reasoning` (one concise sentence).
       - Avoid repeating near-identical calls; if evidence does not improve, switch operator.

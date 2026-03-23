@@ -485,7 +485,9 @@ def build_entity_extraction_prompt(
 
 -Grounded Entity Preference-
 - prefer entities that can be independently pointed to from the text, such as named people, organizations, locations, competitions, awards, diagnoses, titles, works, or explicit dated events and time periods
+- promote a fact to a standalone entity only when it is likely to be a reusable retrieval anchor, bridge, or relationship endpoint
 - if a phrase only summarizes other concrete entities, competitions, or outcomes already named in the text, keep that meaning in descriptions or relationships instead of promoting it to a standalone entity
+- if a fact mainly qualifies another entity or relationship and does not need independent graph navigation, keep it in descriptions or relationship text instead of promoting it to a standalone entity
 - do not emit broad achievement labels, umbrella competition classes, or generic category phrases as standalone entities unless the text presents them as formal named entities"""
 
     return f"""-Goal-
@@ -547,7 +549,9 @@ def build_entity_inventory_extraction_prompt(
 
 -Grounded Entity Preference-
 - prefer entities that can be independently pointed to from the text, such as named people, organizations, locations, competitions, awards, diagnoses, titles, works, or explicit dated events and time periods
+- promote a fact to a standalone entity only when it is likely to be a reusable retrieval anchor, bridge, or relationship endpoint
 - if a phrase only summarizes other concrete entities, competitions, or outcomes already named in the text, keep that meaning out of the entity list
+- if a fact mainly qualifies another entity or relationship and does not need independent graph navigation, keep it out of the entity list
 - do not emit broad achievement labels, umbrella competition classes, or generic category phrases as standalone entities unless the text presents them as formal named entities"""
 
     return f"""-Goal-
