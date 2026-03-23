@@ -73,7 +73,7 @@ def test_load_extraction_prompt_eval_cases_freezes_expected_musique_slice() -> N
         "sentinel",
         "sentinel",
         "target",
-        "sentinel",
+        "target",
         "target",
         "sentinel",
     ]
@@ -100,7 +100,14 @@ def test_load_grounded_entity_smoke_cases_freezes_short_policy_slice() -> None:
         "grounded_named_endpoint_completeness",
         "grounded_named_endpoint_completeness",
     ]
-    assert all(case.case_role == "sentinel" for case in cases)
+    assert [case.case_role for case in cases] == [
+        "sentinel",
+        "sentinel",
+        "sentinel",
+        "sentinel",
+        "target",
+        "sentinel",
+    ]
 
 
 def test_filter_extraction_prompt_eval_cases_keeps_requested_failure_family_only() -> None:

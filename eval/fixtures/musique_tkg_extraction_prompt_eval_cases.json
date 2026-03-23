@@ -69,7 +69,7 @@
     "title": "FC Barcelona",
     "focus": "Grounded-entity policy should keep the named person and diagnosis while dropping generic leave terminology.",
     "failure_family": "grounded_named_endpoint_completeness",
-    "case_role": "sentinel",
+    "case_role": "target",
     "content": "On 19 July, it was announced that Tito Vilanova was resigning as Barcelona manager because his throat cancer had returned, and he would be receiving treatment for the second time after a three-month medical leave in December 2012.",
     "expected": {
       "min_valid_entities": 2,

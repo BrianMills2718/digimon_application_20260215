@@ -14,6 +14,7 @@ from eval.extraction_prompt_eval import DEFAULT_CASES_PATH
 from eval.run_extraction_iteration_supervisor import (
     AgentConfig,
     ExtractionIterationConfig,
+    FamilyCaseRoleIndex,
     FamilyConfig,
     ImprovementDecision,
     RuntimeConfig,
@@ -387,6 +388,18 @@ def test_extract_variant_score_snapshot_reads_role_scoped_scores(tmp_path: Path)
     assert snapshot.overall_mean_score == pytest.approx(0.8)
 
 
+def test_load_family_case_role_index_reads_grounded_target_and_sentinel_roles() -> None:
+    """The grounded-endpoint family should expose one target and one protected sentinel."""
+
+    case_roles = load_family_case_role_index(
+        DEFAULT_CASES_PATH,
+        failure_family="grounded_named_endpoint_completeness",
+    )
+
+    assert case_roles.target_case_ids == ["musique_doc_5_grounded_medical_leave"]
+    assert case_roles.sentinel_case_ids == ["musique_doc_9_grounded_silver_ball"]
+
+
 def test_build_smoke_build_command_respects_typed_config(tmp_path: Path) -> None:
     """The supervisor should emit the explicit prebuild contract from typed config."""
 
@@ -511,9 +524,12 @@ def test_verified_improvement_requires_target_gain_and_no_sentinel_regression() 
 def test_verified_improvement_falls_back_to_overall_when_family_has_no_target_cases() -> None:
     """Families with only sentinels should use overall score as the promotion surface."""
 
-    case_roles = load_family_case_role_index(
-        DEFAULT_CASES_PATH,
-        failure_family="grounded_named_endpoint_completeness",
+    case_roles = FamilyCaseRoleIndex(
+        target_case_ids=[],
+        sentinel_case_ids=[
+            "synthetic_sentinel_a",
+            "synthetic_sentinel_b",
+        ],
     )
     previous = VariantScoreSnapshot(
         overall_mean_score=0.6,
@@ -540,8 +556,8 @@ def test_verified_improvement_falls_back_to_overall_when_family_has_no_target_ca
 
     assert case_roles.target_case_ids == []
     assert case_roles.sentinel_case_ids == [
-        "musique_doc_5_grounded_medical_leave",
-        "musique_doc_9_grounded_silver_ball",
+        "synthetic_sentinel_a",
+        "synthetic_sentinel_b",
     ]
     assert decision.verified is True
     assert decision.promotion_improved is True
