@@ -14,6 +14,9 @@ Historical planning artifacts outside `docs/plans/` are not authoritative unless
 | 4 | [Graph Build Rearchitecture](04_graph_build_rearchitecture.md) | High | 🚧 In Progress | Clean graph rebuild |
 | 5 | [Extraction Quality Repair for Entity-Graph Builds](05_extraction_quality_repair.md) | High | 🚧 In Progress | Full MuSiQue rebuild, fixed-graph sanity rerun |
 | 6 | [Two-Pass Extraction Proof for Entity Completeness](06_two_pass_extraction_proof.md) | High | 🚧 In Progress | Next live entity-graph smoke rebuild |
+| 7 | [Extraction Iteration Supervisor](07_extraction_iteration_supervisor.md) | High | ✅ Complete | Reliable long-running autonomous extraction iteration |
+| 8 | [Supervisor Sentinel Gating](08_supervisor_sentinel_gating.md) | High | ✅ Complete | Trustworthy unattended extraction-family promotion |
+| 9 | [Typed Smoke-Build Gate for the Extraction Supervisor](09_supervisor_smoke_build_gate.md) | High | ✅ Complete | Trustworthy unattended promotion beyond prompt-eval-only evidence |
 
 ## Status Key
 
