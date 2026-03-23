@@ -135,6 +135,23 @@ def load_extraction_prompt_eval_cases(path: Path) -> list[ExtractionPromptEvalCa
     return [ExtractionPromptEvalCase.model_validate(item) for item in loaded]
 
 
+def filter_extraction_prompt_eval_cases(
+    cases: list[ExtractionPromptEvalCase],
+    *,
+    failure_family: str | None = None,
+) -> list[ExtractionPromptEvalCase]:
+    """Filter frozen cases to one failure family when requested."""
+
+    if not failure_family:
+        return list(cases)
+    normalized_family = failure_family.strip()
+    return [
+        case
+        for case in cases
+        if case.failure_family == normalized_family
+    ]
+
+
 def build_prompt_variants(
     *,
     graph_config: GraphConfig,
@@ -307,6 +324,11 @@ def parse_args() -> argparse.Namespace:
         help="Optional limit for a smaller live smoke run.",
     )
     parser.add_argument(
+        "--failure-family",
+        default=None,
+        help="Optional failure-family label used to filter the frozen cases before evaluation.",
+    )
+    parser.add_argument(
         "--project",
         default=DEFAULT_PROJECT_NAME,
         help="Observability project name for prompt_eval runs.",
@@ -340,9 +362,19 @@ async def run_cli(args: argparse.Namespace) -> int:
     """Execute the configured prompt_eval run and print a compact summary."""
 
     cases = load_extraction_prompt_eval_cases(args.cases_file)
+    failure_family = getattr(args, "failure_family", None)
+    cases = filter_extraction_prompt_eval_cases(
+        cases,
+        failure_family=failure_family,
+    )
     if args.case_limit is not None:
         cases = cases[: args.case_limit]
     if not cases:
+        if failure_family:
+            raise ValueError(
+                "Prompt-eval requires at least one frozen extraction case after "
+                f"failure-family filtering ({failure_family!r})."
+            )
         raise ValueError("Prompt-eval requires at least one frozen extraction case.")
 
     graph_config = GraphConfig(

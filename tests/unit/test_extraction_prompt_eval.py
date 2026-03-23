@@ -25,6 +25,7 @@ from eval.extraction_prompt_eval import (
     build_extraction_prompt_experiment,
     build_extraction_output_evaluator,
     build_prompt_variants,
+    filter_extraction_prompt_eval_cases,
     load_extraction_prompt_eval_cases,
     run_cli,
 )
@@ -100,6 +101,30 @@ def test_load_grounded_entity_smoke_cases_freezes_short_policy_slice() -> None:
         "grounded_named_endpoint_completeness",
     ]
     assert all(case.case_role == "sentinel" for case in cases)
+
+
+def test_filter_extraction_prompt_eval_cases_keeps_requested_failure_family_only() -> None:
+    """Failure-family filtering should isolate the intended prompt-eval slice."""
+
+    cases = load_extraction_prompt_eval_cases(DEFAULT_CASES_PATH)
+
+    filtered = filter_extraction_prompt_eval_cases(
+        cases,
+        failure_family="grounded_named_endpoint_completeness",
+    )
+
+    assert [case.id for case in filtered] == [
+        "musique_doc_5_grounded_medical_leave",
+        "musique_doc_9_grounded_silver_ball",
+    ]
+
+
+def test_filter_extraction_prompt_eval_cases_leaves_cases_unchanged_without_family() -> None:
+    """No failure-family argument should preserve the original frozen slice."""
+
+    cases = load_extraction_prompt_eval_cases(DEFAULT_CASES_PATH)
+
+    assert filter_extraction_prompt_eval_cases(cases) == cases
 
 
 def test_build_prompt_variants_adds_grounded_entity_variant() -> None:
