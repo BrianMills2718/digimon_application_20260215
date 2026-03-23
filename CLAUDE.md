@@ -39,31 +39,33 @@ meta:         extract_entities, reason_step, rerank, generate_answer, pcst_optim
 
 ## MCP Interface
 
-Agents compose operators via MCP tools. `list_operators` + `get_compatible_successors` for discovery. Each operator is an individual MCP tool.
+Agents compose operators via MCP tools. The full MCP server exposes ~67 individual tools, but **benchmarks use the consolidated tool surface** (10 tools, Plan #15).
 
-**Typical agent flow**:
+### Consolidated Benchmark Surface (default, DIGIMON_CONSOLIDATED_TOOLS=1)
+
+10 tools that cover all 28 operators via `method` argument:
 ```
-corpus_prepare → graph_build_er → entity_vdb_build →
-entity_vdb_search → relationship_onehop → chunk_occurrence → meta_generate_answer
+entity_search(method=semantic|string|tfidf)         — find entities by query
+entity_traverse(method=onehop|ppr|neighborhood|link) — explore graph from known entities
+entity_info(method=profile|resolve)                  — entity details or name resolution
+relationship_search(method=graph|semantic|score)      — find relationships
+chunk_retrieve(method=text|semantic|relationships|cooccurrence|by_ids|by_entities) — text evidence
+subgraph_extract(method=khop|steiner|pcst)           — extract subgraph structure
+community_search(method=from_entities|from_level)    — community retrieval
+reason(method=answer|decompose|synthesize|extract)   — LLM reasoning
+submit_answer                                         — submit final answer
+resources                                             — list available graphs/VDBs
 ```
 
-The agent decides the chain at runtime. A comparison question might skip multi-hop traversal; a 4-hop question might iterate deeper.
+Plus benchmark controls: `semantic_plan`, `todo_write`, `bridge_disambiguate`.
 
-**MCP tools (50+ total)**:
-- 5 graph build (er, rk, tree, tree_balanced, passage) + 1 corpus (prepare)
-- 7 entity (vdb_build, vdb_search, onehop, ppr, agent, link, tfidf)
-- 5 relationship (onehop, score_agg, agent, vdb_build, vdb_search)
-- 7 chunk (from_relationships, occurrence, get_text, aggregator, text_search, vdb_build, vdb_search)
-- 2 graph analysis (analyze, visualize) + 3 graph enrichment (augment_chunk_cooccurrence, augment_centrality, augment_synonym_edges) + 3 subgraph (khop_paths, steiner_tree, agent_path)
-- 3 community (build_communities, detect_from_entities, get_layer)
-- 5 meta (extract_entities, generate_answer, pcst_optimize, decompose_question, synthesize_answers)
-- 1 prerequisite build (build_sparse_matrices)
-- 2 config (get_config, set_agentic_model)
-- 2 operator discovery (list_operators, get_compatible_successors)
-- 1 graph types (list_graph_types)
-- 1 context (list_available_resources)
-- 4 cross-modal (convert_modality, validate_conversion, select_analysis_mode, list_modality_conversions)
-- 4 benchmark (semantic_plan, todo_write, bridge_disambiguate, submit_answer)
+Implementation: `Core/MCP/tool_consolidation.py` dispatches to existing operator implementations. Set `DIGIMON_CONSOLIDATED_TOOLS=0` for legacy individual tools.
+
+**Typical agent flow** (consolidated):
+```
+resources → entity_search(semantic) → entity_traverse(ppr) →
+relationship_search(graph) → chunk_retrieve(cooccurrence) → reason(answer) → submit_answer
+```
 
 **Common output-to-input mappings** (for agents composing chains):
 - `entity_vdb_search` → `similar_entities[].entity_name` → feed as `seed_entity_ids` to `entity_ppr`
@@ -181,7 +183,7 @@ This is development evidence only. The adaptive-routing thesis is **not yet test
 
 ## Literature Review (2026-03-23)
 
-Full review: `investigations/digimon/2026-03-23-graphrag-sota-review.md`
+Full review: `~/projects/investigations/digimon/2026-03-23-graphrag-sota-review.md`
 
 **Key findings**:
 - Graphs unambiguously help for multi-hop QA (vanilla RAG 27% → SOTA 58% EM)

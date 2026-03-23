@@ -1,6 +1,6 @@
 # Plan #14: Fix llm_client / Unblock Benchmark Runner
 
-**Status:** Planned
+**Status:** Complete
 **Type:** implementation
 **Priority:** High (blocks all empirical work)
 **Blocked By:** None
