@@ -17,6 +17,7 @@ Historical planning artifacts outside `docs/plans/` are not authoritative unless
 | 7 | [Extraction Iteration Supervisor](07_extraction_iteration_supervisor.md) | High | ✅ Complete | Reliable long-running autonomous extraction iteration |
 | 8 | [Supervisor Sentinel Gating](08_supervisor_sentinel_gating.md) | High | ✅ Complete | Trustworthy unattended extraction-family promotion |
 | 9 | [Typed Smoke-Build Gate for the Extraction Supervisor](09_supervisor_smoke_build_gate.md) | High | ✅ Complete | Trustworthy unattended promotion beyond prompt-eval-only evidence |
+| 10 | [Truthful Open-Schema Type Contract for TKG Extraction](10_open_schema_type_contract.md) | High | ✅ Complete | Further grounded-endpoint supervisor cycles, trustworthy open-TKG prompt iteration |
 
 ## Status Key
 

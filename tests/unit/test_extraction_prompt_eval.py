@@ -155,6 +155,22 @@ def test_build_prompt_variants_adds_grounded_entity_variant() -> None:
     assert "keep that meaning in descriptions or relationships instead of promoting it to a standalone entity" in variants[1].messages[0]["content"]
 
 
+def test_build_prompt_variants_uses_open_type_instruction_without_default_palette() -> None:
+    """Open TKG prompts should not inject the hidden four-type fallback palette."""
+
+    variants = build_prompt_variants(
+        graph_config=_tkg_graph_config(),
+        subject_model="test-model",
+        llm_task="digimon.extraction.prompt_eval",
+        max_budget=1.0,
+        prompt_family=PROMPT_FAMILY_TWO_PASS_ENTITY_INVENTORY,
+    )
+
+    prompt_text = variants[0].messages[0]["content"]
+    assert "short lowercase semantic class that best fits the entity" in prompt_text
+    assert "One of the following types when applicable: [organization, person, geo, event]" not in prompt_text
+
+
 def test_build_prompt_variants_supports_two_pass_entity_inventory_family() -> None:
     """Two-pass prompt eval should isolate the entity-inventory pass faithfully."""
 

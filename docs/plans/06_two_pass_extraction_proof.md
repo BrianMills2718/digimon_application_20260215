@@ -109,6 +109,15 @@ change that can address that without more one-pass prompt sprawl.
   looks less like "need more grounding wording" and more like "the default
   open-TKG type palette is too narrow and pushes the model toward event/date
   substitutions instead of diagnoses and awards."
+- 2026-03-22: That open-palette diagnosis was real. Plan #10 removed the
+  hidden fallback palette from `schema_mode=open`, and a fresh two-pass
+  entity-inventory rerun on the same grounded-endpoint fixture
+  (`gemini/gemini-2.5-flash`, execution `82bcc6e1f12d`) finished with both
+  variants at `0.975` mean and clean `award` typing for `Silver Ball`. The
+  remaining completeness miss is now more precise: `throat cancer` is still not
+  emitted as a standalone entity record, but the current evaluator still gives
+  that target case `0.95`. The next issue is therefore the strength of the
+  completeness gate, not the open-type contract.
 
 ### Steps
 

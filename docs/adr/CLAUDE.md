@@ -15,6 +15,9 @@ ADRs document significant architectural decisions.
 | 007 | Require Entity-Relationship Closure in Extraction Output | Accepted | 2026-03-21 |
 | 008 | Require Pure-Lane Extraction for Decision-Grade Build Comparisons | Accepted | 2026-03-21 |
 | 009 | Prefer Two-Pass Extraction if One-Pass Completeness Remains Unstable | Accepted | 2026-03-21 |
+| 010 | Tool Applicability Depends on Build Capabilities and Runtime Resources | Accepted | 2026-03-22 |
+| 011 | Add an External Extraction Iteration Supervisor | Accepted | 2026-03-22 |
+| 012 | Open Schema Mode Does Not Inject a Hidden Default Type Palette | Accepted | 2026-03-22 |
 
 ## ADR Lifecycle
 

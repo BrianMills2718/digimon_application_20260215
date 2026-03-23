@@ -465,7 +465,7 @@ def build_entity_extraction_prompt(
     )
     relationship_format_fields.append("<relationship_strength>")
 
-    entity_type_text = ", ".join(entity_types)
+    entity_type_contract = _build_entity_type_contract(entity_types)
     relation_type_text = ", ".join(relation_types) if relation_types else "any appropriate relation type"
     relationship_fields_text = "\n".join(relationship_fields)
     relationship_format = tuple_delimiter.join(relationship_format_fields)
@@ -493,7 +493,7 @@ Extract entities and relationships from the text to build a graph.
 
 -Entity Contract-
 - entity_name: Name of the entity, capitalized when appropriate
-- entity_type: One of the following types when applicable: [{entity_type_text}]
+{entity_type_contract}
 - entity_description: concise description of the entity
 Format each entity as ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>)
 
@@ -532,7 +532,7 @@ def build_entity_inventory_extraction_prompt(
     a separate parser for the proof slice.
     """
 
-    entity_type_text = ", ".join(entity_types)
+    entity_type_contract = _build_entity_type_contract(entity_types)
     schema_block = f"\n\n{schema_guidance}" if schema_guidance else ""
     slot_discipline_block = ""
     if include_slot_discipline:
@@ -555,7 +555,7 @@ Extract only the grounded entity inventory from the text.
 
 -Entity Contract-
 - entity_name: Name of the entity, capitalized when appropriate
-- entity_type: One of the following types when applicable: [{entity_type_text}]
+{entity_type_contract}
 - entity_description: concise description of the entity
 Format each entity as ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>)
 
@@ -569,6 +569,23 @@ Format each entity as ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<e
 
 Output:
 """
+
+
+def _build_entity_type_contract(entity_types: list[str]) -> str:
+    """Return the entity-type instruction for declared versus open palettes.
+
+    Open schema mode may intentionally provide no declared type list. In that
+    case the prompt must still require a stable semantic type label without
+    pretending the model is constrained to a hidden fallback palette.
+    """
+
+    if entity_types:
+        joined_entity_types = ", ".join(entity_types)
+        return f"- entity_type: One of the following types when applicable: [{joined_entity_types}]"
+    return (
+        "- entity_type: short lowercase semantic class that best fits the entity; "
+        "use a stable reusable type label, not a placeholder or document-specific phrase"
+    )
 
 
 def build_relationship_extraction_prompt(

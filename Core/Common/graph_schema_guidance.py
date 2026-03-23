@@ -31,6 +31,11 @@ def resolve_entity_type_names(graph_config: Any) -> list[str]:
         if names:
             return names
 
+    schema_mode = getattr(graph_config, "schema_mode", GraphSchemaMode.OPEN)
+    schema_mode = GraphSchemaMode.parse(schema_mode)
+    if schema_mode is GraphSchemaMode.OPEN:
+        return []
+
     return list(DEFAULT_ENTITY_TYPES)
 
 

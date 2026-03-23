@@ -44,5 +44,5 @@ This glossary defines canonical extraction/rebuild terms used across code, plans
 ## Open-TKG Type Policy Terms
 
 - **`open-TKG`**: A TKG build configured with `schema_mode=open`.
-- **`open-TKG type palette`**: The active declared type list for TKG prompts; this may be empty in fully open form or constrained to a specific subset.
+- **`open-TKG type palette`**: The active declared type list for TKG prompts in `schema_mode=open`; if no explicit `schema_entity_types` or custom ontology entity list is declared, the palette is empty and prompts ask for an open semantic type instead of injecting a hidden default list.
 - **`grounded entity`**: A candidate entity judged to be stable, nameable, and evidence-backed enough to appear in schema-rich or quality-focused runs.
