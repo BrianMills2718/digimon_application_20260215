@@ -107,6 +107,16 @@ Both route through `llm_client.acall_llm` — smart retry, fallback chains, cost
 - Do not materialize every detailed phrase as a node. Only materialize what must be directly operable for retrieval/composition.
 - Do not rely on buried description text as the only representation for answer-critical facts when the retrieval plan needs direct addressing.
 
+**Representation diagnosis loop**:
+1. Define the answer-critical datum.
+2. Locate where it exists now: node, edge, attribute, chunk evidence, buried description text, or nowhere.
+3. Define the minimal representation that would make the datum retrievable and composable.
+4. Check operator reachability from the question to that representation.
+5. Identify the first loss point: extraction, indexing, tool contract, routing, or answer synthesis.
+6. Group by reasoning-role failure family, not topic.
+7. Set stage-specific acceptance criteria for the suspected loss point.
+8. Prove the fix on the smallest real benchmark slice before scaling.
+
 **Resilience**:
 - **Checkpointing**: ERGraph persists after each batch of 50 chunks. Interrupted builds resume automatically.
 - **Fallback chain**: `llm.fallback_models` in Config2.yaml. Primary model fails → next model.
