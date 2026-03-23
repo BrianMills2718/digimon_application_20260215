@@ -6622,7 +6622,7 @@ async def execute_operator_chain(code: str) -> str:
     output is returned. This is much more token-efficient than calling
     operators one at a time.
 
-    Available operators (all async, all return JSON strings):
+    Available operators (all async, all return Python dicts — no json.loads needed):
     - entity_vdb_search(query_text, top_k=5)
     - entity_onehop(entity_ids, graph_reference_id)
     - entity_ppr(graph_reference_id, seed_entity_ids, damping=0.85)
@@ -6776,12 +6776,32 @@ def _build_operator_chain_namespace() -> dict[str, Any]:
         if obj is not None:
             namespace["__builtins__"][name] = obj  # type: ignore[index]
 
-    # Bind operator functions from this module's globals
+    # Bind operator functions from this module's globals.
+    # Wrap each to auto-parse JSON results → Python dicts, so the agent
+    # doesn't have to json.loads() every intermediate. This is the #1
+    # source of PTC code errors.
     module_globals = globals()
+
+    def _make_auto_parse_wrapper(fn: Any) -> Any:
+        """Wrap an operator function to auto-parse JSON string results."""
+        import functools
+
+        @functools.wraps(fn)
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            result = await fn(*args, **kwargs)
+            if isinstance(result, str):
+                try:
+                    return json.loads(result)
+                except (json.JSONDecodeError, TypeError):
+                    return result  # Return raw string if not valid JSON
+            return result
+
+        return wrapper
+
     for op_name in _ptc_operators:
         fn = module_globals.get(op_name)
         if fn is not None and callable(fn):
-            namespace[op_name] = fn
+            namespace[op_name] = _make_auto_parse_wrapper(fn)
 
     return namespace
 

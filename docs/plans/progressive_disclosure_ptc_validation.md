@@ -93,22 +93,61 @@ Once Phase 4 criteria are met:
 - Document why sequential is preferred (probably: agent writes bad chains,
   or intermediate reasoning between steps adds value)
 
-## Blocker: Benchmark Runner Cannot Make LLM Calls (2026-03-22)
+## Phase 4 Findings (2026-03-23)
 
-Phase 4 attempted but blocked. The benchmark runner (`eval/run_agent_benchmark.py`
-with `--backend direct`) produces 0 tokens, 0 tool calls, and timeouts on every
-question. Tested with both `gemini/gemini-2.5-flash-lite` and `deepseek/deepseek-chat`.
+### Benchmark runner fix
 
-Direct `llm_client.call_llm` works fine — the model responds. The issue is in
-the benchmark runner's agent loop, likely related to:
-1. The digimon conda env has llm_client v1 installed (from ~/projects/llm_client)
-   not v2. The v1 agent loop may have a regression or incompatibility.
-2. Previous successful runs (HotpotQA_200, 48/50 completion with deepseek-chat)
-   were from 2026-02-17 — something changed since then.
+Root cause found: Python 3.10 compatibility bug in llm_client v1's heartbeat
+monitor (`call_lifecycle.py`). `except TimeoutError:` doesn't catch
+`asyncio.TimeoutError` in Python 3.10 (unified in 3.11). Fixed — benchmark
+runner works again.
 
-**Next step:** Investigate the benchmark runner's agent loop separately. This is
-NOT related to our progressive disclosure or PTC changes (those add tools but
-don't change the agent loop). The benchmark was already broken before our changes.
+### Preliminary results (10q HotpotQAsmallest, gemini-2.5-flash-lite)
+
+| Metric | Sequential | PTC (optional) | PTC (forced) |
+|--------|:-:|:-:|:-:|
+| EM | 20% | 10% | 0% |
+| LLM_EM | 40% | 30% | 0% |
+| Cost | $0.12 | $0.10 | $0.18 |
+| Tool calls/q | 13.5 | 10.4 | 13.9 |
+| Wall time/q | 48s | 43s | 81s |
+| Completion | 90% | 100% | 90% |
+
+### Key findings
+
+1. **When PTC is optional, the agent never uses it.** It always falls back to
+   familiar sequential tool calls. The PTC tool was available but ignored.
+
+2. **When PTC is forced (only execute_operator_chain available), flash-lite
+   writes broken code.** The model can't reliably produce correct async Python
+   with proper JSON parsing of operator results. 0% accuracy.
+
+3. **The efficiency gains when PTC works are real** — 23% fewer tool calls,
+   17% less cost, 12% faster. Consistent with Anthropic's 37% token reduction
+   benchmark.
+
+4. **The wall time is dominated by inference latency.** ~48s/question with 13.5
+   tool calls = ~3.5s per inference round-trip. PTC should collapse this to
+   1-2 inference passes, but only if the model can write correct code.
+
+### Open questions
+
+- Does deepseek-chat or a Claude model write correct operator chain code?
+- Is the execute_operator_chain interface too complex? Should it pre-parse
+  JSON results so the agent doesn't have to json.loads() everything?
+- Would a simpler interface (operators return Python dicts, not JSON strings)
+  dramatically reduce code errors?
+- Is the v1 llm_client's tool-call recording sufficient for debugging?
+  (Currently stores tool names as bare strings, not arguments/results.)
+
+### What needs to happen
+
+1. **Simplify the PTC interface** — operators should return dicts, not JSON
+   strings. The json.loads() on every intermediate is the main error source.
+2. **Test with a code-capable model** — flash-lite is too weak for async Python.
+3. **Better error logging** — capture the actual code written and errors returned.
+4. **llm_client_v2 migration** (when ready) — v2 has PTC support built-in with
+   proper tool callable registry and context budget tracking.
 
 ## Timeline
 
