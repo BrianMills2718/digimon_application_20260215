@@ -177,6 +177,7 @@ def _install_asyncio_log_filter() -> None:
 CANONICAL_MODE = "hybrid"
 PROMPT_TEMPLATES = {
     "hybrid": Path(__file__).parent.parent / "prompts" / "agent_benchmark_hybrid.yaml",
+    "ptc": Path(__file__).parent.parent / "prompts" / "agent_benchmark_ptc.yaml",
     "codex_compact": Path(__file__).parent.parent / "prompts" / "agent_benchmark_codex_compact.yaml",
     "baseline": Path(__file__).parent.parent / "prompts" / "agent_benchmark_baseline.yaml",
     "fixed_graph": Path(__file__).parent.parent / "prompts" / "agent_benchmark_fixed_graph.yaml",
@@ -2086,7 +2087,7 @@ async def main() -> None:
                         help="Tool-call budget per question (non-agent models only).")
     parser.add_argument("--max-turns", type=int, default=80, help=argparse.SUPPRESS)
     parser.add_argument("--data-root", default="./Data", help="Data root directory")
-    parser.add_argument("--mode", default=CANONICAL_MODE, choices=["fixed", "adaptive", "aot", "hybrid", "baseline", "fixed_graph"],
+    parser.add_argument("--mode", default=CANONICAL_MODE, choices=["fixed", "adaptive", "aot", "hybrid", "ptc", "baseline", "fixed_graph"],
                         help="Prompt mode. 'hybrid' is canonical. 'baseline' uses no graph tools. 'fixed_graph' uses deterministic graph pipeline.")
     parser.add_argument("--condition", type=str, default=None,
                         help="Condition ID for experiment tracking (e.g. 'multi_query_v1', 'baseline'). Enables cohort comparison.")
