@@ -64,6 +64,13 @@ be promotable while required endpoint entities are still absent.
   truthful: the `medical_leave` target case still scored `0.95` overall while
   exposing `required_entity_recall=0.5`, so future unattended cycles can no
   longer treat that miss as near-perfect progress.
+- 2026-03-22: A live one-cycle supervisor proof on the checked-in config
+  (`live-grounded-onecycle-required-recall-20260322`) confirmed the unattended
+  path now records `promotion_basis=target_dimension`,
+  `promotion_dimension=required_entity_recall`, and `baseline_promotion_score=0.5`
+  while the same target still has `baseline_target_score=0.95`. The fix agent
+  correctly made no code change because the remaining problem is now genuine
+  extraction quality, not another gating bug.
 
 ### Steps
 
