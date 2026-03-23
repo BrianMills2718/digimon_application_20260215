@@ -20,8 +20,8 @@ family:
   comparison_method: paired_t
 
 agent:
-  selection_task: coding
-  model: codex
+  selection_task: code_generation
+  model: gpt-5.2-pro
   reasoning_effort: medium
   max_turns: 24
   max_budget: 0.0

@@ -29,6 +29,7 @@ from eval.run_extraction_iteration_supervisor import (
     load_config,
     read_state,
     run_loop,
+    validate_agent_runtime_dependencies,
 )
 
 
@@ -179,8 +180,8 @@ def _build_config(
             comparison_method="paired_t",
         ),
         agent=AgentConfig(
-            selection_task="coding",
-            model="codex",
+            selection_task="code_generation",
+            model="gpt-5.2-pro",
             reasoning_effort="medium",
             max_turns=4,
             max_budget=0.0,
@@ -220,6 +221,54 @@ def test_load_config_validates_pinned_production_model(tmp_path: Path) -> None:
 
     with pytest.raises(ValidationError):
         load_config(config_path)
+
+
+def test_agent_config_normalizes_coding_task_alias() -> None:
+    """Historical supervisor task aliases should map to llm_client's canonical task names."""
+
+    config = AgentConfig(selection_task="coding")
+
+    assert config.selection_task == "code_generation"
+
+
+def test_validate_agent_runtime_dependencies_rejects_missing_codex_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Codex-backed supervisor configs should fail before spending prompt-eval budget."""
+
+    config = _build_config(
+        tmp_path,
+        smoke_build=SmokeBuildConfig(
+            source_dataset="MuSiQue",
+            artifact_dataset_name="MuSiQue_supervisor_smoke",
+            graph_profile=GraphProfile.TKG,
+            working_dir=Path("results"),
+            required_artifacts=[
+                Path("er_graph/nx_data.graphml"),
+            ],
+        ),
+    ).model_copy(
+        update={
+            "agent": AgentConfig(
+                selection_task="code_generation",
+                model="codex",
+                reasoning_effort="medium",
+                max_turns=4,
+                max_budget=0.0,
+                yolo_mode=True,
+            )
+        }
+    )
+
+    # mock-ok: exercise the supervisor preflight path without requiring the real SDK layout.
+    monkeypatch.setattr(
+        "eval.run_extraction_iteration_supervisor.importlib.util.find_spec",
+        lambda name: None if name == "openai_codex_sdk" else object(),
+    )
+
+    with pytest.raises(RuntimeError, match="requires the Codex SDK"):
+        validate_agent_runtime_dependencies(config)
 
 
 def test_load_config_resolves_repo_root_relative_to_config_file(tmp_path: Path) -> None:

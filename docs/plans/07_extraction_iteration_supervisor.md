@@ -71,6 +71,15 @@ external stop/continue mechanics.
 - 2026-03-22: The supervisor entrypoint now bootstraps repo-root imports when
   launched as `python eval/run_extraction_iteration_supervisor.py`, so the
   checked-in command path works outside module-invocation-only contexts.
+- 2026-03-22: The first real one-cycle live proof exposed an operational config
+  drift before any fix attempt ran:
+  - the checked-in agent task label used the non-canonical `coding` alias
+  - the checked-in agent model used `codex`, but the repo `.venv` had plain
+    editable `llm_client` without the Codex SDK extra
+  The supervisor now normalizes `coding -> code_generation`, fails fast before
+  baseline prompt-eval spend when a Codex-backed agent lane lacks
+  `openai_codex_sdk`, and the checked-in config now uses the supported
+  non-Codex lane `gpt-5.2-pro` for the default fix-agent path.
 
 ---
 

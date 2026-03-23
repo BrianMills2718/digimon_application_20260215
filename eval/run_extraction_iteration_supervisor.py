@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.util
 import json
 import os
 import shlex
@@ -89,12 +90,24 @@ class FamilyConfig(BaseModel):
 class AgentConfig(BaseModel):
     """Coding-agent settings for one bounded extraction-family fix attempt."""
 
-    selection_task: str = "coding"
+    selection_task: str = "code_generation"
     model: str | None = None
     reasoning_effort: str | None = None
     max_turns: int = 24
     max_budget: float = 0.0
     yolo_mode: bool = True
+
+    @field_validator("selection_task")
+    @classmethod
+    def _normalize_selection_task(cls, value: str) -> str:
+        """Map historical supervisor task aliases onto llm_client's canonical names."""
+
+        normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+        alias_map = {
+            "coding": "code_generation",
+            "codegen": "code_generation",
+        }
+        return alias_map.get(normalized, normalized)
 
 
 class SmokeBuildConfig(BaseModel):
@@ -634,6 +647,30 @@ def run_prompt_eval_validation(
     return results_path, log_path
 
 
+def _model_uses_codex_sdk(model: str) -> bool:
+    """Return whether a configured agent model depends on the Codex SDK transport."""
+
+    normalized = model.strip().lower()
+    return normalized == "codex" or normalized.startswith("codex/") or normalized.startswith(
+        "codex-"
+    )
+
+
+def validate_agent_runtime_dependencies(config: ExtractionIterationConfig) -> None:
+    """Fail early when the configured agent lane requires missing runtime dependencies."""
+
+    model = config.agent.model
+    if model is None:
+        return
+    if _model_uses_codex_sdk(model) and importlib.util.find_spec("openai_codex_sdk") is None:
+        raise RuntimeError(
+            "Extraction supervisor agent.model requires the Codex SDK, but "
+            "openai_codex_sdk is not installed in this repo venv. Install "
+            "with './.venv/bin/pip install -e ~/projects/llm_client[codex]' "
+            "or choose a non-codex supervisor agent model."
+        )
+
+
 def build_smoke_build_command(
     *,
     repo_root: Path,
@@ -820,6 +857,7 @@ def run_loop(
     """Run the bounded extraction-family supervisor until time or cycle budget ends."""
 
     repo_root = Path(config.repo_root).resolve()
+    validate_agent_runtime_dependencies(config)
     case_roles = load_family_case_role_index(
         _repo_path(repo_root, config.family.cases_file),
         failure_family=config.family.name,
