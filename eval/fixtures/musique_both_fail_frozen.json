@@ -1,0 +1,174 @@
+
+[
+  {
+    "id": "2hop__170823_120171",
+    "question": "What year did the publisher of Labyrinth end?",
+    "gold": "1986",
+    "hops": "2hop",
+    "baseline_predicted": "1990",
+    "graphrag_predicted": "1985",
+    "graphrag_tools": [
+      "reason",
+      "entity_search",
+      "chunk_retrieve",
+      "submit_answer"
+    ],
+    "failure_family": "unclassified"
+  },
+  {
+    "id": "2hop__511454_120259",
+    "question": "When was Lady Godiva's birthplace abolished?",
+    "gold": "918",
+    "hops": "2hop",
+    "baseline_predicted": "1974",
+    "graphrag_predicted": "1795",
+    "graphrag_tools": [
+      "reason",
+      "entity_search",
+      "entity_search",
+      "chunk_retrieve",
+      "entity_info",
+      "chunk_retrieve",
+      "submit_answer"
+    ],
+    "failure_family": "unclassified"
+  },
+  {
+    "id": "4hop2__71753_648517_70784_79935",
+    "question": "When was the region immediately north of the region where Israel is located and the location of the Battle of Qurah and Umm al Maradim created?",
+    "gold": "1930",
+    "hops": "4hop2",
+    "baseline_predicted": "1967",
+    "graphrag_predicted": "1961",
+    "graphrag_tools": [
+      "reason",
+      "entity_search",
+      "entity_search",
+      "entity_info",
+      "relationship_search",
+      "entity_traverse",
+      "chunk_retrieve",
+      "entity_search",
+      "chunk_retrieve",
+      "chunk_retrieve",
+      "submit_answer"
+    ],
+    "failure_family": "unclassified"
+  },
+  {
+    "id": "4hop1__152562_5274_458768_33633",
+    "question": "When did the explorer reach the city where the headquarters of the only group larger than Vilaiyaadu Mankatha's record label is located?",
+    "gold": "August 3, 1769",
+    "hops": "4hop1",
+    "baseline_predicted": "2012-09-08",
+    "graphrag_predicted": "1513",
+    "graphrag_tools": [
+      "reason",
+      "resources",
+      "entity_search",
+      "entity_search",
+      "entity_info",
+      "entity_info",
+      "entity_info",
+      "entity_search",
+      "chunk_retrieve",
+      "entity_search",
+      "chunk_retrieve",
+      "entity_search",
+      "chunk_retrieve",
+      "chunk_retrieve",
+      "todo_write",
+      "submit_answer"
+    ],
+    "failure_family": "unclassified"
+  },
+  {
+    "id": "3hop1__305282_282081_73772",
+    "question": "When was the start of the battle of the birthplace of the performer of III?",
+    "gold": "December 14, 1814",
+    "hops": "3hop1",
+    "baseline_predicted": "July 10, 1943",
+    "graphrag_predicted": "January 8, 1815",
+    "graphrag_tools": [
+      "reason",
+      "entity_search",
+      "entity_search",
+      "entity_search",
+      "chunk_retrieve",
+      "relationship_search",
+      "chunk_retrieve",
+      "entity_traverse",
+      "chunk_retrieve",
+      "submit_answer"
+    ],
+    "failure_family": "unclassified"
+  },
+  {
+    "id": "2hop__655505_110949",
+    "question": "What is the Till dom ensamma performer's birth date?",
+    "gold": "11 September 1962",
+    "hops": "2hop",
+    "baseline_predicted": "15 January 1986",
+    "graphrag_predicted": "Pernilla Wahlgren",
+    "graphrag_tools": [
+      "reason",
+      "entity_search",
+      "entity_search",
+      "entity_search",
+      "relationship_search",
+      "chunk_retrieve",
+      "chunk_retrieve",
+      "entity_info",
+      "relationship_search",
+      "submit_answer"
+    ],
+    "failure_family": "unclassified"
+  },
+  {
+    "id": "4hop3__754156_88460_30152_20999",
+    "question": "How were the people from whom new coins were a proclamation of independence by the Somali Muslim Ajuran Empire expelled from the country between Thailand and A Lim's country?",
+    "gold": "The dynasty regrouped and defeated the Portuguese",
+    "hops": "4hop3",
+    "baseline_predicted": "I\u2019m sorry, but I can\u2019t determine the answer from the available evidence.",
+    "graphrag_predicted": "following its communist takeover",
+    "graphrag_tools": [
+      "reason",
+      "entity_search",
+      "entity_search",
+      "entity_info",
+      "entity_info",
+      "entity_info",
+      "entity_info",
+      "chunk_retrieve",
+      "chunk_retrieve",
+      "chunk_retrieve",
+      "submit_answer"
+    ],
+    "failure_family": "unclassified"
+  },
+  {
+    "id": "2hop__199513_801817",
+    "question": "What is the birthplace of the person after whom S\u00e3o Jos\u00e9 dos Campos was named?",
+    "gold": "Nazareth",
+    "hops": "2hop",
+    "baseline_predicted": "Bethlehem",
+    "graphrag_predicted": "Jerusalem",
+    "graphrag_tools": [
+      "reason",
+      "resources",
+      "entity_search",
+      "chunk_retrieve",
+      "entity_search",
+      "relationship_search",
+      "chunk_retrieve",
+      "entity_search",
+      "chunk_retrieve",
+      "submit_answer",
+      "submit_answer",
+      "reason",
+      "submit_answer"
+    ],
+    "failure_family": "unclassified"
+  }
+]
+
