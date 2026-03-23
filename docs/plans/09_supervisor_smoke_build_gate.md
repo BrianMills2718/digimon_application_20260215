@@ -1,6 +1,6 @@
 # Plan #9: Typed Smoke-Build Gate for the Extraction Supervisor
 
-**Status:** In Progress
+**Status:** Completed
 **Type:** implementation
 **Priority:** High
 **Blocked By:** Plan #8
@@ -57,6 +57,7 @@ that explicitly instead of letting prompt-only wins commit blindly.
   - source dataset
   - artifact dataset alias
   - graph profile
+  - explicit force-rebuild policy for repeated unattended runs
   - chunk limit
   - strict-slot / two-pass / grounded flags
   - lane policy
@@ -103,11 +104,11 @@ that explicitly instead of letting prompt-only wins commit blindly.
 
 ## Acceptance Criteria
 
-- [ ] the supervisor config can declare a smoke-build slice without hidden hardcoded build values
-- [ ] the supervisor can build a truthful `prebuild_graph.py` command from typed config
-- [ ] successful smoke-build validation requires both process success and required artifact existence
-- [ ] smoke-build failure reverts the worktree and blocks commit
-- [ ] the checked-in completeness supervisor config includes the first smoke-build slice
+- [x] the supervisor config can declare a smoke-build slice without hidden hardcoded build values
+- [x] the supervisor can build a truthful `prebuild_graph.py` command from typed config
+- [x] successful smoke-build validation requires both process success and required artifact existence
+- [x] smoke-build failure reverts the worktree and blocks commit
+- [x] the checked-in completeness supervisor config includes the first smoke-build slice
 
 ---
 
@@ -117,3 +118,8 @@ that explicitly instead of letting prompt-only wins commit blindly.
   skip VDB builds unless they are needed for a later gate.
 - Do not collapse this into semantic graph-quality assertions yet. First prove
   that the supervisor can drive and verify the operational build path cleanly.
+- Verified on 2026-03-22 with:
+  - `python -m py_compile eval/run_extraction_iteration_supervisor.py tests/unit/test_extraction_iteration_supervisor.py`
+  - `git diff --check`
+  - `./.venv/bin/python -m pytest -q tests/unit/test_extraction_iteration_supervisor.py tests/unit/test_prebuild_graph_cli.py`
+  - `./.venv/bin/python eval/run_extraction_iteration_supervisor.py --config eval/continuous_extraction_iteration.grounded_named_endpoint.yaml --session-id smoke-supervisor-config --max-cycles 0`

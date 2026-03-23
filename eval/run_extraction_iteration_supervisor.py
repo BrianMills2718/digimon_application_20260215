@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """Run a bounded extraction-quality improvement supervisor for one failure family.
 
-This supervisor is the first active-repo successor to the older DIGIMON
-autoloop. It intentionally narrows scope to the current extraction-quality
-critical path:
+This supervisor is the active-repo successor to the older DIGIMON autoloop.
+It intentionally narrows scope to the current extraction-quality critical path:
 
 1. baseline one failure-family prompt-eval gate
 2. invoke a coding agent against that family context
 3. rerun the same gate
-4. revert on no improvement, commit on verified improvement
+4. optionally prove the live graph-build path still works on a smoke slice
+5. revert on failure, commit on verified improvement
 
-The initial slice does not own smoke-build orchestration or benchmark reruns.
-Those remain follow-up phases once the family-scoped prompt-eval loop is stable.
+The current architecture still stops short of full benchmark reruns. The goal
+of this thin slice is to promote only those changes that improve the pinned
+prompt-eval lane and keep the bounded live build path healthy.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from pydantic import BaseModel, Field, field_validator
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from Core.Schema.GraphBuildTypes import GraphProfile, GraphSchemaMode
 from eval.extraction_prompt_eval import (
     PROMPT_FAMILY_ONE_PASS,
     PROMPT_FAMILY_TWO_PASS_ENTITY_INVENTORY,
@@ -95,6 +97,77 @@ class AgentConfig(BaseModel):
     yolo_mode: bool = True
 
 
+class SmokeBuildConfig(BaseModel):
+    """Typed operational smoke-build contract run before supervisor promotion."""
+
+    source_dataset: str
+    artifact_dataset_name: str
+    graph_profile: GraphProfile
+    schema_mode: GraphSchemaMode | None = None
+    force_rebuild: bool = True
+    chunk_limit: int | None = None
+    strict_extraction_slot_discipline: bool = False
+    two_pass_extraction: bool = False
+    prefer_grounded_named_entities: bool = False
+    lane_policy: Literal["pure", "reliability"] = "pure"
+    skip_entity_vdb: bool = True
+    skip_relationship_vdb: bool = True
+    working_dir: Path = Path("results")
+    required_artifacts: list[Path] = Field(default_factory=list)
+
+    @field_validator("graph_profile")
+    @classmethod
+    def _validate_entity_graph_profile(cls, value: GraphProfile) -> GraphProfile:
+        """Restrict smoke builds to the entity-graph profiles supported by prebuild."""
+
+        if value not in {GraphProfile.KG, GraphProfile.TKG, GraphProfile.RKG}:
+            raise ValueError(
+                "Smoke-build graph_profile must be one of KG, TKG, or RKG "
+                "to match eval/prebuild_graph.py."
+            )
+        return value
+
+    @field_validator("chunk_limit")
+    @classmethod
+    def _validate_chunk_limit(cls, value: int | None) -> int | None:
+        """Require a positive chunk limit when the smoke gate narrows the corpus slice."""
+
+        if value is not None and value < 1:
+            raise ValueError("Smoke-build chunk_limit must be at least 1 when provided.")
+        return value
+
+    @field_validator("working_dir")
+    @classmethod
+    def _validate_relative_working_dir(cls, value: Path) -> Path:
+        """Keep smoke-build artifact roots repo-relative and explicit."""
+
+        if value.is_absolute():
+            raise ValueError("Smoke-build working_dir must be relative to repo_root.")
+        return value
+
+    @field_validator("required_artifacts")
+    @classmethod
+    def _validate_required_artifacts(cls, value: list[Path]) -> list[Path]:
+        """Require explicit relative artifact checks rooted under the artifact namespace."""
+
+        if not value:
+            raise ValueError("Smoke-build required_artifacts must not be empty.")
+        for artifact_path in value:
+            if artifact_path.is_absolute():
+                raise ValueError(
+                    "Smoke-build required_artifacts must be relative to "
+                    "working_dir/artifact_dataset_name."
+                )
+        return value
+
+
+class SmokeBuildValidationResult(BaseModel):
+    """Operational proof returned by a successful smoke-build gate."""
+
+    log_file: Path
+    checked_artifact_paths: list[Path]
+
+
 class ExtractionIterationConfig(BaseModel):
     """Top-level typed configuration for the extraction supervisor."""
 
@@ -102,6 +175,7 @@ class ExtractionIterationConfig(BaseModel):
     runtime: RuntimeConfig
     family: FamilyConfig
     agent: AgentConfig
+    smoke_build: SmokeBuildConfig | None = None
     prompt_template: Path
 
 
@@ -560,6 +634,98 @@ def run_prompt_eval_validation(
     return results_path, log_path
 
 
+def build_smoke_build_command(
+    *,
+    repo_root: Path,
+    config: ExtractionIterationConfig,
+) -> list[str]:
+    """Build the prebuild-graph smoke command from the typed supervisor contract."""
+
+    smoke_build = config.smoke_build
+    if smoke_build is None:
+        raise RuntimeError("Cannot build a smoke-build command without smoke_build config.")
+
+    cmd = [
+        *config.runtime.python_command,
+        str(_repo_path(repo_root, "eval/prebuild_graph.py")),
+        smoke_build.source_dataset,
+        "--artifact-dataset-name",
+        smoke_build.artifact_dataset_name,
+        "--graph-profile",
+        smoke_build.graph_profile.value.lower(),
+        "--lane-policy",
+        smoke_build.lane_policy,
+    ]
+    if smoke_build.force_rebuild:
+        cmd.append("--force-rebuild")
+    if smoke_build.schema_mode is not None:
+        cmd.extend(["--schema-mode", smoke_build.schema_mode.value])
+    if smoke_build.chunk_limit is not None:
+        cmd.extend(["--chunk-limit", str(smoke_build.chunk_limit)])
+    if smoke_build.strict_extraction_slot_discipline:
+        cmd.append("--strict-extraction-slot-discipline")
+    if smoke_build.two_pass_extraction:
+        cmd.append("--two-pass-extraction")
+    if smoke_build.prefer_grounded_named_entities:
+        cmd.append("--prefer-grounded-named-entities")
+    if smoke_build.skip_entity_vdb:
+        cmd.append("--skip-entity-vdb")
+    if smoke_build.skip_relationship_vdb:
+        cmd.append("--skip-relationship-vdb")
+    return cmd
+
+
+def expected_smoke_artifact_paths(
+    *,
+    repo_root: Path,
+    smoke_build: SmokeBuildConfig,
+) -> list[Path]:
+    """Resolve required smoke-build artifact paths from the typed artifact contract."""
+
+    artifact_root = (
+        _repo_path(repo_root, smoke_build.working_dir)
+        / smoke_build.artifact_dataset_name
+    )
+    return [artifact_root / relative_path for relative_path in smoke_build.required_artifacts]
+
+
+def run_smoke_build_validation(
+    *,
+    repo_root: Path,
+    config: ExtractionIterationConfig,
+    session_dir: Path,
+    label: str,
+) -> SmokeBuildValidationResult:
+    """Run the bounded live-build gate and verify its required artifacts exist."""
+
+    smoke_build = config.smoke_build
+    if smoke_build is None:
+        raise RuntimeError("Cannot run smoke-build validation without smoke_build config.")
+
+    log_path = session_dir / f"{label}_smoke_build.log"
+    run_logged_command(
+        cmd=build_smoke_build_command(repo_root=repo_root, config=config),
+        cwd=repo_root,
+        log_path=log_path,
+        timeout_seconds=config.runtime.validation_timeout_seconds,
+    )
+    checked_artifact_paths = expected_smoke_artifact_paths(
+        repo_root=repo_root,
+        smoke_build=smoke_build,
+    )
+    missing_artifacts = [path for path in checked_artifact_paths if not path.exists()]
+    if missing_artifacts:
+        missing_text = ", ".join(str(path) for path in missing_artifacts)
+        raise RuntimeError(
+            "Smoke build completed without all required artifacts: "
+            f"{missing_text}"
+        )
+    return SmokeBuildValidationResult(
+        log_file=log_path,
+        checked_artifact_paths=checked_artifact_paths,
+    )
+
+
 async def run_fix_agent(
     *,
     repo_root: Path,
@@ -684,6 +850,7 @@ def run_loop(
         failure_family=config.family.name,
         target_case_count=len(case_roles.target_case_ids),
         sentinel_case_count=len(case_roles.sentinel_case_ids),
+        smoke_build_enabled=config.smoke_build is not None,
     )
 
     while _utc_now() < deadline:
@@ -835,6 +1002,33 @@ def run_loop(
                 **decision.model_dump(mode="json"),
             )
             continue
+
+        if config.smoke_build is not None:
+            try:
+                smoke_result = run_smoke_build_validation(
+                    repo_root=repo_root,
+                    config=config,
+                    session_dir=session_dir,
+                    label=f"cycle_{state.cycle_index:04d}",
+                )
+            except Exception as exc:
+                revert_worktree(repo_root)
+                append_ledger_event(
+                    ledger_path,
+                    event_type="cycle_smoke_build_error",
+                    cycle=state.cycle_index,
+                    **describe_exception(exc),
+                )
+                continue
+            append_ledger_event(
+                ledger_path,
+                event_type="smoke_build_completed",
+                cycle=state.cycle_index,
+                log_file=str(smoke_result.log_file),
+                checked_artifacts=[
+                    str(path) for path in smoke_result.checked_artifact_paths
+                ],
+            )
 
         commit_hash = commit_verified_improvement(
             repo_root=repo_root,

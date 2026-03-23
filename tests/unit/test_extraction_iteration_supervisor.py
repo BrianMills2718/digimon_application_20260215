@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from Core.Schema.GraphBuildTypes import GraphProfile, GraphSchemaMode
 from eval.extraction_prompt_eval import DEFAULT_CASES_PATH
 from eval.run_extraction_iteration_supervisor import (
     AgentConfig,
@@ -16,8 +17,11 @@ from eval.run_extraction_iteration_supervisor import (
     FamilyConfig,
     ImprovementDecision,
     RuntimeConfig,
+    SmokeBuildConfig,
     VariantScoreSnapshot,
+    build_smoke_build_command,
     evaluate_improvement,
+    expected_smoke_artifact_paths,
     extract_variant_mean_score,
     extract_variant_score_snapshot,
     has_strictly_improved,
@@ -148,7 +152,11 @@ def _init_temp_repo(repo_root: Path) -> None:
     )
 
 
-def _build_config(repo_root: Path) -> ExtractionIterationConfig:
+def _build_config(
+    repo_root: Path,
+    *,
+    smoke_build: SmokeBuildConfig | None = None,
+) -> ExtractionIterationConfig:
     """Return a narrow supervisor config for unit-test loop execution."""
 
     return ExtractionIterationConfig(
@@ -178,6 +186,7 @@ def _build_config(repo_root: Path) -> ExtractionIterationConfig:
             max_budget=0.0,
             yolo_mode=True,
         ),
+        smoke_build=smoke_build,
         prompt_template=Path("prompts/continuous_extraction_fix.yaml"),
     )
 
@@ -296,6 +305,86 @@ def test_extract_variant_score_snapshot_reads_role_scoped_scores(tmp_path: Path)
     assert snapshot.target_mean_score == pytest.approx(0.9)
     assert snapshot.sentinel_mean_score == pytest.approx(0.7)
     assert snapshot.overall_mean_score == pytest.approx(0.8)
+
+
+def test_build_smoke_build_command_respects_typed_config(tmp_path: Path) -> None:
+    """The supervisor should emit the explicit prebuild contract from typed config."""
+
+    config = _build_config(
+        tmp_path,
+        smoke_build=SmokeBuildConfig(
+            source_dataset="MuSiQue",
+            artifact_dataset_name="MuSiQue_supervisor_smoke",
+            graph_profile=GraphProfile.TKG,
+            schema_mode=GraphSchemaMode.OPEN,
+            force_rebuild=True,
+            chunk_limit=10,
+            strict_extraction_slot_discipline=True,
+            two_pass_extraction=True,
+            prefer_grounded_named_entities=True,
+            lane_policy="pure",
+            skip_entity_vdb=True,
+            skip_relationship_vdb=True,
+            working_dir=Path("results"),
+            required_artifacts=[
+                Path("er_graph/nx_data.graphml"),
+                Path("er_graph/graph_build_manifest.json"),
+            ],
+        ),
+    )
+
+    cmd = build_smoke_build_command(repo_root=tmp_path, config=config)
+
+    assert cmd == [
+        "./.venv/bin/python",
+        "-u",
+        str(tmp_path / "eval/prebuild_graph.py"),
+        "MuSiQue",
+        "--artifact-dataset-name",
+        "MuSiQue_supervisor_smoke",
+        "--graph-profile",
+        "tkg",
+        "--lane-policy",
+        "pure",
+        "--force-rebuild",
+        "--schema-mode",
+        "open",
+        "--chunk-limit",
+        "10",
+        "--strict-extraction-slot-discipline",
+        "--two-pass-extraction",
+        "--prefer-grounded-named-entities",
+        "--skip-entity-vdb",
+        "--skip-relationship-vdb",
+    ]
+
+
+def test_expected_smoke_artifact_paths_use_working_dir_and_alias(tmp_path: Path) -> None:
+    """Artifact checks should derive from the typed working-dir and namespace contract."""
+
+    smoke_build = SmokeBuildConfig(
+        source_dataset="MuSiQue",
+        artifact_dataset_name="MuSiQue_supervisor_smoke",
+        graph_profile=GraphProfile.TKG,
+        working_dir=Path("tmp/results"),
+        required_artifacts=[
+            Path("er_graph/nx_data.graphml"),
+            Path("er_graph/graph_build_manifest.json"),
+        ],
+    )
+
+    artifact_paths = expected_smoke_artifact_paths(
+        repo_root=tmp_path,
+        smoke_build=smoke_build,
+    )
+
+    assert artifact_paths == [
+        tmp_path / "tmp/results" / "MuSiQue_supervisor_smoke" / "er_graph/nx_data.graphml",
+        tmp_path
+        / "tmp/results"
+        / "MuSiQue_supervisor_smoke"
+        / "er_graph/graph_build_manifest.json",
+    ]
 
 
 def test_improvement_gate_requires_strictly_higher_target_score() -> None:
@@ -586,3 +675,98 @@ def test_run_loop_commits_verified_improvement(
     assert validation_event["promotion_improved"] is True
     assert validation_event["sentinel_non_regression"] is True
     assert "verified_commit_created" in ledger_event_types
+
+
+def test_run_loop_reverts_when_smoke_build_fails_after_prompt_eval_gain(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Prompt-eval improvement alone should not commit when the live smoke build fails."""
+
+    repo_root = tmp_path / "repo"
+    _init_temp_repo(repo_root)
+    config = _build_config(
+        repo_root,
+        smoke_build=SmokeBuildConfig(
+            source_dataset="MuSiQue",
+            artifact_dataset_name="MuSiQue_supervisor_smoke",
+            graph_profile=GraphProfile.TKG,
+            chunk_limit=10,
+            strict_extraction_slot_discipline=True,
+            two_pass_extraction=True,
+            prefer_grounded_named_entities=True,
+            lane_policy="pure",
+            skip_entity_vdb=True,
+            skip_relationship_vdb=True,
+            working_dir=Path("results"),
+            required_artifacts=[
+                Path("er_graph/nx_data.graphml"),
+                Path("er_graph/graph_build_manifest.json"),
+            ],
+        ),
+    )
+
+    # mock-ok: avoid manipulating real process signal handlers in a unit test.
+    monkeypatch.setattr(
+        "eval.run_extraction_iteration_supervisor.install_signal_stop_flag",
+        lambda: {"stop": False},
+    )
+
+    def fake_validation(*, session_dir: Path, label: str, **_: object) -> tuple[Path, Path]:
+        """Emit a verified prompt-eval improvement so the smoke gate becomes decisive."""
+
+        results_path = session_dir / f"{label}_prompt_eval.json"
+        log_path = session_dir / f"{label}_prompt_eval.log"
+        trial_scores = (
+            {"case_target": 0.6, "case_sentinel": 0.8}
+            if label == "baseline"
+            else {"case_target": 0.9, "case_sentinel": 0.8}
+        )
+        _write_prompt_eval_artifact(
+            results_path,
+            variant_name=config.family.target_variant,
+            mean_score=sum(trial_scores.values()) / len(trial_scores),
+            trial_scores=trial_scores,
+        )
+        log_path.write_text(f"{label}\n", encoding="utf-8")
+        return results_path, log_path
+
+    async def fake_run_fix_agent(**_: object) -> str:
+        """Simulate one improving edit that must still be reverted on smoke failure."""
+
+        (repo_root / "tracked.txt").write_text("candidate change\n", encoding="utf-8")
+        return "candidate change"
+
+    def fake_run_smoke_build_validation(**_: object) -> object:
+        """Force the live smoke gate to fail after prompt-eval success."""
+
+        raise RuntimeError("smoke build failed")
+
+    # mock-ok: avoid real prompt_eval subprocesses; this test targets supervisor orchestration.
+    monkeypatch.setattr(
+        "eval.run_extraction_iteration_supervisor.run_prompt_eval_validation",
+        fake_validation,
+    )
+    # mock-ok: avoid a real coding-agent call; revert behavior is the unit under test.
+    monkeypatch.setattr(
+        "eval.run_extraction_iteration_supervisor.run_fix_agent",
+        fake_run_fix_agent,
+    )
+    # mock-ok: avoid a real prebuild run; smoke-gate failure handling is the unit under test.
+    monkeypatch.setattr(
+        "eval.run_extraction_iteration_supervisor.run_smoke_build_validation",
+        fake_run_smoke_build_validation,
+    )
+
+    session_dir = run_loop(config, session_id="test-smoke-failure", max_cycles=1)
+
+    state = read_state(session_dir / "state.json")
+    ledger_lines = (session_dir / "ledger.jsonl").read_text(encoding="utf-8").splitlines()
+    ledger_event_types = [json.loads(line)["event_type"] for line in ledger_lines]
+
+    assert state.latest_commit is None
+    assert (repo_root / "tracked.txt").read_text(encoding="utf-8") == "base\n"
+    assert _run_git(repo_root, "status", "--short") == ""
+    assert "validation_completed" in ledger_event_types
+    assert "cycle_smoke_build_error" in ledger_event_types
+    assert "verified_commit_created" not in ledger_event_types

@@ -27,4 +27,22 @@ agent:
   max_budget: 0.0
   yolo_mode: true
 
+smoke_build:
+  source_dataset: MuSiQue
+  artifact_dataset_name: MuSiQue_supervisor_grounded_named_endpoint_smoke
+  graph_profile: TKG
+  schema_mode: open
+  force_rebuild: true
+  chunk_limit: 10
+  strict_extraction_slot_discipline: true
+  two_pass_extraction: true
+  prefer_grounded_named_entities: true
+  lane_policy: pure
+  skip_entity_vdb: true
+  skip_relationship_vdb: true
+  working_dir: results
+  required_artifacts:
+    - er_graph/nx_data.graphml
+    - er_graph/graph_build_manifest.json
+
 prompt_template: prompts/continuous_extraction_fix.yaml
