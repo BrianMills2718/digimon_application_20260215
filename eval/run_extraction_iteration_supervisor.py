@@ -22,6 +22,7 @@ import json
 import os
 import shlex
 import signal
+import statistics
 import subprocess
 import sys
 import time
@@ -35,7 +36,12 @@ from pydantic import BaseModel, Field, field_validator
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from eval.extraction_prompt_eval import PROMPT_FAMILY_ONE_PASS, PROMPT_FAMILY_TWO_PASS_ENTITY_INVENTORY
+from eval.extraction_prompt_eval import (
+    PROMPT_FAMILY_ONE_PASS,
+    PROMPT_FAMILY_TWO_PASS_ENTITY_INVENTORY,
+    filter_extraction_prompt_eval_cases,
+    load_extraction_prompt_eval_cases,
+)
 from llm_client import acall_llm, get_model, render_prompt
 
 
@@ -108,6 +114,34 @@ class LoopState(BaseModel):
     baseline_results_file: str | None = None
     baseline_log_file: str | None = None
     latest_commit: str | None = None
+
+
+class FamilyCaseRoleIndex(BaseModel):
+    """Frozen-case role metadata for one failure-family supervisor slice."""
+
+    target_case_ids: list[str] = Field(default_factory=list)
+    sentinel_case_ids: list[str] = Field(default_factory=list)
+
+
+class VariantScoreSnapshot(BaseModel):
+    """Role-aware score snapshot extracted from one prompt-eval artifact."""
+
+    overall_mean_score: float
+    promotion_mean_score: float
+    promotion_basis: Literal["target", "overall"]
+    target_mean_score: float | None = None
+    sentinel_mean_score: float | None = None
+    n_overall_trials: int
+    n_target_trials: int = 0
+    n_sentinel_trials: int = 0
+
+
+class ImprovementDecision(BaseModel):
+    """Decision payload for whether a supervisor cycle earned promotion."""
+
+    verified: bool
+    promotion_improved: bool
+    sentinel_non_regression: bool
 
 
 def _utc_now() -> datetime:
@@ -294,10 +328,183 @@ def extract_variant_mean_score(results_path: Path, *, variant_name: str) -> floa
     return float(score)
 
 
+def load_family_case_role_index(
+    cases_path: Path,
+    *,
+    failure_family: str,
+) -> FamilyCaseRoleIndex:
+    """Load the frozen case-role metadata for one failure family."""
+
+    cases = filter_extraction_prompt_eval_cases(
+        load_extraction_prompt_eval_cases(cases_path),
+        failure_family=failure_family,
+    )
+    if not cases:
+        raise RuntimeError(
+            "Extraction supervisor could not find any frozen cases for failure family "
+            f"{failure_family!r} in {cases_path}"
+        )
+    return FamilyCaseRoleIndex(
+        target_case_ids=sorted(case.id for case in cases if case.case_role == "target"),
+        sentinel_case_ids=sorted(
+            case.id for case in cases if case.case_role == "sentinel"
+        ),
+    )
+
+
+def _extract_matching_trial_scores(
+    *,
+    trials_payload: list[object],
+    variant_name: str,
+    input_ids: set[str] | None = None,
+) -> list[float]:
+    """Collect scored trial values for one variant and optional input-id subset."""
+
+    matched_scores: list[float] = []
+    for raw_trial in trials_payload:
+        if not isinstance(raw_trial, dict):
+            continue
+        if raw_trial.get("variant_name") != variant_name:
+            continue
+        input_id = raw_trial.get("input_id")
+        if input_ids is not None and input_id not in input_ids:
+            continue
+        score = raw_trial.get("score")
+        if score is None:
+            continue
+        matched_scores.append(float(score))
+    return matched_scores
+
+
+def extract_variant_score_snapshot(
+    results_path: Path,
+    *,
+    variant_name: str,
+    case_roles: FamilyCaseRoleIndex,
+) -> VariantScoreSnapshot:
+    """Extract role-aware variant scores from one prompt-eval JSON artifact."""
+
+    payload = json.loads(results_path.read_text(encoding="utf-8"))
+    experiment = payload.get("experiment")
+    if not isinstance(experiment, dict):
+        raise RuntimeError(f"Prompt-eval artifact missing experiment payload: {results_path}")
+    trials_payload = experiment.get("trials")
+    if not isinstance(trials_payload, list):
+        raise RuntimeError(f"Prompt-eval artifact missing trial payload: {results_path}")
+
+    overall_scores = _extract_matching_trial_scores(
+        trials_payload=trials_payload,
+        variant_name=variant_name,
+    )
+    if not overall_scores:
+        raise RuntimeError(
+            f"Prompt-eval artifact missing scored trials for variant {variant_name!r}: {results_path}"
+        )
+
+    target_ids = set(case_roles.target_case_ids)
+    sentinel_ids = set(case_roles.sentinel_case_ids)
+    target_scores = (
+        _extract_matching_trial_scores(
+            trials_payload=trials_payload,
+            variant_name=variant_name,
+            input_ids=target_ids,
+        )
+        if target_ids
+        else []
+    )
+    sentinel_scores = (
+        _extract_matching_trial_scores(
+            trials_payload=trials_payload,
+            variant_name=variant_name,
+            input_ids=sentinel_ids,
+        )
+        if sentinel_ids
+        else []
+    )
+
+    if target_ids and not target_scores:
+        raise RuntimeError(
+            "Prompt-eval artifact missing scored target trials for variant "
+            f"{variant_name!r}: {results_path}"
+        )
+    if sentinel_ids and not sentinel_scores:
+        raise RuntimeError(
+            "Prompt-eval artifact missing scored sentinel trials for variant "
+            f"{variant_name!r}: {results_path}"
+        )
+
+    target_mean_score = statistics.mean(target_scores) if target_scores else None
+    sentinel_mean_score = (
+        statistics.mean(sentinel_scores) if sentinel_scores else None
+    )
+    promotion_basis: Literal["target", "overall"] = (
+        "target" if target_mean_score is not None else "overall"
+    )
+    promotion_mean_score = (
+        target_mean_score if target_mean_score is not None else statistics.mean(overall_scores)
+    )
+
+    return VariantScoreSnapshot(
+        overall_mean_score=statistics.mean(overall_scores),
+        promotion_mean_score=promotion_mean_score,
+        promotion_basis=promotion_basis,
+        target_mean_score=target_mean_score,
+        sentinel_mean_score=sentinel_mean_score,
+        n_overall_trials=len(overall_scores),
+        n_target_trials=len(target_scores),
+        n_sentinel_trials=len(sentinel_scores),
+    )
+
+
 def has_strictly_improved(previous_score: float, current_score: float) -> bool:
     """Return whether the current gate score is strictly better than baseline."""
 
     return current_score > previous_score
+
+
+def evaluate_improvement(
+    previous: VariantScoreSnapshot,
+    current: VariantScoreSnapshot,
+) -> ImprovementDecision:
+    """Evaluate whether a supervisor cycle can be promoted."""
+
+    promotion_improved = has_strictly_improved(
+        previous.promotion_mean_score,
+        current.promotion_mean_score,
+    )
+    sentinel_non_regression = True
+    if previous.sentinel_mean_score is not None:
+        if current.sentinel_mean_score is None:
+            raise RuntimeError(
+                "Current score snapshot is missing sentinel scores required by the baseline gate."
+            )
+        sentinel_non_regression = (
+            current.sentinel_mean_score >= previous.sentinel_mean_score
+        )
+    return ImprovementDecision(
+        verified=promotion_improved and sentinel_non_regression,
+        promotion_improved=promotion_improved,
+        sentinel_non_regression=sentinel_non_regression,
+    )
+
+
+def snapshot_ledger_fields(
+    snapshot: VariantScoreSnapshot,
+    *,
+    prefix: str,
+) -> dict[str, float | int | str | None]:
+    """Render compact ledger fields for one score snapshot."""
+
+    return {
+        f"{prefix}_overall_score": snapshot.overall_mean_score,
+        f"{prefix}_promotion_score": snapshot.promotion_mean_score,
+        f"{prefix}_promotion_basis": snapshot.promotion_basis,
+        f"{prefix}_target_score": snapshot.target_mean_score,
+        f"{prefix}_sentinel_score": snapshot.sentinel_mean_score,
+        f"{prefix}_overall_trials": snapshot.n_overall_trials,
+        f"{prefix}_target_trials": snapshot.n_target_trials,
+        f"{prefix}_sentinel_trials": snapshot.n_sentinel_trials,
+    }
 
 
 def build_prompt_eval_command(
@@ -397,8 +604,8 @@ def commit_verified_improvement(
     repo_root: Path,
     family_name: str,
     target_variant: str,
-    previous_score: float,
-    current_score: float,
+    previous_snapshot: VariantScoreSnapshot,
+    current_snapshot: VariantScoreSnapshot,
     validation_results_file: Path,
 ) -> str:
     """Create a detailed git commit for a verified extraction-family improvement."""
@@ -410,14 +617,21 @@ def commit_verified_improvement(
     subject = (
         "[Plan #7] "
         f"supervisor: improve {family_name} "
-        f"({target_variant} {previous_score:.3f}->{current_score:.3f})"
+        f"({target_variant} "
+        f"{previous_snapshot.promotion_mean_score:.3f}->"
+        f"{current_snapshot.promotion_mean_score:.3f})"
     )
     body_lines = [
         "Verified extraction-family improvement:",
         f"- failure_family: {family_name}",
         f"- target_variant: {target_variant}",
-        f"- previous_score: {previous_score:.6f}",
-        f"- current_score: {current_score:.6f}",
+        f"- promotion_basis: {current_snapshot.promotion_basis}",
+        f"- previous_promotion_score: {previous_snapshot.promotion_mean_score:.6f}",
+        f"- current_promotion_score: {current_snapshot.promotion_mean_score:.6f}",
+        f"- previous_target_score: {previous_snapshot.target_mean_score}",
+        f"- current_target_score: {current_snapshot.target_mean_score}",
+        f"- previous_sentinel_score: {previous_snapshot.sentinel_mean_score}",
+        f"- current_sentinel_score: {current_snapshot.sentinel_mean_score}",
         f"- validation_results_file: {validation_results_file}",
         "- changed_files:",
         *[f"  - {path}" for path in changed_files],
@@ -440,6 +654,10 @@ def run_loop(
     """Run the bounded extraction-family supervisor until time or cycle budget ends."""
 
     repo_root = Path(config.repo_root).resolve()
+    case_roles = load_family_case_role_index(
+        _repo_path(repo_root, config.family.cases_file),
+        failure_family=config.family.name,
+    )
     results_root = _repo_path(repo_root, config.runtime.results_root)
     session_dir = results_root / session_id
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -464,6 +682,8 @@ def run_loop(
         session_id=session_id,
         deadline=deadline.isoformat(),
         failure_family=config.family.name,
+        target_case_count=len(case_roles.target_case_ids),
+        sentinel_case_count=len(case_roles.sentinel_case_ids),
     )
 
     while _utc_now() < deadline:
@@ -495,6 +715,11 @@ def run_loop(
                 session_dir=session_dir,
                 label="baseline",
             )
+            baseline_snapshot = extract_variant_score_snapshot(
+                baseline_results_file,
+                variant_name=config.family.target_variant,
+                case_roles=case_roles,
+            )
             state.baseline_results_file = str(baseline_results_file)
             state.baseline_log_file = str(baseline_log_file)
             write_state(state_path, state)
@@ -504,16 +729,14 @@ def run_loop(
                 cycle=state.cycle_index,
                 results_file=str(baseline_results_file),
                 log_file=str(baseline_log_file),
-                baseline_score=extract_variant_mean_score(
-                    baseline_results_file,
-                    variant_name=config.family.target_variant,
-                ),
+                **snapshot_ledger_fields(baseline_snapshot, prefix="baseline"),
             )
 
         baseline_results_file = Path(state.baseline_results_file)
-        baseline_score = extract_variant_mean_score(
+        baseline_snapshot = extract_variant_score_snapshot(
             baseline_results_file,
             variant_name=config.family.target_variant,
+            case_roles=case_roles,
         )
 
         state.cycle_index += 1
@@ -522,8 +745,8 @@ def run_loop(
             ledger_path,
             event_type="cycle_started",
             cycle=state.cycle_index,
-            baseline_score=baseline_score,
             failure_family=config.family.name,
+            **snapshot_ledger_fields(baseline_snapshot, prefix="baseline"),
         )
 
         try:
@@ -574,9 +797,10 @@ def run_loop(
                 session_dir=session_dir,
                 label=f"cycle_{state.cycle_index:04d}",
             )
-            current_score = extract_variant_mean_score(
+            current_snapshot = extract_variant_score_snapshot(
                 validation_results_file,
                 variant_name=config.family.target_variant,
+                case_roles=case_roles,
             )
         except Exception as exc:
             revert_worktree(repo_root)
@@ -588,25 +812,27 @@ def run_loop(
             )
             continue
 
+        decision = evaluate_improvement(baseline_snapshot, current_snapshot)
         append_ledger_event(
             ledger_path,
             event_type="validation_completed",
             cycle=state.cycle_index,
             results_file=str(validation_results_file),
             log_file=str(validation_log_file),
-            previous_score=baseline_score,
-            current_score=current_score,
-            improved=has_strictly_improved(baseline_score, current_score),
+            **snapshot_ledger_fields(baseline_snapshot, prefix="previous"),
+            **snapshot_ledger_fields(current_snapshot, prefix="current"),
+            **decision.model_dump(mode="json"),
         )
 
-        if not has_strictly_improved(baseline_score, current_score):
+        if not decision.verified:
             revert_worktree(repo_root)
             append_ledger_event(
                 ledger_path,
-                event_type="cycle_reverted_no_improvement",
+                event_type="cycle_reverted_gate_failure",
                 cycle=state.cycle_index,
-                previous_score=baseline_score,
-                current_score=current_score,
+                **snapshot_ledger_fields(baseline_snapshot, prefix="previous"),
+                **snapshot_ledger_fields(current_snapshot, prefix="current"),
+                **decision.model_dump(mode="json"),
             )
             continue
 
@@ -614,8 +840,8 @@ def run_loop(
             repo_root=repo_root,
             family_name=config.family.name,
             target_variant=config.family.target_variant,
-            previous_score=baseline_score,
-            current_score=current_score,
+            previous_snapshot=baseline_snapshot,
+            current_snapshot=current_snapshot,
             validation_results_file=validation_results_file,
         )
         state.baseline_results_file = str(validation_results_file)

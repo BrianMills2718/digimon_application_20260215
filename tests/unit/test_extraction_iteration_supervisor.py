@@ -9,13 +9,19 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from eval.extraction_prompt_eval import DEFAULT_CASES_PATH
 from eval.run_extraction_iteration_supervisor import (
     AgentConfig,
     ExtractionIterationConfig,
     FamilyConfig,
+    ImprovementDecision,
     RuntimeConfig,
+    VariantScoreSnapshot,
+    evaluate_improvement,
     extract_variant_mean_score,
+    extract_variant_score_snapshot,
     has_strictly_improved,
+    load_family_case_role_index,
     load_config,
     read_state,
     run_loop,
@@ -35,8 +41,16 @@ def _run_git(repo_root: Path, *args: str) -> str:
     return completed.stdout.strip()
 
 
-def _write_prompt_eval_artifact(path: Path, *, variant_name: str, mean_score: float) -> None:
+def _write_prompt_eval_artifact(
+    path: Path,
+    *,
+    variant_name: str,
+    mean_score: float,
+    trial_scores: dict[str, float] | None = None,
+) -> None:
     """Write the smallest prompt-eval JSON payload the supervisor needs to read."""
+
+    scored_trials = trial_scores or {"case_target": mean_score}
 
     payload = {
         "experiment": {
@@ -44,11 +58,52 @@ def _write_prompt_eval_artifact(path: Path, *, variant_name: str, mean_score: fl
                 variant_name: {
                     "mean_score": mean_score,
                 }
-            }
+            },
+            "trials": [
+                {
+                    "variant_name": variant_name,
+                    "input_id": input_id,
+                    "replicate": 0,
+                    "output": "",
+                    "score": score,
+                    "cost": 0.0,
+                    "latency_ms": 0.0,
+                    "tokens_used": 0,
+                    "error": None,
+                }
+                for input_id, score in scored_trials.items()
+            ],
         }
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _write_cases_fixture(
+    path: Path,
+    *,
+    roles_by_case_id: dict[str, str],
+) -> None:
+    """Write a minimal frozen-case fixture for supervisor role-index tests."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cases = [
+        {
+            "id": case_id,
+            "source_doc_id": 1,
+            "title": case_id,
+            "focus": case_id,
+            "failure_family": "grounded_named_endpoint_completeness",
+            "case_role": role,
+            "content": f"content for {case_id}",
+            "expected": {
+                "min_valid_entities": 1,
+                "min_valid_relationships": 0,
+            },
+        }
+        for case_id, role in roles_by_case_id.items()
+    ]
+    path.write_text(json.dumps(cases, indent=2) + "\n", encoding="utf-8")
 
 
 def _init_temp_repo(repo_root: Path) -> None:
@@ -57,6 +112,13 @@ def _init_temp_repo(repo_root: Path) -> None:
     repo_root.mkdir(parents=True, exist_ok=True)
     (repo_root / ".gitignore").write_text("results/\n", encoding="utf-8")
     (repo_root / "tracked.txt").write_text("base\n", encoding="utf-8")
+    _write_cases_fixture(
+        repo_root / "eval/fixtures/test_cases.json",
+        roles_by_case_id={
+            "case_target": "target",
+            "case_sentinel": "sentinel",
+        },
+    )
     subprocess.run(["git", "init"], cwd=str(repo_root), check=True, capture_output=True, text=True)
     subprocess.run(
         ["git", "config", "user.email", "digimon-tests@example.com"],
@@ -72,7 +134,11 @@ def _init_temp_repo(repo_root: Path) -> None:
         capture_output=True,
         text=True,
     )
-    subprocess.run(["git", "add", ".gitignore", "tracked.txt"], cwd=str(repo_root), check=True)
+    subprocess.run(
+        ["git", "add", ".gitignore", "tracked.txt", "eval/fixtures/test_cases.json"],
+        cwd=str(repo_root),
+        check=True,
+    )
     subprocess.run(
         ["git", "commit", "-m", "initial state"],
         cwd=str(repo_root),
@@ -97,7 +163,7 @@ def _build_config(repo_root: Path) -> ExtractionIterationConfig:
         ),
         family=FamilyConfig(
             name="grounded_named_endpoint_completeness",
-            cases_file=Path("eval/fixtures/musique_tkg_extraction_prompt_eval_cases.json"),
+            cases_file=Path("eval/fixtures/test_cases.json"),
             prompt_family="two_pass_entity_inventory",
             target_variant="grounded_entity_contract",
             production_model="gemini/gemini-2.5-flash",
@@ -195,12 +261,122 @@ def test_extract_variant_mean_score_reads_prompt_eval_output_json(tmp_path: Path
     ) == pytest.approx(0.875)
 
 
+def test_extract_variant_score_snapshot_reads_role_scoped_scores(tmp_path: Path) -> None:
+    """The supervisor should parse target and sentinel scores from prompt-eval trials."""
+
+    artifact_path = tmp_path / "result.json"
+    cases_path = tmp_path / "cases.json"
+    _write_cases_fixture(
+        cases_path,
+        roles_by_case_id={
+            "case_target": "target",
+            "case_sentinel": "sentinel",
+        },
+    )
+    _write_prompt_eval_artifact(
+        artifact_path,
+        variant_name="grounded_entity_contract",
+        mean_score=0.8,
+        trial_scores={
+            "case_target": 0.9,
+            "case_sentinel": 0.7,
+        },
+    )
+
+    snapshot = extract_variant_score_snapshot(
+        artifact_path,
+        variant_name="grounded_entity_contract",
+        case_roles=load_family_case_role_index(
+            cases_path,
+            failure_family="grounded_named_endpoint_completeness",
+        ),
+    )
+
+    assert snapshot.promotion_basis == "target"
+    assert snapshot.target_mean_score == pytest.approx(0.9)
+    assert snapshot.sentinel_mean_score == pytest.approx(0.7)
+    assert snapshot.overall_mean_score == pytest.approx(0.8)
+
+
 def test_improvement_gate_requires_strictly_higher_target_score() -> None:
     """The supervisor must reject flat or worse cycles."""
 
     assert has_strictly_improved(0.5, 0.5001) is True
     assert has_strictly_improved(0.5, 0.5) is False
     assert has_strictly_improved(0.5, 0.4) is False
+
+
+def test_verified_improvement_requires_target_gain_and_no_sentinel_regression() -> None:
+    """Promotion should fail when sentinels regress, even if targets improve."""
+
+    previous = VariantScoreSnapshot(
+        overall_mean_score=0.7,
+        promotion_mean_score=0.8,
+        promotion_basis="target",
+        target_mean_score=0.8,
+        sentinel_mean_score=0.6,
+        n_overall_trials=2,
+        n_target_trials=1,
+        n_sentinel_trials=1,
+    )
+    current = VariantScoreSnapshot(
+        overall_mean_score=0.75,
+        promotion_mean_score=0.9,
+        promotion_basis="target",
+        target_mean_score=0.9,
+        sentinel_mean_score=0.5,
+        n_overall_trials=2,
+        n_target_trials=1,
+        n_sentinel_trials=1,
+    )
+
+    decision = evaluate_improvement(previous, current)
+
+    assert decision == ImprovementDecision(
+        verified=False,
+        promotion_improved=True,
+        sentinel_non_regression=False,
+    )
+
+
+def test_verified_improvement_falls_back_to_overall_when_family_has_no_target_cases() -> None:
+    """Families with only sentinels should use overall score as the promotion surface."""
+
+    case_roles = load_family_case_role_index(
+        DEFAULT_CASES_PATH,
+        failure_family="grounded_named_endpoint_completeness",
+    )
+    previous = VariantScoreSnapshot(
+        overall_mean_score=0.6,
+        promotion_mean_score=0.6,
+        promotion_basis="overall",
+        target_mean_score=None,
+        sentinel_mean_score=0.6,
+        n_overall_trials=2,
+        n_target_trials=0,
+        n_sentinel_trials=2,
+    )
+    current = VariantScoreSnapshot(
+        overall_mean_score=0.7,
+        promotion_mean_score=0.7,
+        promotion_basis="overall",
+        target_mean_score=None,
+        sentinel_mean_score=0.7,
+        n_overall_trials=2,
+        n_target_trials=0,
+        n_sentinel_trials=2,
+    )
+
+    decision = evaluate_improvement(previous, current)
+
+    assert case_roles.target_case_ids == []
+    assert case_roles.sentinel_case_ids == [
+        "musique_doc_5_grounded_medical_leave",
+        "musique_doc_9_grounded_silver_ball",
+    ]
+    assert decision.verified is True
+    assert decision.promotion_improved is True
+    assert decision.sentinel_non_regression is True
 
 
 def test_run_loop_reverts_no_improvement_and_persists_state(
@@ -224,11 +400,14 @@ def test_run_loop_reverts_no_improvement_and_persists_state(
 
         results_path = session_dir / f"{label}_prompt_eval.json"
         log_path = session_dir / f"{label}_prompt_eval.log"
-        score = 0.7
         _write_prompt_eval_artifact(
             results_path,
             variant_name=config.family.target_variant,
-            mean_score=score,
+            mean_score=0.7,
+            trial_scores={
+                "case_target": 0.7,
+                "case_sentinel": 0.7,
+            },
         )
         log_path.write_text(f"{label}\n", encoding="utf-8")
         return results_path, log_path
@@ -261,15 +440,15 @@ def test_run_loop_reverts_no_improvement_and_persists_state(
     assert (repo_root / "tracked.txt").read_text(encoding="utf-8") == "base\n"
     assert _run_git(repo_root, "status", "--short") == ""
     assert "baseline_recorded" in ledger_event_types
-    assert "cycle_reverted_no_improvement" in ledger_event_types
+    assert "cycle_reverted_gate_failure" in ledger_event_types
     assert ledger_event_types[-1] == "session_stopped"
 
 
-def test_run_loop_commits_verified_improvement(
+def test_run_loop_reverts_when_sentinel_regresses(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """An improving cycle should create a real git commit and advance the baseline."""
+    """A target gain should still be rejected when the sentinel score drops."""
 
     repo_root = tmp_path / "repo"
     _init_temp_repo(repo_root)
@@ -282,15 +461,20 @@ def test_run_loop_commits_verified_improvement(
     )
 
     def fake_validation(*, session_dir: Path, label: str, **_: object) -> tuple[Path, Path]:
-        """Emit an improving prompt-eval score on the cycle rerun."""
+        """Emit a target improvement that still regresses the protected sentinel."""
 
         results_path = session_dir / f"{label}_prompt_eval.json"
         log_path = session_dir / f"{label}_prompt_eval.log"
-        score = 0.7 if label == "baseline" else 0.9
+        trial_scores = (
+            {"case_target": 0.6, "case_sentinel": 0.8}
+            if label == "baseline"
+            else {"case_target": 0.9, "case_sentinel": 0.4}
+        )
         _write_prompt_eval_artifact(
             results_path,
             variant_name=config.family.target_variant,
-            mean_score=score,
+            mean_score=sum(trial_scores.values()) / len(trial_scores),
+            trial_scores=trial_scores,
         )
         log_path.write_text(f"{label}\n", encoding="utf-8")
         return results_path, log_path
@@ -316,7 +500,82 @@ def test_run_loop_commits_verified_improvement(
 
     state = read_state(session_dir / "state.json")
     ledger_lines = (session_dir / "ledger.jsonl").read_text(encoding="utf-8").splitlines()
-    ledger_event_types = [json.loads(line)["event_type"] for line in ledger_lines]
+    ledger_events = [json.loads(line) for line in ledger_lines]
+    ledger_event_types = [event["event_type"] for event in ledger_events]
+
+    validation_event = next(
+        event for event in ledger_events if event["event_type"] == "validation_completed"
+    )
+
+    assert state.latest_commit is None
+    assert (repo_root / "tracked.txt").read_text(encoding="utf-8") == "base\n"
+    assert _run_git(repo_root, "status", "--short") == ""
+    assert validation_event["promotion_improved"] is True
+    assert validation_event["sentinel_non_regression"] is False
+    assert "cycle_reverted_gate_failure" in ledger_event_types
+
+
+def test_run_loop_commits_verified_improvement(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An improving cycle should create a real git commit and advance the baseline."""
+
+    repo_root = tmp_path / "repo"
+    _init_temp_repo(repo_root)
+    config = _build_config(repo_root)
+
+    # mock-ok: avoid manipulating real process signal handlers in a unit test.
+    monkeypatch.setattr(
+        "eval.run_extraction_iteration_supervisor.install_signal_stop_flag",
+        lambda: {"stop": False},
+    )
+
+    def fake_validation(*, session_dir: Path, label: str, **_: object) -> tuple[Path, Path]:
+        """Emit a target improvement while holding the sentinel steady."""
+
+        results_path = session_dir / f"{label}_prompt_eval.json"
+        log_path = session_dir / f"{label}_prompt_eval.log"
+        trial_scores = (
+            {"case_target": 0.6, "case_sentinel": 0.8}
+            if label == "baseline"
+            else {"case_target": 0.9, "case_sentinel": 0.8}
+        )
+        _write_prompt_eval_artifact(
+            results_path,
+            variant_name=config.family.target_variant,
+            mean_score=sum(trial_scores.values()) / len(trial_scores),
+            trial_scores=trial_scores,
+        )
+        log_path.write_text(f"{label}\n", encoding="utf-8")
+        return results_path, log_path
+
+    async def fake_run_fix_agent(**_: object) -> str:
+        """Simulate one agent edit that should survive a verified improvement."""
+
+        (repo_root / "tracked.txt").write_text("improved\n", encoding="utf-8")
+        return "improved"
+
+    # mock-ok: avoid real prompt_eval subprocesses; this test targets supervisor gating.
+    monkeypatch.setattr(
+        "eval.run_extraction_iteration_supervisor.run_prompt_eval_validation",
+        fake_validation,
+    )
+    # mock-ok: avoid a real coding-agent call; commit behavior is the unit under test.
+    monkeypatch.setattr(
+        "eval.run_extraction_iteration_supervisor.run_fix_agent",
+        fake_run_fix_agent,
+    )
+
+    session_dir = run_loop(config, session_id="test-commit", max_cycles=1)
+
+    state = read_state(session_dir / "state.json")
+    ledger_lines = (session_dir / "ledger.jsonl").read_text(encoding="utf-8").splitlines()
+    ledger_events = [json.loads(line) for line in ledger_lines]
+    ledger_event_types = [event["event_type"] for event in ledger_events]
+    validation_event = next(
+        event for event in ledger_events if event["event_type"] == "validation_completed"
+    )
 
     assert state.latest_commit is not None
     assert state.baseline_results_file is not None
@@ -324,4 +583,6 @@ def test_run_loop_commits_verified_improvement(
     assert (repo_root / "tracked.txt").read_text(encoding="utf-8") == "improved\n"
     assert _run_git(repo_root, "status", "--short") == ""
     assert int(_run_git(repo_root, "rev-list", "--count", "HEAD")) == 2
+    assert validation_event["promotion_improved"] is True
+    assert validation_event["sentinel_non_regression"] is True
     assert "verified_commit_created" in ledger_event_types
