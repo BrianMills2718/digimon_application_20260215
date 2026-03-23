@@ -8,11 +8,9 @@ class RetrieverConfig(YamlModel):
     use_entity_similarity_for_ppr: bool = True
     top_k_entity_for_ppr: int = 8
     node_specificity: bool = True
-    damping: float = 0.1
+    damping: float = 0.5  # PPR damping factor. HippoRAG uses 0.5, PropRAG uses 0.75. Higher = more edge following.
     top_k: int = 5
     k_nei: int = 3
-    node_specificity: bool = True
-    damping: float = 0.1
     max_token_for_local_context: int = 4800  # maximum token  * 0.4
     max_token_for_global_context: int = 4000 # maximum token  * 0.3
     local_max_token_for_text_unit: int = 4000  # 12000 * 0.33

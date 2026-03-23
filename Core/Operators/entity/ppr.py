@@ -60,7 +60,8 @@ async def _run_ppr(ctx: Any, query: str, seed_entities: list) -> np.ndarray:
             else:
                 reset_prob[idx] = 1.0
 
-    return await ctx.graph.personalized_pagerank([reset_prob])
+    damping = getattr(ctx.config, "damping", 0.5)
+    return await ctx.graph.personalized_pagerank([reset_prob], damping=damping)
 
 
 async def entity_ppr(

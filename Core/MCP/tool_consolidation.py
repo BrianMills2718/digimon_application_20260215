@@ -167,8 +167,8 @@ def build_consolidated_tools(dms: Any) -> list:
     import json as _json
 
     async def entity_search(
-        method: str = "semantic",
         query: str,
+        method: str = "semantic",
         dataset_name: str = "",
         top_k: int = 5,
         graph_reference_id: str = "",
