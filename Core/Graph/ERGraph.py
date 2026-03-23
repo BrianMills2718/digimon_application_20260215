@@ -153,13 +153,21 @@ class ERGraph(DelimiterExtractionMixin, BaseGraph):
             # Two-step NER + OpenIE → KG-level (entity name, relation name, edge weight)
             content = chunk_info.content
             entities = await self._named_entity_recognition(content)
-            triples = await self._openie_post_ner_extract(content, entities)
+            # Skip relationship extraction if configured (EcphoryRAG hypothesis:
+            # co-occurrence edges may be sufficient without explicit relationships)
+            if getattr(self.config, "skip_relationship_extraction", False):
+                triples = []
+            else:
+                triples = await self._openie_post_ner_extract(content, entities)
             return await self._build_graph_from_tuples(entities, triples, chunk_key)
         else:
             # ENTITY_EXTRACTION prompt via mixin → TKG/RKG-level attributes
             # Uses ENTITY_EXTRACTION_KEYWORD when enable_edge_keywords=True (RKG)
             # Uses ENTITY_EXTRACTION otherwise (TKG)
             records = await self._extract_records_from_chunk(chunk_info)
+            if getattr(self.config, "skip_relationship_extraction", False):
+                # Keep only entity records, drop relationships
+                records = [r for r in records if not hasattr(r, 'src_id')]
             return await self._build_graph_from_records(records, chunk_key)
 
     # ------------------------------------------------------------------

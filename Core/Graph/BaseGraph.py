@@ -622,8 +622,9 @@ class BaseGraph(ABC):
             for k, v in m_edges.items():
                 maybe_edges[tuple(sorted(k))].extend(v)
 
-        # Add co-occurrence edges if enabled in config
-        if getattr(self.config, "enable_chunk_cooccurrence", False):
+        # Add co-occurrence edges if enabled in config (or auto-enabled when relationships are skipped)
+        skip_rels = getattr(self.config, "skip_relationship_extraction", False)
+        if getattr(self.config, "enable_chunk_cooccurrence", False) or skip_rels:
             chunk_to_entities: dict[str, list[str]] = defaultdict(list)
             for entity_name, entity_list in maybe_nodes.items():
                 for entity in entity_list:
