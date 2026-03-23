@@ -93,8 +93,25 @@ Once Phase 4 criteria are met:
 - Document why sequential is preferred (probably: agent writes bad chains,
   or intermediate reasoning between steps adds value)
 
+## Blocker: Benchmark Runner Cannot Make LLM Calls (2026-03-22)
+
+Phase 4 attempted but blocked. The benchmark runner (`eval/run_agent_benchmark.py`
+with `--backend direct`) produces 0 tokens, 0 tool calls, and timeouts on every
+question. Tested with both `gemini/gemini-2.5-flash-lite` and `deepseek/deepseek-chat`.
+
+Direct `llm_client.call_llm` works fine — the model responds. The issue is in
+the benchmark runner's agent loop, likely related to:
+1. The digimon conda env has llm_client v1 installed (from ~/projects/llm_client)
+   not v2. The v1 agent loop may have a regression or incompatibility.
+2. Previous successful runs (HotpotQA_200, 48/50 completion with deepseek-chat)
+   were from 2026-02-17 — something changed since then.
+
+**Next step:** Investigate the benchmark runner's agent loop separately. This is
+NOT related to our progressive disclosure or PTC changes (those add tools but
+don't change the agent loop). The benchmark was already broken before our changes.
+
 ## Timeline
 
-- Phase 3: 1 session (skill document)
-- Phase 4: 1 session (benchmark runs, ~$5-10 in LLM costs)
-- Phase 5: 1 session (cleanup, if Phase 4 passes)
+- Phase 3: **DONE** (skill document at .claude/skills/digimon-operators/)
+- Phase 4: **BLOCKED** on benchmark runner fix
+- Phase 5: Depends on Phase 4
