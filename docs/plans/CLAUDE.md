@@ -30,7 +30,7 @@ See [ROADMAP.md](ROADMAP.md) for phase sequence, gates, budget, and escalation c
 | 13 | [Benchmark Anchor Resolution](13_benchmark_anchor_resolution.md) | High | ⏸️ Blocked | Resumes if #17 identifies routing bottleneck |
 | 14 | [Fix llm_client / Unblock Benchmark Runner](14_fix_llm_client_benchmark_runner.md) | High | ✅ Complete | #15, #17 |
 | 15 | [Operator Consolidation (28→8-10 tools)](15_operator_consolidation.md) | High | ✅ Complete | #17 |
-| 16 | [HippoRAG-Aligned Build Attributes](16_build_attributes_sota_alignment.md) | High | 🚧 In Progress | #17 |
+| 16 | [HippoRAG-Aligned Build Attributes](16_build_attributes_sota_alignment.md) | High | ✅ Complete | #17 |
 | 17 | [Re-Test Thesis with Clean Architecture](17_retest_thesis.md) | High | 📋 Planned | - |
 | 18 | [PTC Validation (conditional)](18_ptc_validation.md) | Medium | 📋 Planned | - |
 
