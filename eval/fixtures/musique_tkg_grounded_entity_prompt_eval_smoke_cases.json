@@ -107,6 +107,26 @@
     }
   },
   {
+    "id": "musique_doc_0_grounded_broken_cheekbone",
+    "source_doc_id": 0,
+    "title": "Lionel Messi",
+    "focus": "Grounded-endpoint completeness should keep a specific injury phrase while dropping nearby equipment/context nouns.",
+    "failure_family": "grounded_named_endpoint_completeness",
+    "case_role": "target",
+    "content": "A week after suffering a broken cheekbone during a league match, Messi was allowed to start the game on the condition that he wear a plastic protector; soon hindered by the mask, he took it off and scored two goals in 10 minutes before his substitution.",
+    "expected": {
+      "min_valid_entities": 2,
+      "min_valid_relationships": 0,
+      "required_entity_names": [
+        "Messi",
+        "broken cheekbone"
+      ],
+      "forbidden_entity_names": [
+        "mask"
+      ]
+    }
+  },
+  {
     "id": "musique_doc_9_grounded_silver_ball",
     "source_doc_id": 9,
     "title": "Lionel Messi",

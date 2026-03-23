@@ -438,14 +438,17 @@ def test_extract_variant_score_snapshot_uses_configured_promotion_dimension(tmp_
 
 
 def test_load_family_case_role_index_reads_grounded_target_and_sentinel_roles() -> None:
-    """The grounded-endpoint family should expose one target and one protected sentinel."""
+    """The grounded-endpoint family should expose multiple targets plus one sentinel."""
 
     case_roles = load_family_case_role_index(
         DEFAULT_CASES_PATH,
         failure_family="grounded_named_endpoint_completeness",
     )
 
-    assert case_roles.target_case_ids == ["musique_doc_5_grounded_medical_leave"]
+    assert case_roles.target_case_ids == [
+        "musique_doc_5_grounded_medical_leave",
+        "musique_doc_0_grounded_broken_cheekbone",
+    ]
     assert case_roles.sentinel_case_ids == ["musique_doc_9_grounded_silver_ball"]
 
 

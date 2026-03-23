@@ -11,7 +11,7 @@
 ## Gap
 
 **Current:** One-pass grounded prompting can suppress broad conceptual nodes on
-the frozen six-case fixture, but it still struggles to materialize named
+the current completeness-focused frozen fixture, but it still struggles to materialize named
 relationship endpoints such as `throat cancer` and `Silver Ball` as standalone
 entity records. A direct prompt-only completeness instruction regressed into
 truncated and malformed outputs.
@@ -21,7 +21,7 @@ entity graphs:
 
 1. extract the grounded entity inventory first
 2. extract relationships against that explicit inventory
-3. prove the contract on the same six-case fixture before any live rebuild
+3. prove the contract on the same completeness-focused frozen fixture before any live rebuild
 
 **Why:** DIGIMON now has truthful closure semantics (ADR-007) and truthful
 pure-lane build comparisons (ADR-008). The remaining gap is stable entity
@@ -94,7 +94,7 @@ change that can address that without more one-pass prompt sprawl.
   entity-inventory prompt on the same frozen completeness cases, with
   relationship expectations neutralized for that evaluation slice.
 - 2026-03-21: That entity-inventory `prompt_eval` slice is now live too
-  (`gemini/gemini-2.5-flash`, execution `7c95be33d37a`) on the six-case short
+  (`gemini/gemini-2.5-flash`, execution `7c95be33d37a`) on the short
   grounded fixture. The grounded two-pass inventory prompt remained only
   directionally better overall (`0.821` vs `0.775`, not significant), and the
   target cases are still unresolved:
@@ -118,6 +118,11 @@ change that can address that without more one-pass prompt sprawl.
   emitted as a standalone entity record, but the current evaluator still gives
   that target case `0.95`. The next issue is therefore the strength of the
   completeness gate, not the open-type contract.
+- 2026-03-22: The grounded-endpoint family has now been widened beyond one
+  target plus one sentinel. The fixture adds a second real MuSiQue sports-domain
+  injury target (`broken cheekbone`) so the next completeness fix must
+  generalize across grounded clinical/injury endpoints rather than overfitting
+  to `throat cancer` alone.
 
 ### Steps
 

@@ -92,6 +92,8 @@ Both route through `llm_client.acall_llm` — smart retry, fallback chains, cost
 - Decision-grade extraction prompt/schema/build iteration is pinned to `gemini/gemini-2.5-flash`.
 - Do not switch production extraction lanes while judging extraction-quality improvements. Stronger models or SDK agents may be used only as diagnostic tools to classify failures or generate hypotheses.
 - Group frozen extraction cases by failure family. Change prompts, schemas, or validators to fix a failure family, not a single benchmark question.
+- Do not add entity-string-specific keep/drop lists or other case-shaped extraction rules. Fix the category boundary that explains the miss.
+- If a failure family is too narrow to prove generalization, broaden the frozen case set with another real-corpus target before promoting a fix.
 - Treat single-pass wins as insufficient evidence when stochasticity is possible. Promote an extraction change only after it improves the frozen case set without regressing protected sentinels.
 
 ## Graph Building

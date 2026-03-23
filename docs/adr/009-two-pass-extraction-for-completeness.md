@@ -12,7 +12,7 @@ Plan #5 has now isolated a narrower extraction-quality problem:
 - one-pass prompting still struggles to materialize some named relationship
   endpoints such as `throat cancer` and `Silver Ball` as entity records
 - an explicit prompt-only attempt to force endpoint completeness regressed on
-  the same six-case fixture, causing a truncated response on a short case and
+  the same completeness-focused frozen fixture, causing a truncated response on a short case and
   malformed tuples on another
 
 ADR-007 already rejects any relationship whose endpoints do not also appear as
@@ -32,7 +32,7 @@ Proposed two-pass shape:
    explicit boundary.
 3. Relationship extraction fails loudly if it references an entity outside the
    pass-1 inventory.
-4. DIGIMON proves the contract on the existing six-case frozen fixture before
+4. DIGIMON proves the contract on the existing completeness-focused frozen fixture before
    using it in another live smoke rebuild.
 
 ## Consequences

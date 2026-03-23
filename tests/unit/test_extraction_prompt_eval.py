@@ -49,13 +49,14 @@ def test_load_extraction_prompt_eval_cases_freezes_expected_musique_slice() -> N
     """The frozen prompt-eval fixture should keep the intended MuSiQue smoke cases."""
 
     cases = load_extraction_prompt_eval_cases(DEFAULT_CASES_PATH)
-    assert [case.source_doc_id for case in cases] == [1, 1, 1, 5, 5, 9, 9]
+    assert [case.source_doc_id for case in cases] == [1, 1, 1, 5, 5, 0, 9, 9]
     assert [case.id for case in cases] == [
         "musique_doc_1_barcelona_2006_07",
         "musique_doc_1_grounded_form_fitness",
         "musique_doc_1_grounded_copa_del_rey",
         "musique_doc_5_vilanova_2012_2013",
         "musique_doc_5_grounded_medical_leave",
+        "musique_doc_0_grounded_broken_cheekbone",
         "musique_doc_9_messi_2015_2016",
         "musique_doc_9_grounded_silver_ball",
     ]
@@ -65,6 +66,7 @@ def test_load_extraction_prompt_eval_cases_freezes_expected_musique_slice() -> N
         "grounded_abstraction_policy",
         "structural_slot_fidelity",
         "grounded_named_endpoint_completeness",
+        "grounded_named_endpoint_completeness",
         "structural_slot_fidelity",
         "grounded_named_endpoint_completeness",
     ]
@@ -72,6 +74,7 @@ def test_load_extraction_prompt_eval_cases_freezes_expected_musique_slice() -> N
         "target",
         "sentinel",
         "sentinel",
+        "target",
         "target",
         "target",
         "target",
@@ -83,13 +86,14 @@ def test_load_grounded_entity_smoke_cases_freezes_short_policy_slice() -> None:
     """The focused smoke fixture should contain only the short grounded-entity cases."""
 
     cases = load_extraction_prompt_eval_cases(GROUND_POLICY_SMOKE_CASES_PATH)
-    assert [case.source_doc_id for case in cases] == [1, 1, 3, 3, 5, 9]
+    assert [case.source_doc_id for case in cases] == [1, 1, 3, 3, 5, 0, 9]
     assert [case.id for case in cases] == [
         "musique_doc_1_grounded_form_fitness",
         "musique_doc_1_grounded_copa_del_rey",
         "musique_doc_3_grounded_european_club",
         "musique_doc_3_grounded_treble_sextuple",
         "musique_doc_5_grounded_medical_leave",
+        "musique_doc_0_grounded_broken_cheekbone",
         "musique_doc_9_grounded_silver_ball",
     ]
     assert [case.failure_family for case in cases] == [
@@ -99,12 +103,14 @@ def test_load_grounded_entity_smoke_cases_freezes_short_policy_slice() -> None:
         "grounded_abstraction_policy",
         "grounded_named_endpoint_completeness",
         "grounded_named_endpoint_completeness",
+        "grounded_named_endpoint_completeness",
     ]
     assert [case.case_role for case in cases] == [
         "sentinel",
         "sentinel",
         "sentinel",
         "sentinel",
+        "target",
         "target",
         "sentinel",
     ]
@@ -122,6 +128,7 @@ def test_filter_extraction_prompt_eval_cases_keeps_requested_failure_family_only
 
     assert [case.id for case in filtered] == [
         "musique_doc_5_grounded_medical_leave",
+        "musique_doc_0_grounded_broken_cheekbone",
         "musique_doc_9_grounded_silver_ball",
     ]
 
