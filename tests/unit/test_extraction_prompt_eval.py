@@ -279,6 +279,30 @@ def test_extraction_output_evaluator_scores_grounded_entity_cases_without_relati
     assert score.dimension_scores["entity_policy"] == pytest.approx(1.0)
 
 
+def test_extraction_output_evaluator_exposes_required_entity_recall_metric() -> None:
+    """Required-entity recall should remain visible even when overall score stays high."""
+
+    evaluator = build_extraction_output_evaluator(_tkg_graph_config())
+    output = (
+        f'("entity"{DEFAULT_TUPLE_DELIMITER}"Messi"{DEFAULT_TUPLE_DELIMITER}"person"'
+        f'{DEFAULT_TUPLE_DELIMITER}"Argentine footballer"){DEFAULT_COMPLETION_DELIMITER}'
+    )
+
+    score = evaluator(
+        output,
+        {
+            "min_valid_entities": 1,
+            "min_valid_relationships": 0,
+            "required_entity_names": ["Messi", "Silver Ball"],
+            "forbidden_entity_names": ["medical leave"],
+        },
+    )
+
+    assert score.dimension_scores["required_entity_recall"] == pytest.approx(0.5)
+    assert score.dimension_scores["forbidden_entity_suppression"] == pytest.approx(1.0)
+    assert score.dimension_scores["entity_policy"] == pytest.approx(0.75)
+
+
 def test_extraction_output_evaluator_penalizes_relationship_endpoints_without_entity_records() -> None:
     """Relationship endpoints should not count as valid unless the entity records also exist."""
 

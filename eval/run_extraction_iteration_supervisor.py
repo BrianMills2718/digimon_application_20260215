@@ -69,6 +69,7 @@ class FamilyConfig(BaseModel):
         PROMPT_FAMILY_TWO_PASS_ENTITY_INVENTORY,
     ] = PROMPT_FAMILY_TWO_PASS_ENTITY_INVENTORY
     target_variant: str = "grounded_entity_contract"
+    promotion_dimension: str | None = None
     production_model: str = "gemini/gemini-2.5-flash"
     n_runs: int = 1
     comparison_method: Literal["paired_t", "bootstrap"] = "paired_t"
@@ -215,7 +216,8 @@ class VariantScoreSnapshot(BaseModel):
 
     overall_mean_score: float
     promotion_mean_score: float
-    promotion_basis: Literal["target", "overall"]
+    promotion_basis: Literal["target", "overall", "target_dimension"]
+    promotion_dimension: str | None = None
     target_mean_score: float | None = None
     sentinel_mean_score: float | None = None
     n_overall_trials: int
@@ -463,11 +465,40 @@ def _extract_matching_trial_scores(
     return matched_scores
 
 
+def _extract_matching_dimension_scores(
+    *,
+    trials_payload: list[object],
+    variant_name: str,
+    dimension_name: str,
+    input_ids: set[str] | None = None,
+) -> list[float]:
+    """Collect one named dimension score for a variant and optional case subset."""
+
+    matched_scores: list[float] = []
+    for raw_trial in trials_payload:
+        if not isinstance(raw_trial, dict):
+            continue
+        if raw_trial.get("variant_name") != variant_name:
+            continue
+        input_id = raw_trial.get("input_id")
+        if input_ids is not None and input_id not in input_ids:
+            continue
+        dimension_scores = raw_trial.get("dimension_scores")
+        if not isinstance(dimension_scores, dict):
+            continue
+        score = dimension_scores.get(dimension_name)
+        if score is None:
+            continue
+        matched_scores.append(float(score))
+    return matched_scores
+
+
 def extract_variant_score_snapshot(
     results_path: Path,
     *,
     variant_name: str,
     case_roles: FamilyCaseRoleIndex,
+    promotion_dimension: str | None = None,
 ) -> VariantScoreSnapshot:
     """Extract role-aware variant scores from one prompt-eval JSON artifact."""
 
@@ -524,17 +555,36 @@ def extract_variant_score_snapshot(
     sentinel_mean_score = (
         statistics.mean(sentinel_scores) if sentinel_scores else None
     )
-    promotion_basis: Literal["target", "overall"] = (
-        "target" if target_mean_score is not None else "overall"
-    )
-    promotion_mean_score = (
-        target_mean_score if target_mean_score is not None else statistics.mean(overall_scores)
-    )
+    promotion_basis: Literal["target", "overall", "target_dimension"]
+    if promotion_dimension is not None:
+        if not target_ids:
+            raise RuntimeError(
+                "Configured promotion_dimension requires at least one target case."
+            )
+        promotion_dimension_scores = _extract_matching_dimension_scores(
+            trials_payload=trials_payload,
+            variant_name=variant_name,
+            dimension_name=promotion_dimension,
+            input_ids=target_ids,
+        )
+        if not promotion_dimension_scores:
+            raise RuntimeError(
+                "Prompt-eval artifact missing target-case dimension scores for "
+                f"{promotion_dimension!r} on variant {variant_name!r}: {results_path}"
+            )
+        promotion_basis = "target_dimension"
+        promotion_mean_score = statistics.mean(promotion_dimension_scores)
+    else:
+        promotion_basis = "target" if target_mean_score is not None else "overall"
+        promotion_mean_score = (
+            target_mean_score if target_mean_score is not None else statistics.mean(overall_scores)
+        )
 
     return VariantScoreSnapshot(
         overall_mean_score=statistics.mean(overall_scores),
         promotion_mean_score=promotion_mean_score,
         promotion_basis=promotion_basis,
+        promotion_dimension=promotion_dimension,
         target_mean_score=target_mean_score,
         sentinel_mean_score=sentinel_mean_score,
         n_overall_trials=len(overall_scores),
@@ -586,6 +636,7 @@ def snapshot_ledger_fields(
         f"{prefix}_overall_score": snapshot.overall_mean_score,
         f"{prefix}_promotion_score": snapshot.promotion_mean_score,
         f"{prefix}_promotion_basis": snapshot.promotion_basis,
+        f"{prefix}_promotion_dimension": snapshot.promotion_dimension,
         f"{prefix}_target_score": snapshot.target_mean_score,
         f"{prefix}_sentinel_score": snapshot.sentinel_mean_score,
         f"{prefix}_overall_trials": snapshot.n_overall_trials,
@@ -852,6 +903,7 @@ def commit_verified_improvement(
         f"- failure_family: {family_name}",
         f"- target_variant: {target_variant}",
         f"- promotion_basis: {current_snapshot.promotion_basis}",
+        f"- promotion_dimension: {current_snapshot.promotion_dimension}",
         f"- previous_promotion_score: {previous_snapshot.promotion_mean_score:.6f}",
         f"- current_promotion_score: {current_snapshot.promotion_mean_score:.6f}",
         f"- previous_target_score: {previous_snapshot.target_mean_score}",
@@ -947,6 +999,7 @@ def run_loop(
                 baseline_results_file,
                 variant_name=config.family.target_variant,
                 case_roles=case_roles,
+                promotion_dimension=config.family.promotion_dimension,
             )
             state.baseline_results_file = str(baseline_results_file)
             state.baseline_log_file = str(baseline_log_file)
@@ -965,6 +1018,7 @@ def run_loop(
             baseline_results_file,
             variant_name=config.family.target_variant,
             case_roles=case_roles,
+            promotion_dimension=config.family.promotion_dimension,
         )
 
         state.cycle_index += 1
@@ -1029,6 +1083,7 @@ def run_loop(
                 validation_results_file,
                 variant_name=config.family.target_variant,
                 case_roles=case_roles,
+                promotion_dimension=config.family.promotion_dimension,
             )
         except Exception as exc:
             revert_worktree(repo_root)

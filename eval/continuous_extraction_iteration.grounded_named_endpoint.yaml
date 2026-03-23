@@ -15,6 +15,7 @@ family:
   cases_file: eval/fixtures/musique_tkg_extraction_prompt_eval_cases.json
   prompt_family: two_pass_entity_inventory
   target_variant: grounded_entity_contract
+  promotion_dimension: required_entity_recall
   production_model: gemini/gemini-2.5-flash
   n_runs: 1
   comparison_method: paired_t

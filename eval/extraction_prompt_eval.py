@@ -124,6 +124,15 @@ class _ExtractionScoreState:
     invalid_reasons: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class _EntityPolicyMetrics:
+    """Explicit entity-policy metrics derived from one scored extraction output."""
+
+    combined_score: float | None
+    required_entity_recall: float | None
+    forbidden_entity_suppression: float | None
+
+
 def load_extraction_prompt_eval_cases(path: Path) -> list[ExtractionPromptEvalCase]:
     """Load the frozen prompt-eval cases from a JSON file."""
 
@@ -635,9 +644,15 @@ def _dimension_scores(
         "relationship_validity": relationship_validity,
         "coverage": (entity_coverage + relationship_coverage) / 2,
     }
-    entity_policy = _entity_policy_score(state, expectation)
-    if entity_policy is not None:
-        dimension_scores["entity_policy"] = entity_policy
+    entity_policy = _entity_policy_metrics(state, expectation)
+    if entity_policy.combined_score is not None:
+        dimension_scores["entity_policy"] = entity_policy.combined_score
+    if entity_policy.required_entity_recall is not None:
+        dimension_scores["required_entity_recall"] = entity_policy.required_entity_recall
+    if entity_policy.forbidden_entity_suppression is not None:
+        dimension_scores["forbidden_entity_suppression"] = (
+            entity_policy.forbidden_entity_suppression
+        )
     return dimension_scores
 
 
@@ -650,6 +665,8 @@ def _overall_score(dimension_scores: dict[str, float]) -> float:
         "relationship_validity": 0.25,
         "coverage": 0.2,
         "entity_policy": 0.2,
+        "required_entity_recall": 0.0,
+        "forbidden_entity_suppression": 0.0,
     }
     active_weight = sum(weights[name] for name in dimension_scores)
     if active_weight <= 0:
@@ -660,11 +677,11 @@ def _overall_score(dimension_scores: dict[str, float]) -> float:
     return weighted_score / active_weight
 
 
-def _entity_policy_score(
+def _entity_policy_metrics(
     state: _ExtractionScoreState,
     expectation: ExtractionPromptEvalExpectation,
-) -> float | None:
-    """Score whether required entities are kept and forbidden ones are suppressed."""
+) -> _EntityPolicyMetrics:
+    """Return the combined and component entity-policy metrics for one case."""
 
     emitted_entities = {
         clean_str(name) for name in state.emitted_entity_names if clean_str(name)
@@ -676,18 +693,36 @@ def _entity_policy_score(
     forbidden = {clean_str(name) for name in expectation.forbidden_entity_names if clean_str(name)}
 
     if not required and not forbidden:
-        return None
+        return _EntityPolicyMetrics(
+            combined_score=None,
+            required_entity_recall=None,
+            forbidden_entity_suppression=None,
+        )
 
-    required_recall = 1.0
+    required_recall: float | None = None
     if required:
         required_recall = sum(name in valid_entities for name in required) / len(required)
 
-    forbidden_precision = 1.0
+    forbidden_suppression: float | None = None
     if forbidden:
         forbidden_hits = sum(name in emitted_entities for name in forbidden)
-        forbidden_precision = 1.0 - (forbidden_hits / len(forbidden))
+        forbidden_suppression = 1.0 - (forbidden_hits / len(forbidden))
 
-    return (required_recall + forbidden_precision) / 2
+    combined_components = [
+        value
+        for value in [required_recall, forbidden_suppression]
+        if value is not None
+    ]
+    combined_score = (
+        sum(combined_components) / len(combined_components)
+        if combined_components
+        else None
+    )
+    return _EntityPolicyMetrics(
+        combined_score=combined_score,
+        required_entity_recall=required_recall,
+        forbidden_entity_suppression=forbidden_suppression,
+    )
 
 
 def _validity_ratio(*, valid_count: int, total_count: int, expected_minimum: int) -> float:

@@ -53,6 +53,7 @@ def _write_prompt_eval_artifact(
     variant_name: str,
     mean_score: float,
     trial_scores: dict[str, float] | None = None,
+    trial_dimension_scores: dict[str, dict[str, float]] | None = None,
 ) -> None:
     """Write the smallest prompt-eval JSON payload the supervisor needs to read."""
 
@@ -72,6 +73,11 @@ def _write_prompt_eval_artifact(
                     "replicate": 0,
                     "output": "",
                     "score": score,
+                    "dimension_scores": (
+                        trial_dimension_scores.get(input_id, {})
+                        if trial_dimension_scores is not None
+                        else {}
+                    ),
                     "cost": 0.0,
                     "latency_ms": 0.0,
                     "tokens_used": 0,
@@ -386,6 +392,49 @@ def test_extract_variant_score_snapshot_reads_role_scoped_scores(tmp_path: Path)
     assert snapshot.target_mean_score == pytest.approx(0.9)
     assert snapshot.sentinel_mean_score == pytest.approx(0.7)
     assert snapshot.overall_mean_score == pytest.approx(0.8)
+
+
+def test_extract_variant_score_snapshot_uses_configured_promotion_dimension(tmp_path: Path) -> None:
+    """Completeness families should promote on an explicit target-case dimension when configured."""
+
+    artifact_path = tmp_path / "result.json"
+    cases_path = tmp_path / "cases.json"
+    _write_cases_fixture(
+        cases_path,
+        roles_by_case_id={
+            "case_target": "target",
+            "case_sentinel": "sentinel",
+        },
+    )
+    _write_prompt_eval_artifact(
+        artifact_path,
+        variant_name="grounded_entity_contract",
+        mean_score=0.975,
+        trial_scores={
+            "case_target": 0.95,
+            "case_sentinel": 1.0,
+        },
+        trial_dimension_scores={
+            "case_target": {"required_entity_recall": 0.5},
+            "case_sentinel": {"required_entity_recall": 1.0},
+        },
+    )
+
+    snapshot = extract_variant_score_snapshot(
+        artifact_path,
+        variant_name="grounded_entity_contract",
+        case_roles=load_family_case_role_index(
+            cases_path,
+            failure_family="grounded_named_endpoint_completeness",
+        ),
+        promotion_dimension="required_entity_recall",
+    )
+
+    assert snapshot.promotion_basis == "target_dimension"
+    assert snapshot.promotion_dimension == "required_entity_recall"
+    assert snapshot.promotion_mean_score == pytest.approx(0.5)
+    assert snapshot.target_mean_score == pytest.approx(0.95)
+    assert snapshot.sentinel_mean_score == pytest.approx(1.0)
 
 
 def test_load_family_case_role_index_reads_grounded_target_and_sentinel_roles() -> None:
