@@ -18,6 +18,13 @@ Today the repo has the right ingredients but not a single source of truth:
 
 Before more graph benchmarking, DIGIMON needs a stable attribute model and a build manifest that says what exists.
 
+This document now also follows ADR-013:
+
+- choose representation by operator utility and benchmark reasoning role
+- do not materialize every detailed phrase as a node
+- do not leave answer-critical facts only as buried description text when
+  direct addressing is required
+
 ## JayLZhou Mapping
 
 JayLZhou GraphRAG groups graphs into these families:
@@ -107,6 +114,51 @@ The graph itself is not the full build product. DIGIMON also needs artifact-leve
 - co-occurrence enrichment
 - synonym/link edges
 - graph-centrality artifacts
+
+## First-Principles Representation Policy
+
+The graph should contain the smallest amount of structure that unlocks the
+retrieval/composition behaviors the benchmark actually needs.
+
+### Use a Node When
+
+- the fact/concept can act as a seed, target, or bridge
+- it recurs across chunks or documents
+- traversal, linking, PPR, or subgraph extraction should operate on it
+- evidence about it must be merged from multiple places
+
+### Use an Edge When
+
+- the relation between two addressable nodes is the main retrieval unit
+- path composition or relation traversal matters
+- relation ranking/aggregation matters more than independent identity
+
+### Use an Attribute When
+
+- the value mainly qualifies a node or edge
+- it is mostly used for filtering, sorting, comparison, or rendering
+- it usually does not need independent graph navigation
+
+Important DIGIMON constraint:
+
+- an attribute is only a good choice if the operator surface can actually use it
+
+### Use Chunk-Only Evidence When
+
+- the fact is local to one chunk
+- graph structure adds little compositional value
+- chunk retrieval can recover it reliably
+- the fact is mainly support text rather than reusable structure
+
+### Design Test
+
+For any proposed representation, ask:
+
+1. What benchmark reasoning pattern requires this fact?
+2. Which operator family must be able to act on it?
+3. What is the minimal representation that makes that possible?
+4. If left only in descriptions, is there still a reliable path to full evidence
+   and answer use?
 
 ## Build Profiles
 

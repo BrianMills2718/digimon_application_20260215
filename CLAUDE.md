@@ -102,6 +102,11 @@ Both route through `llm_client.acall_llm` — smart retry, fallback chains, cost
 
 **Graph types**: ER (general-purpose), RK (keyword-enriched), Tree/Tree-Balanced (hierarchical), Passage (document-centric).
 
+**Representation policy**:
+- Choose node vs edge vs attribute vs chunk-only evidence by operator utility and benchmark reasoning role, not by topic.
+- Do not materialize every detailed phrase as a node. Only materialize what must be directly operable for retrieval/composition.
+- Do not rely on buried description text as the only representation for answer-critical facts when the retrieval plan needs direct addressing.
+
 **Resilience**:
 - **Checkpointing**: ERGraph persists after each batch of 50 chunks. Interrupted builds resume automatically.
 - **Fallback chain**: `llm.fallback_models` in Config2.yaml. Primary model fails → next model.
@@ -115,6 +120,8 @@ Both route through `llm_client.acall_llm` — smart retry, fallback chains, cost
 - Synonym edges (`augment_synonym_edges`)
 
 **Config overrides**: All 5 `graph_build_*` tools accept `config_overrides: dict` for per-build tuning.
+
+See `docs/adr/013-answer-critical-fact-representation.md`.
 
 ## Eval
 

@@ -18,6 +18,7 @@ ADRs document significant architectural decisions.
 | 010 | Tool Applicability Depends on Build Capabilities and Runtime Resources | Accepted | 2026-03-22 |
 | 011 | Add an External Extraction Iteration Supervisor | Accepted | 2026-03-22 |
 | 012 | Open Schema Mode Does Not Inject a Hidden Default Type Palette | Accepted | 2026-03-22 |
+| 013 | Represent Answer-Critical Facts by Operator Utility, Not Topic | Accepted | 2026-03-22 |
 
 ## ADR Lifecycle
 
