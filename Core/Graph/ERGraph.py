@@ -267,8 +267,15 @@ class ERGraph(DelimiterExtractionMixin, BaseGraph):
                 batch_num = batch_start // batch_size + 1
                 logger.info(f"Processing batch {batch_num}/{total_batches} ({len(batch)} chunks)")
 
+                # Per-chunk timeout prevents a single hung LLM call from blocking
+                # the entire batch. 300s (5 min) is generous — typical extraction
+                # takes 5-30s. Timed-out chunks are logged and skipped.
+                per_chunk_timeout = 300
                 results = await asyncio.gather(
-                    *[self._extract_entity_relationship(chunk) for _, chunk in batch],
+                    *[asyncio.wait_for(
+                        self._extract_entity_relationship(chunk),
+                        timeout=per_chunk_timeout,
+                    ) for _, chunk in batch],
                     return_exceptions=True,
                 )
 
