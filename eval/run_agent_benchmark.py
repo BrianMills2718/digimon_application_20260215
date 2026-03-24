@@ -56,11 +56,8 @@ from llm_client import MCPAgentResult
 from llm_client import (
     activate_feature_profile as llm_activate_feature_profile,
     activate_experiment_run as llm_activate_experiment_run,
-    build_gate_signals,
-    evaluate_gate_policy,
     finish_run as llm_finish_run,
     get_run_items as llm_get_run_items,
-    load_gate_policy,
     log_item as llm_log_item,
     review_items_with_rubric,
     run_deterministic_checks_for_items,
@@ -3403,6 +3400,7 @@ async def main() -> None:
         gate_policy_raw = (post_gate_policy_effective or "").strip()
         if gate_policy_raw:
             try:
+                from llm_client import load_gate_policy, build_gate_signals, evaluate_gate_policy
                 gate_policy = load_gate_policy(gate_policy_raw)
                 gate_signals = build_gate_signals(
                     run_info=run_record,
