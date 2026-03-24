@@ -570,9 +570,10 @@ def build_consolidated_tools(dms: Any) -> list:
             return _json.dumps({"status": "submitted", "answer": answer})
         tools.append(submit_answer)
 
-    # Benchmark planning/disambiguation controls
-    for maybe_tool in ("semantic_plan", "todo_write", "bridge_disambiguate"):
-        if hasattr(dms, maybe_tool):
-            tools.append(getattr(dms, maybe_tool))
+    # bridge_disambiguate is useful for entity resolution ambiguity.
+    # semantic_plan and todo_write are excluded — the consolidated prompt
+    # uses reason(method="decompose") instead (prompt review v2.0).
+    if hasattr(dms, "bridge_disambiguate"):
+        tools.append(dms.bridge_disambiguate)
 
     return tools

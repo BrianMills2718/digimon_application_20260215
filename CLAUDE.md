@@ -57,7 +57,7 @@ submit_answer                                         — submit final answer
 resources                                             — list available graphs/VDBs
 ```
 
-Plus benchmark controls: `semantic_plan`, `todo_write`, `bridge_disambiguate`.
+Plus `bridge_disambiguate` for entity resolution ambiguity.
 
 Implementation: `Core/MCP/tool_consolidation.py` dispatches to existing operator implementations. Set `DIGIMON_CONSOLIDATED_TOOLS=0` for legacy individual tools.
 
