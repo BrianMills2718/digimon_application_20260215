@@ -2,9 +2,14 @@
 
 ## What This Is
 
-DIGIMON is a knowledge-graph-based retrieval system with **28 typed, composable operators** that agents compose into retrieval DAGs at runtime. The agent decides what operators to call based on the question and intermediate results. There are no fixed pipelines.
+DIGIMON is a **composable retrieval system** where agents build and query knowledge graphs using **28 typed operators** composed into retrieval DAGs at runtime. No fixed pipelines — the agent selects both **build strategy** (which graph attributes to construct) and **retrieval strategy** (which operators to compose) based on the task.
 
-**Thesis**: Adaptive operator-routing over graph retrieval — selecting retrieval strategies per question rather than forcing one fixed pipeline.
+**Thesis**: An agent that adaptively selects retrieval strategies — including deciding when graph-based retrieval helps and when simpler methods (text search, VDB) suffice — should outperform any single fixed pipeline across all question types, not just multi-hop.
+
+**Key design properties**:
+- **Build is composable**: Graph attributes (entity types, edge descriptions, passage nodes, co-occurrence edges, synonym edges, etc.) are independently toggleable. A graph built with attributes {A, B, C, D} can be queried using any subset {A, D} at retrieval time. The agent can also determine the build strategy if no graph exists yet.
+- **Retrieval is adaptive**: The agent chooses text search for simple factoid questions, VDB for semantic similarity, and graph traversal (PPR, multi-hop, subgraph extraction) only when the question structure demands it. Graph operators are available but not forced.
+- **Graph isn't always better**: For many question types, text search or VDB outperforms graph traversal. The adaptive agent should recognize this and use simpler methods when they're sufficient, avoiding the cost and noise of graph operations on questions that don't need them.
 
 ## Core Architecture
 
@@ -225,3 +230,25 @@ See `docs/RECURSIVE_REASONING_TRACE.md`. Reasoning traces stored as DIGIMON-comp
 ### Cross-Modal Analysis
 
 4 MCP tools, 15 conversion paths across graph/table/vector. See `Core/AgentTools/cross_modal_tools.py`.
+
+## Vision
+
+**DIGIMON is the retrieval engine for a causal-epistemic reasoning system.** The benchmarks aren't the product — they prove the engine works.
+
+**The pipeline** (not all components built yet):
+```
+Sources (web, docs, OSINT) → research_v3 (ingestion + search)
+    → onto-canon (entity canonicalization + ontology)
+    → DIGIMON (graph construction + adaptive retrieval)
+    → grounded-research (adjudication + claim evaluation)
+```
+
+**What DIGIMON uniquely provides**: Composable operator routing. No other system lets the agent select retrieval strategies per question from a typed operator catalog AND determine the graph build strategy. The 28 operators exist because real investigative questions need different retrieval shapes — entity co-occurrence, multi-hop traversal, community detection, subgraph extraction, or just text search when the graph adds no value.
+
+**Scaling path**:
+1. Prove graph value on multi-hop QA benchmarks (current — Plan #17)
+2. Test on real OSINT queries from research_v3
+3. Wire as research_v3's retrieval backend
+4. Feed onto-canon's canonicalized entities into graph builds
+
+**What DIGIMON is NOT**: Not a general-purpose RAG framework. Not a graph database. Not trying to beat SOTA benchmarks as an end goal. The contribution is the composable operator model and the evidence that adaptive routing outperforms fixed pipelines across question types.
