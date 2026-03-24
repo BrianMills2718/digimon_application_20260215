@@ -59,11 +59,11 @@ from llm_client import (
     finish_run as llm_finish_run,
     get_run_items as llm_get_run_items,
     log_item as llm_log_item,
-    review_items_with_rubric,
-    run_deterministic_checks_for_items,
     start_run as llm_start_run,
-    triage_items,
 )
+# Post-run eval functions — lazy-imported at call site since they may
+# have been relocated from llm_client to prompt_eval or project-meta.
+# See: llm_client commit 431404d "Delete 28 zero-importer stubs"
 
 
 # --- Tool call extraction (works with both Codex Turn and MCPAgentResult) ---
@@ -3355,6 +3355,10 @@ async def main() -> None:
                 for r in results
             ]
 
+        try:
+            from llm_client import triage_items
+        except ImportError:
+            triage_items = lambda items: {"category_counts": {}}
         triage_report = triage_items(run_items)
         post_run_eval["triage"] = triage_report
         triage_counts = triage_report.get("category_counts") or {}
@@ -3364,6 +3368,7 @@ async def main() -> None:
         det_checks_raw = (args.post_det_checks or "").strip()
         deterministic_report = None
         if det_checks_raw.lower() not in {"", "none", "off", "0", "false"}:
+            from llm_client import run_deterministic_checks_for_items
             deterministic_report = run_deterministic_checks_for_items(
                 run_items,
                 checks=det_checks_raw,
@@ -3379,6 +3384,7 @@ async def main() -> None:
         review_report = None
         review_rubric = (args.post_review_rubric or "").strip()
         if not _is_disabled_token(review_rubric):
+            from llm_client import review_items_with_rubric
             review_report = review_items_with_rubric(
                 run_items,
                 rubric=review_rubric,
