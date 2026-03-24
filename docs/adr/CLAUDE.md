@@ -19,6 +19,8 @@ ADRs document significant architectural decisions.
 | 011 | Add an External Extraction Iteration Supervisor | Accepted | 2026-03-22 |
 | 012 | Open Schema Mode Does Not Inject a Hidden Default Type Palette | Accepted | 2026-03-22 |
 | 013 | Represent Answer-Critical Facts by Operator Utility, Not Topic | Accepted | 2026-03-22 |
+| 014 | Consolidated Tool Surface for Benchmark Agents | Accepted | 2026-03-23 |
+| 015 | Strategic Risks and Open Questions for Thesis Test | Proposed | 2026-03-23 |
 
 ## ADR Lifecycle
 
