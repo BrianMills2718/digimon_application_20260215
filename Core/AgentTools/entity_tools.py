@@ -215,7 +215,10 @@ async def entity_ppr_tool(
     # 2. Call the graph's personalized_pagerank method
     # BaseGraph.personalized_pagerank(reset_prob_chunk, damping) returns a numpy array
     # indexed by node position, not a dict.
-    damping = params.personalization_weight_alpha or 0.15
+    # Read damping from RetrieverConfig (default 0.5, HippoRAG-aligned).
+    # params.personalization_weight_alpha overrides if explicitly set.
+    from Config.RetrieverConfig import RetrieverConfig
+    damping = params.personalization_weight_alpha or RetrieverConfig().damping
     try:
         logger.info(f"Entity.PPR: Calling graph.personalized_pagerank with damping={damping}")
 

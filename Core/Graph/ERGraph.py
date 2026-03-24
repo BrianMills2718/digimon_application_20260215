@@ -166,8 +166,10 @@ class ERGraph(DelimiterExtractionMixin, BaseGraph):
             # Uses ENTITY_EXTRACTION otherwise (TKG)
             records = await self._extract_records_from_chunk(chunk_info)
             if getattr(self.config, "skip_relationship_extraction", False):
-                # Keep only entity records, drop relationships
-                records = [r for r in records if not hasattr(r, 'src_id')]
+                # Keep only entity records, drop relationships.
+                # Records are delimiter-separated strings; entity records
+                # contain '"entity"' as first field, relationships don't.
+                records = [r for r in records if '"entity"' in r.lower()]
             return await self._build_graph_from_records(records, chunk_key)
 
     # ------------------------------------------------------------------
@@ -312,7 +314,10 @@ class ERGraph(DelimiterExtractionMixin, BaseGraph):
                 for batch_start in range(0, len(retry_chunks), batch_size):
                     batch = retry_chunks[batch_start:batch_start + batch_size]
                     results = await asyncio.gather(
-                        *[self._extract_entity_relationship(chunk) for _, chunk in batch],
+                        *[asyncio.wait_for(
+                            self._extract_entity_relationship(chunk),
+                            timeout=per_chunk_timeout,
+                        ) for _, chunk in batch],
                         return_exceptions=True,
                     )
                     for (idx, _chunk), result in zip(batch, results):
