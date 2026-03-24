@@ -200,6 +200,54 @@ retriever:
 
 ---
 
+## Open Questions (per Pattern 29: Uncertainty Tracking)
+
+### Q1: Are we testing adaptive routing or a good prompt?
+**Status:** ⏸️ Deferred
+**Raised:** 2026-03-23
+**Context:** The consolidated prompt prescribes a pipeline (decompose → entity_search → PPR → chunk_retrieve). If the agent follows this, it's a fixed pipeline, not adaptive routing.
+**Resolution:** Deferred — proving graph value is the first priority. Adaptive vs fixed is a second-order question. If graph value is confirmed, a follow-up test with a minimal prompt (just tool descriptions, no strategy guidance) can test true adaptive routing.
+**Risk accepted:** Plan #17 answers "does the graph help?" not "does adaptive routing help?"
+
+### Q2: MuSiQue overfitting risk
+**Status:** 🔍 Investigating
+**Raised:** 2026-03-23
+**Context:** All development (19q diagnostic, prompt tuning, failure analysis) is on MuSiQue. Prompt contains MuSiQue-specific language.
+**Mitigation:** After Plan #17, run at least 10q HotpotQA as cross-benchmark validation. Added as Phase 3 stretch goal.
+
+### Q3: Cost asymmetry not tracked
+**Status:** ❓ Open
+**Raised:** 2026-03-23
+**Context:** GraphRAG costs ~50x more per question than baseline. "Graph wins" count doesn't cost-adjust.
+**Action needed:** Track cost-per-correct-answer alongside accuracy. Query observability DB before Phase 3.
+
+### Q4: Small sample size (n=19)
+**Status:** ⏸️ Deferred
+**Raised:** 2026-03-23
+**Context:** Single question flip = 5.3 percentage points. No statistical significance at n=19.
+**Resolution:** Accept for development iteration. Plan #17 Phase 3 (50q) provides larger n. Phase 4 (200q/1000q) for publishable claims.
+**Risk accepted:** Intermediate decisions made on noisy data.
+
+### Q5: Model-dependent results
+**Status:** ⏸️ Deferred
+**Raised:** 2026-03-23
+**Context:** Results depend on gpt-5.4-mini. Different routing models might produce different results.
+**Resolution:** Spot-check with one other model after Plan #17. Not blocking.
+
+### Q6: 7 operators not reachable via consolidated surface
+**Status:** ⏸️ Deferred
+**Raised:** 2026-03-23
+**Context:** entity.agent, relationship.agent, subgraph.agent_path, chunk.aggregator, meta.rerank, meta.reason_step, entity.rel_node are excluded. See ADR-014 for rationale.
+**Resolution:** Intentional exclusion. chunk.aggregator (HippoRAG score propagation) is the most likely to add value later. Revisit if Phase 2 diagnosis identifies score propagation as a missing capability.
+
+### Q7: No plan beyond Plan #17
+**Status:** ❓ Open
+**Raised:** 2026-03-23
+**Context:** No Plan #19 for 200q/1000q scale. No connection to Brian's broader causal-epistemic reasoning goal documented.
+**Action needed:** Write at gate-time per ROADMAP policy. Connection to broader ecosystem should go in CLAUDE.md when pipeline crystallizes.
+
+---
+
 ## Notes
 
 **What changed since the placeholder:**
