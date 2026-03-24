@@ -884,7 +884,7 @@ class BaseGraph(ABC):
             *[self.get_node_index(node_key) for node_key in node_keys]
         )
 
-    async def personalized_pagerank(self, reset_prob_chunk, damping: float = 0.1):
+    async def personalized_pagerank(self, reset_prob_chunk, damping: float = 0.5):
         pageranked_probabilities = []
         igraph_ = ig.Graph.from_networkx(self._graph.graph)
         igraph_.es['weight'] = [await self.get_edge_weight(edge[0], edge[1]) for edge in list(await self.edges())]

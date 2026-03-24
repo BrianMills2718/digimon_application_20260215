@@ -43,7 +43,7 @@ Agents compose operators via MCP tools. The full MCP server exposes ~67 individu
 
 ### Consolidated Benchmark Surface (default, DIGIMON_CONSOLIDATED_TOOLS=1)
 
-10 tools that cover all 28 operators via `method` argument:
+10 tools covering the most-used operators via `method` argument (7 specialized operators like entity.agent, meta.rerank are not exposed — available via legacy surface with `DIGIMON_CONSOLIDATED_TOOLS=0`):
 ```
 entity_search(method=semantic|string|tfidf)         — find entities by query
 entity_traverse(method=onehop|ppr|neighborhood|link) — explore graph from known entities

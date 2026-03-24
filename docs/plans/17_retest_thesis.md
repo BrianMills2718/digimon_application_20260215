@@ -26,6 +26,8 @@
 - HippoRAG v2: passage nodes improved MuSiQue Recall@5 from 69.7→74.7%
 - Vectara chunking benchmark: 1200 tokens is fine for multi-hop (StepChain uses same)
 - DIGIMON already has: synonym detection, centrality augmentation, co-occurrence edges, node specificity
+- Planning notebook: `notebooks/plan17_thesis_retest.ipynb` (phase contracts, diagnostic protocol, cross-reference framework)
+- Pre-analysis of both-fail questions: `investigations/digimon/2026-03-23-both-fail-pre-analysis.md`
 
 ---
 

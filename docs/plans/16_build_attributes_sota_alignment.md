@@ -50,9 +50,23 @@
 
 **Deviation from plan:** Plan said add `--decompose` flag for pipeline-level decomposition. The agent-driven approach (consolidated prompt guides decomposition) is more aligned with the adaptive-routing thesis — the agent decides when to decompose, not the pipeline.
 
-### Step 3: Passage-level nodes — NOT STARTED
+### Step 3: Passage-level nodes — COMPLETE ✅
 
-### Step 4: Co-occurrence-only build mode — NOT STARTED
+**What was done:**
+- `Config/GraphConfig.py` — added `enable_passage_nodes: bool = False`
+- `Core/Graph/BaseGraph.py` — passage node creation in `__graph__` after entity upsert; `GraphCapability.HAS_PASSAGES` flag
+- `Core/AgentTools/enhanced_entity_vdb_tools.py` — filters `node_type="passage"` from VDB indexing
+- Committed: `dede57d`
+
+**Design:** Passage nodes named `passage_{chunk_key}`, linked to entities via `relation_name="extracted_from"` edges (weight=0.3). PPR spreads through passage nodes naturally (bipartite graph). VDB indexes entities only.
+
+### Step 4: Co-occurrence-only build mode — COMPLETE ✅
+
+**What was done:**
+- `Config/GraphConfig.py` — added `skip_relationship_extraction: bool = False`
+- `Core/Graph/ERGraph.py` — skips OpenIE when flag is True (two-step: triples=[]; single-step: filters relationship records)
+- `Core/Graph/BaseGraph.py` — auto-enables co-occurrence edges when `skip_relationship_extraction=True`
+- Committed: `32a9293`
 
 ---
 

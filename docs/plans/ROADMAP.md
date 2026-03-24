@@ -43,14 +43,14 @@ Phase E: PTC validation (Plan #18, conditional)
 - Token reduction 21.7% (below 40% target — consolidated tools have richer descriptions explaining methods, but cognitive load reduction is the real metric)
 - 10q comparison: consolidated (50% EM, $0.52) vs old surface (40% EM, $0.92) — +10 EM, -43% cost
 
-### Gate C→D: Build attributes implemented — IN PROGRESS
+### Gate C→D: Build attributes implemented — PASSED (2026-03-23)
 - ✅ PPR damping configurable in RetrieverConfig (`damping: float`, default 0.5), passed to PPR operator
-- ⬜ Decompose/synthesize available via `reason(method="decompose"|"synthesize")` — agent can use them but no dedicated `--decompose` pipeline flag yet
-- ⬜ `enable_passage_nodes` not yet implemented
-- ⬜ `skip_relationship_extraction` not yet implemented
+- ✅ Decomposition via consolidated prompt `reason(method="decompose")` — agent decomposes naturally (5/5 questions used it)
+- ✅ `enable_passage_nodes` implemented (commit dede57d) — passage nodes + entity→passage edges + VDB filtering
+- ✅ `skip_relationship_extraction` implemented (commit 32a9293) — co-occurrence-only build mode
 
 ### Gate D→E: Thesis evidence
-- **H1 (graph value):** Adaptive mode LLM-judge > 60% (baseline) on MuSiQue 50q. Primary metric is LLM-judge, not EM.
+- **H1 (graph value):** GraphRAG LLM-judge > baseline LLM-judge by ≥5% on diagnostic question set. Primary metric is LLM-judge, not EM. Secondary: ≥5 "graph wins" (baseline fails, GraphRAG succeeds).
 - **If H1 passes and adaptive > fixed:** thesis validated, scale to 200q/1000q
 - **If H1 passes but adaptive ≤ fixed:** consider question-type classifier → 3-4 fixed pipelines. PTC (Phase E) becomes the next lever.
 - **If H1 fails:** graph architecture is the problem. Escalate to Brian.
