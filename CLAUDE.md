@@ -44,7 +44,11 @@ meta:         extract_entities, reason_step, rerank, generate_answer, pcst_optim
 
 ## MCP Interface
 
-Agents compose operators via MCP tools. The full MCP server exposes ~67 individual tools, but **benchmarks use the consolidated tool surface** (10 tools, Plan #15).
+Agents compose operators via MCP tools. The full MCP server exposes ~67 individual tools, but **benchmarks use the consolidated tool surface** (Plan #15).
+
+**Tool result linearization**: All consolidated tool results must be linearized into compact natural language summaries before entering agent context. Raw JSON wastes context and confuses the LLM. The linearization happens in `tool_consolidation.py` — each tool has a `_linearize()` function that converts structured output to a 2-5 line summary. Full data is written to `results/.last_tool_result.json` for inspection if needed.
+
+**Planning tools**: `semantic_plan` (typed decomposition) and `todo_write` (progress tracking) are available alongside consolidated tools. The agent should plan before retrieving. Plan progress is tracked and can be injected into context.
 
 ### Consolidated Benchmark Surface (default, DIGIMON_CONSOLIDATED_TOOLS=1)
 
