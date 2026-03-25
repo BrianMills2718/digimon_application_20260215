@@ -155,6 +155,123 @@ CONSOLIDATED_BENCHMARK_CONTRACTS: dict[str, dict[str, object]] = {
 }
 
 
+def _linearize(raw_json: str, tool_name: str, method: str = "") -> str:
+    """Linearize structured tool output into compact NL summary.
+
+    Converts raw JSON into 2-5 line natural language summary for LLM context.
+    Full JSON written to results/.last_tool_result.json for inspection.
+    Per StructGPT IRR principle: LLMs reason better on linearized summaries
+    than raw structured data.
+    """
+    import json as _json
+    import os
+
+    # Write full data to file for agent inspection if needed
+    try:
+        os.makedirs("results", exist_ok=True)
+        with open("results/.last_tool_result.json", "w") as f:
+            f.write(raw_json)
+    except OSError:
+        pass
+
+    try:
+        data = _json.loads(raw_json)
+    except (_json.JSONDecodeError, TypeError):
+        return raw_json  # Not JSON, return as-is
+
+    # Error results pass through
+    if isinstance(data, dict) and "error" in data:
+        return f"Error: {data['error']}"
+
+    label = f"{tool_name}({method})" if method else tool_name
+
+    # Entity results
+    if tool_name in ("entity_search", "entity_traverse", "entity_info"):
+        entities = data if isinstance(data, list) else data.get("similar_entities") or data.get("ranked_entities") or data.get("entities") or data.get("neighbors") or []
+        if isinstance(entities, list) and entities:
+            items = []
+            for e in entities[:8]:
+                if isinstance(e, dict):
+                    name = e.get("entity_name", e.get("name", "?"))
+                    etype = e.get("entity_type", "")
+                    score = e.get("score", e.get("similarity_score", ""))
+                    desc = (e.get("description", "") or "")[:60]
+                    parts = [f"'{name}'"]
+                    if etype:
+                        parts.append(f"({etype})")
+                    if score:
+                        parts.append(f"score={score:.2f}" if isinstance(score, float) else f"score={score}")
+                    if desc:
+                        parts.append(f"— {desc}")
+                    items.append(" ".join(parts))
+                elif isinstance(e, list) and len(e) >= 2:
+                    items.append(f"'{e[0]}' (score={e[1]:.2f})" if isinstance(e[1], float) else str(e))
+            total = len(entities)
+            shown = min(8, total)
+            summary = f"{label}: Found {total} entities"
+            if shown < total:
+                summary += f" (showing top {shown})"
+            summary += ":\n" + "\n".join(f"  - {item}" for item in items)
+            return summary
+        # Profile/resolve results
+        if isinstance(data, dict) and ("entity_name" in data or "description" in data):
+            name = data.get("entity_name", "?")
+            etype = data.get("entity_type", "")
+            desc = (data.get("description", "") or "")[:200]
+            return f"{label}: '{name}' ({etype}). {desc}"
+        return f"{label}: {str(data)[:300]}"
+
+    # Relationship results
+    if tool_name == "relationship_search":
+        rels = data if isinstance(data, list) else data.get("relationships") or data.get("edges") or []
+        if isinstance(rels, list) and rels:
+            items = []
+            for r in rels[:8]:
+                if isinstance(r, dict):
+                    src = r.get("src_id", r.get("source", "?"))
+                    tgt = r.get("tgt_id", r.get("target", "?"))
+                    rel = r.get("relation_name", r.get("relation", r.get("description", "?")))[:40]
+                    items.append(f"'{src}' →[{rel}]→ '{tgt}'")
+            return f"{label}: Found {len(rels)} relationships:\n" + "\n".join(f"  - {item}" for item in items)
+        return f"{label}: No relationships found."
+
+    # Chunk results
+    if tool_name == "chunk_retrieve":
+        chunks = data if isinstance(data, list) else data.get("chunks") or data.get("results") or []
+        if isinstance(chunks, list) and chunks:
+            items = []
+            for c in chunks[:3]:
+                if isinstance(c, dict):
+                    text = (c.get("content", c.get("text", c.get("chunk_text", ""))) or "")[:150]
+                    cid = c.get("chunk_id", c.get("id", ""))
+                    items.append(f"[{cid}]: {text}...")
+                elif isinstance(c, str):
+                    items.append(c[:150] + "...")
+            return f"{label}: Retrieved {len(chunks)} chunks:\n" + "\n".join(f"  - {item}" for item in items)
+        return f"{label}: No chunks found."
+
+    # Reason results
+    if tool_name == "reason":
+        if method == "decompose":
+            subs = data if isinstance(data, list) else data.get("sub_questions") or []
+            if isinstance(subs, list) and subs:
+                items = []
+                for i, s in enumerate(subs, 1):
+                    q = s.get("entity_name", s.get("sub_question", str(s)))[:80] if isinstance(s, dict) else str(s)[:80]
+                    items.append(f"  {i}. {q}")
+                return f"Decomposed into {len(subs)} sub-questions:\n" + "\n".join(items)
+        if method == "answer":
+            answer = data.get("answer", str(data)[:200]) if isinstance(data, dict) else str(data)[:200]
+            return f"Generated answer: {answer}"
+        if method == "synthesize":
+            answer = data.get("synthesis", data.get("answer", str(data)[:200])) if isinstance(data, dict) else str(data)[:200]
+            return f"Synthesized answer: {answer}"
+
+    # Default: truncate
+    text = str(data)[:400]
+    return f"{label}: {text}"
+
+
 def build_consolidated_tools(dms: Any) -> list:
     """Build consolidated tool functions that dispatch to the MCP server module.
 
@@ -192,22 +309,23 @@ def build_consolidated_tools(dms: Any) -> list:
             candidate_entity_ids: Pre-existing candidate IDs to re-rank (tfidf only).
         """
         if method == "semantic":
-            return await dms.entity_vdb_search(
+            raw = await dms.entity_vdb_search(
                 query_text=query, query=query, dataset_name=dataset_name,
                 top_k=top_k, vdb_reference_id=vdb_reference_id,
             )
         elif method == "string":
-            return await dms.entity_string_search(
+            raw = await dms.entity_string_search(
                 query=query, dataset_name=dataset_name, top_k=top_k,
                 graph_reference_id=graph_reference_id,
             )
         elif method == "tfidf":
-            return await dms.entity_tfidf(
+            raw = await dms.entity_tfidf(
                 query_text=query, graph_reference_id=graph_reference_id,
                 top_k=top_k, candidate_entity_ids=candidate_entity_ids,
             )
         else:
             return _json.dumps({"error": f"Invalid method '{method}'. Use: semantic, string, tfidf"})
+        return _linearize(raw, "entity_search", method)
 
     async def entity_traverse(
         method: str = "onehop",
@@ -242,32 +360,35 @@ def build_consolidated_tools(dms: Any) -> list:
             vdb_reference_id: VDB ID for link method.
         """
         if method == "onehop":
-            return await dms.entity_onehop(
+            raw = await dms.entity_onehop(
                 entity_ids=entity_ids, entity_name=None,
                 graph_reference_id=graph_reference_id, dataset_name=dataset_name,
                 top_k=top_k,
             )
         elif method == "ppr":
             seeds = entity_ids if isinstance(entity_ids, list) else [entity_ids] if entity_ids else []
-            return await dms.entity_ppr(
+            raw = await dms.entity_ppr(
                 graph_reference_id=graph_reference_id,
                 seed_entity_ids=seeds, top_k=top_k,
             )
         elif method == "neighborhood":
             names = entity_names or entity_ids or []
-            return await dms.entity_neighborhood(
+            raw = await dms.entity_neighborhood(
                 entity_names=names, graph_reference_id=graph_reference_id,
                 dataset_name=dataset_name, hops=hops, max_nodes=max_nodes,
             )
         elif method == "link":
             names = entity_names or entity_ids or []
-            return await dms.entity_link(
+            raw = await dms.entity_link(
                 source_entities=None, entity_names=names,
                 vdb_reference_id=vdb_reference_id, dataset_name=dataset_name,
                 similarity_threshold=similarity_threshold,
             )
         else:
+
             return _json.dumps({"error": f"Invalid method '{method}'. Use: onehop, ppr, neighborhood, link"})
+
+        return _linearize(raw, "entity_traverse", method)
 
     async def entity_info(
         method: str,
@@ -296,17 +417,20 @@ def build_consolidated_tools(dms: Any) -> list:
             top_k_per_name: Candidates per name for resolve.
         """
         if method == "profile":
-            return await dms.entity_profile(
+            raw = await dms.entity_profile(
                 entity_id=entity_id, entity_name=entity_name,
                 graph_reference_id=graph_reference_id, dataset_name=dataset_name,
             )
         elif method == "resolve":
-            return await dms.entity_resolve_names_to_ids(
+            raw = await dms.entity_resolve_names_to_ids(
                 entity_names=entity_names, vdb_reference_id=vdb_reference_id,
                 dataset_name=dataset_name, top_k_per_name=top_k_per_name,
             )
         else:
+
             return _json.dumps({"error": f"Invalid method '{method}'. Use: profile, resolve"})
+
+        return _linearize(raw, "entity_info", method)
 
     async def relationship_search(
         method: str = "graph",
@@ -334,21 +458,24 @@ def build_consolidated_tools(dms: Any) -> list:
             entity_scores: Entity importance scores for score method.
         """
         if method == "graph":
-            return await dms.relationship_onehop(
+            raw = await dms.relationship_onehop(
                 entity_ids=entity_ids, graph_reference_id=graph_reference_id,
             )
         elif method == "semantic":
-            return await dms.relationship_vdb_search(
+            raw = await dms.relationship_vdb_search(
                 query_text=query_text, vdb_reference_id=vdb_reference_id,
                 top_k=top_k,
             )
         elif method == "score":
-            return await dms.relationship_score_aggregator(
+            raw = await dms.relationship_score_aggregator(
                 graph_reference_id=graph_reference_id,
                 entity_scores=entity_scores, top_k=top_k,
             )
         else:
+
             return _json.dumps({"error": f"Invalid method '{method}'. Use: graph, semantic, score"})
+
+        return _linearize(raw, "relationship_search", method)
 
     async def chunk_retrieve(
         method: str = "text",
@@ -385,37 +512,40 @@ def build_consolidated_tools(dms: Any) -> list:
             graph_reference_id: Graph reference for by_entities.
         """
         if method == "text":
-            return await dms.chunk_text_search(
+            raw = await dms.chunk_text_search(
                 query_text=query_text, dataset_name=dataset_name,
                 top_k=top_k, entity_names=entity_names,
             )
         elif method == "semantic":
-            return await dms.chunk_vdb_search(
+            raw = await dms.chunk_vdb_search(
                 query_text=query_text, dataset_name=dataset_name,
                 top_k=top_k, entity_names=entity_names,
             )
         elif method == "relationships":
-            return await dms.chunk_from_relationships(
+            raw = await dms.chunk_from_relationships(
                 target_relationships=target_relationships or [],
                 document_collection_id=document_collection_id,
                 dataset_name=dataset_name, top_k=top_k,
             )
         elif method == "cooccurrence":
-            return await dms.chunk_occurrence(
+            raw = await dms.chunk_occurrence(
                 entity_names=entity_names, dataset_name=dataset_name,
                 document_collection_id=document_collection_id, top_k=top_k,
             )
         elif method == "by_ids":
-            return await dms.chunk_get_text_by_chunk_ids(
+            raw = await dms.chunk_get_text_by_chunk_ids(
                 chunk_ids=chunk_ids, dataset_name=dataset_name,
             )
         elif method == "by_entities":
-            return await dms.chunk_get_text_by_entity_ids(
+            raw = await dms.chunk_get_text_by_entity_ids(
                 entity_ids=entity_ids, entity_names=entity_names,
                 graph_reference_id=graph_reference_id, dataset_name=dataset_name,
             )
         else:
+
             return _json.dumps({"error": f"Invalid method '{method}'. Use: text, semantic, relationships, cooccurrence, by_ids, by_entities"})
+
+        return _linearize(raw, "chunk_retrieve", method)
 
     async def subgraph_extract(
         method: str,
@@ -447,24 +577,27 @@ def build_consolidated_tools(dms: Any) -> list:
             relationship_triples: Relationship data for pcst.
         """
         if method == "khop":
-            return await dms.subgraph_khop_paths(
+            raw = await dms.subgraph_khop_paths(
                 graph_reference_id=graph_reference_id,
                 start_entity_ids=start_entity_ids or entity_ids or [],
                 end_entity_ids=end_entity_ids, k_hops=k_hops, max_paths=max_paths,
             )
         elif method == "steiner":
-            return await dms.subgraph_steiner_tree(
+            raw = await dms.subgraph_steiner_tree(
                 graph_reference_id=graph_reference_id,
                 terminal_node_ids=entity_ids or [],
             )
         elif method == "pcst":
-            return await dms.meta_pcst_optimize(
+            raw = await dms.meta_pcst_optimize(
                 entity_ids=entity_ids or [], entity_scores=entity_scores or {},
                 relationship_triples=relationship_triples or [],
                 graph_reference_id=graph_reference_id,
             )
         else:
+
             return _json.dumps({"error": f"Invalid method '{method}'. Use: khop, steiner, pcst"})
+
+        return _linearize(raw, "subgraph_extract", method)
 
     async def community_search(
         method: str,
@@ -489,17 +622,20 @@ def build_consolidated_tools(dms: Any) -> list:
             max_layer_depth: Max hierarchy depth for from_level.
         """
         if method == "from_entities":
-            return await dms.community_detect_from_entities(
+            raw = await dms.community_detect_from_entities(
                 graph_reference_id=graph_reference_id,
                 seed_entity_ids=seed_entity_ids or [], max_communities=max_communities,
             )
         elif method == "from_level":
-            return await dms.community_get_layer(
+            raw = await dms.community_get_layer(
                 community_hierarchy_reference_id=community_hierarchy_reference_id,
                 max_layer_depth=max_layer_depth,
             )
         else:
+
             return _json.dumps({"error": f"Invalid method '{method}'. Use: from_entities, from_level"})
+
+        return _linearize(raw, "community_search", method)
 
     async def reason(
         method: str = "answer",
@@ -526,22 +662,25 @@ def build_consolidated_tools(dms: Any) -> list:
             synthesis_style: How to combine sub-answers (synthesize method).
         """
         if method == "answer":
-            return await dms.meta_generate_answer(
+            raw = await dms.meta_generate_answer(
                 query_text=query_text, context_chunks=context_chunks or [],
             )
         elif method == "decompose":
-            return await dms.meta_decompose_question(
+            raw = await dms.meta_decompose_question(
                 query_text=query_text, max_questions=max_questions,
             )
         elif method == "synthesize":
-            return await dms.meta_synthesize_answers(
+            raw = await dms.meta_synthesize_answers(
                 query_text=query_text, sub_answers=sub_answers or [],
                 synthesis_style=synthesis_style,
             )
         elif method == "extract":
-            return await dms.meta_extract_entities(query_text=query_text)
+            raw = await dms.meta_extract_entities(query_text=query_text)
         else:
+
             return _json.dumps({"error": f"Invalid method '{method}'. Use: answer, decompose, synthesize, extract"})
+
+        return _linearize(raw, "reason", method)
 
     async def resources() -> str:
         """List available graphs, VDBs, and other resources in the current session."""
@@ -570,10 +709,11 @@ def build_consolidated_tools(dms: Any) -> list:
             return _json.dumps({"status": "submitted", "answer": answer})
         tools.append(submit_answer)
 
-    # bridge_disambiguate is useful for entity resolution ambiguity.
-    # semantic_plan and todo_write are excluded — the consolidated prompt
-    # uses reason(method="decompose") instead (prompt review v2.0).
-    if hasattr(dms, "bridge_disambiguate"):
-        tools.append(dms.bridge_disambiguate)
+    # Planning tools: semantic_plan (typed decomposition) and todo_write
+    # (persistent progress tracking) give the agent working memory.
+    # bridge_disambiguate helps with entity resolution ambiguity.
+    for maybe_tool in ("semantic_plan", "todo_write", "bridge_disambiguate"):
+        if hasattr(dms, maybe_tool):
+            tools.append(getattr(dms, maybe_tool))
 
     return tools
