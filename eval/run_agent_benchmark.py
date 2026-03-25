@@ -3368,31 +3368,41 @@ async def main() -> None:
         det_checks_raw = (args.post_det_checks or "").strip()
         deterministic_report = None
         if det_checks_raw.lower() not in {"", "none", "off", "0", "false"}:
-            from llm_client import run_deterministic_checks_for_items
-            deterministic_report = run_deterministic_checks_for_items(
-                run_items,
-                checks=det_checks_raw,
-            )
-            post_run_eval["deterministic_checks"] = deterministic_report
-            print(
-                "  PostEval Checks: "
-                f"pass_rate={deterministic_report.get('pass_rate')} "
-                f"failed_items={deterministic_report.get('n_failed_items')}/"
-                f"{deterministic_report.get('n_items')}"
-            )
+            try:
+                from llm_client import run_deterministic_checks_for_items
+            except ImportError:
+                run_deterministic_checks_for_items = None
+                print("  PostEval Checks: skipped (function relocated from llm_client)", file=sys.stderr)
+            if run_deterministic_checks_for_items is not None:
+                deterministic_report = run_deterministic_checks_for_items(
+                    run_items,
+                    checks=det_checks_raw,
+                )
+                post_run_eval["deterministic_checks"] = deterministic_report
+                print(
+                    "  PostEval Checks: "
+                    f"pass_rate={deterministic_report.get('pass_rate')} "
+                    f"failed_items={deterministic_report.get('n_failed_items')}/"
+                    f"{deterministic_report.get('n_items')}"
+                )
 
         review_report = None
         review_rubric = (args.post_review_rubric or "").strip()
         if not _is_disabled_token(review_rubric):
-            from llm_client import review_items_with_rubric
-            review_report = review_items_with_rubric(
-                run_items,
-                rubric=review_rubric,
-                judge_model=None if _is_disabled_token(args.post_review_model) else (args.post_review_model or "").strip() or None,
-                task_prefix=f"digimon.benchmark.post_review.{_experiment_run_id}",
-                max_items=args.post_review_max_items if args.post_review_max_items > 0 else None,
-            )
-            post_run_eval["review"] = review_report
+            try:
+                from llm_client import review_items_with_rubric
+            except ImportError:
+                review_items_with_rubric = None
+                print("  PostEval Review: skipped (function relocated from llm_client)", file=sys.stderr)
+            if review_items_with_rubric is not None:
+                review_report = review_items_with_rubric(
+                    run_items,
+                    rubric=review_rubric,
+                    judge_model=None if _is_disabled_token(args.post_review_model) else (args.post_review_model or "").strip() or None,
+                    task_prefix=f"digimon.benchmark.post_review.{_experiment_run_id}",
+                    max_items=args.post_review_max_items if args.post_review_max_items > 0 else None,
+                )
+                post_run_eval["review"] = review_report
             print(
                 "  PostEval Review: "
                 f"rubric={review_report.get('rubric')} "
