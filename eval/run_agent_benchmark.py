@@ -95,6 +95,7 @@ def extract_tool_calls(raw_response: object) -> list[dict]:
                 "has_error": r.error is not None,
                 "error": r.error[:500] if r.error else None,
                 "result_preview": r.result[:500] if r.result else None,
+                "latency_s": getattr(r, "latency_s", None),
             }
             for r in raw_response.tool_calls
         ]
