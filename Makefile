@@ -250,6 +250,8 @@ summary:  ## Quick dashboard: spend, calls, errors, top models (DAYS=7)
 
 bench:  ## Run benchmark (DATASET=HotpotQAsmallest NUM=3 MODEL=gpt-5.4-mini)
 	conda run -n digimon python eval/run_agent_benchmark.py \
+		--agent-spec none --allow-missing-agent-spec \
+		--missing-agent-spec-reason "relocated" \
 		--dataset $(DATASET) --num $(NUM) \
 		--model $(MODEL) --backend direct \
 		--agent-spec none --allow-missing-agent-spec \
@@ -257,6 +259,8 @@ bench:  ## Run benchmark (DATASET=HotpotQAsmallest NUM=3 MODEL=gpt-5.4-mini)
 
 bench-baseline:  ## Run baseline (no graph) benchmark
 	conda run -n digimon python eval/run_agent_benchmark.py \
+		--agent-spec none --allow-missing-agent-spec \
+		--missing-agent-spec-reason "relocated" \
 		--dataset $(DATASET) --num $(NUM) \
 		--model $(MODEL) --backend direct --mode baseline \
 		--agent-spec none --allow-missing-agent-spec \
@@ -264,9 +268,12 @@ bench-baseline:  ## Run baseline (no graph) benchmark
 
 bench-musique:  ## Run MuSiQue 19q diagnostic set
 	conda run -n digimon python eval/run_agent_benchmark.py \
+		--agent-spec none --allow-missing-agent-spec \
+		--missing-agent-spec-reason "relocated" \
 		--dataset MuSiQue \
 		--questions-file eval/fixtures/musique_19q_diagnostic_ids.txt \
 		--model $(MODEL) --backend direct \
+		--agent-spec none --allow-missing-agent-spec --missing-agent-spec-reason "relocated" \
 		--agent-spec none --allow-missing-agent-spec \
 		--missing-agent-spec-reason "agent_spec relocated"
 
