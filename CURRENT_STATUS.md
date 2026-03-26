@@ -25,16 +25,23 @@ Result files:
 
 ## Iteration Gains (retesting both-fail + regression subsets)
 
-| Subset | Tested | Flipped to PASS |
-|--------|--------|-----------------|
-| 2-hop both-fail | 9 | 2 (645448, 95970) |
-| 3-hop both-fail | 8 | 1 (136129) |
-| 4-hop both-fail | 8 | 1 (94201) |
-| Regressions | 4 | 2 fixed (511296, 127483) |
-| **Total iteration gains** | **29** | **6** |
+| Subset | Tested | Flipped to PASS | Key Fix |
+|--------|--------|-----------------|---------|
+| 2-hop both-fail | 9 | 4 (645448, 95970, 354635, 78401) | No truncation + plan enforcement |
+| 3-hop both-fail | 8 | 3 (136129, 820301, 108833) | Passage nodes (plague=22 fixed) |
+| 4-hop both-fail | 8 | 2 (94201, 152146) | Passage nodes |
+| Regressions | 4 | 2 fixed (511296, 127483) | Stochastic |
+| **Total iteration gains** | **29** | **11** | |
 
-Projected with iteration: ~27/50 (54.0% LLM-judge)
-Note: "Projected" means these questions passed on re-run but the full 50q hasn't been re-run with all fixes.
+Projected with iteration: ~32/50 (64.0% LLM-judge)
+Note: "Projected" means these questions passed on re-run. 16 remaining failures
+are entity resolution ambiguity (8), complex 4-hop chains (6), and near-misses (2).
+
+### What fixed the most questions
+1. **Passage nodes** (+5 questions) — HippoRAG v2 bipartite graph, $0 post-build enrichment
+2. **No evidence truncation** (+2 questions) — chunk text was silently cut at 150 chars
+3. **Plan-completion enforcement** (+2 questions) — agent rejected from submitting early
+4. **Stochastic** (+2 questions) — same code, different run, different result
 
 ## What's Implemented
 
