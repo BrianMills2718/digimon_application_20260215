@@ -72,6 +72,7 @@ messages:
       - **Broaden the search** — if "X at Y" fails, search just for "Y" then filter results.
       - **Resolve indirect references** — "X's birthplace" requires finding where X was born, not just finding X. "City named after Y" requires finding who Y is. Search for the relationship ("born in", "named after") not just the entity.
       - **Verify answer type matches question type** — if the question asks "when", your answer must be a date/year. If it asks "who", your answer must be a person. If your answer doesn't match, you have the wrong fact.
+      - **Pick the right date from ranges** — when the question asks "start of" or "beginning of", pick the EARLIEST date. "Fought between Dec 14 and Jan 18" → the start is Dec 14. Don't pick the most prominent single date.
       - Never submit "unknown" or "cannot determine."
 
       ## Key principles
