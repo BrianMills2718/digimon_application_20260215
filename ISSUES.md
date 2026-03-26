@@ -428,6 +428,23 @@ That means DIGIMON now has a truthful way to produce decision-grade live build
 comparisons. Mixed-lane artifacts remain useful for debugging, but they are no
 longer the only available evaluation surface.
 
+### ISSUE-010: Migrate off private llm_client import paths
+
+**Observed:** 2026-03-24
+**Status:** `confirmed`
+
+llm_client reorganized its internals (Plan #12) and relocated governance
+modules (Plan #17). This project imports private internals that will break
+when compatibility stubs are removed:
+
+- `LiteLLMProvider` in ~40 files — deprecated, replace with `call_llm`/`acall_llm`
+- `from llm_client.mcp_agent import MCPSessionPool` — use `from llm_client import MCPSessionPool`
+- Any `from llm_client.client import X` — use `from llm_client import X`
+
+**Verification:** `grep -rn "LiteLLMProvider\|from llm_client\.mcp_agent\|from llm_client\.client " --include="*.py"` should return zero matches when done.
+
+The public API (`from llm_client import X`) is unchanged and stable.
+
 ---
 
 ## Resolved
