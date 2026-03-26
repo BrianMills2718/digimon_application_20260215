@@ -768,15 +768,37 @@ def build_consolidated_tools(dms: Any) -> list:
         resources,
     ]
 
-    # submit_answer is conditionally defined in BENCHMARK_MODE
-    if hasattr(dms, "submit_answer"):
-        tools.append(dms.submit_answer)
-    else:
-        async def submit_answer(reasoning: str, answer: str) -> str:
-            """Submit your final answer. Call once with your best answer."""
+    # submit_answer with plan-completion enforcement.
+    # If the agent has a todo list with incomplete atoms, reject the submission
+    # and tell the agent to complete remaining atoms first.
+    _original_submit = dms.submit_answer if hasattr(dms, "submit_answer") else None
+
+    async def submit_answer(reasoning: str, answer: str) -> str:
+        """Submit your final answer. Call once with your best answer.
+
+        NOTE: If you have pending todo atoms, this will be rejected.
+        Complete all atoms first, then submit.
+        """
+        # Check todo completion
+        todos = getattr(dms, '_todos', [])
+        if todos:
+            pending = [t for t in todos if t.get('status') not in ('done', 'completed', 'complete')]
+            if pending:
+                pending_ids = [t.get('id', '?') for t in pending[:5]]
+                return _json.dumps({
+                    "error": f"Cannot submit: {len(pending)} todo atoms still pending: {pending_ids}. "
+                    "Complete all atoms before submitting. Use todo_write to mark them done with evidence.",
+                    "pending_atoms": len(pending),
+                    "pending_ids": pending_ids,
+                })
+
+        if _original_submit:
+            return await _original_submit(reasoning=reasoning, answer=answer)
+        else:
             dms._reset_chunk_dedup()
             return _json.dumps({"status": "submitted", "answer": answer})
-        tools.append(submit_answer)
+
+    tools.append(submit_answer)
 
     # Planning tools: semantic_plan (typed decomposition) and todo_write
     # (persistent progress tracking) give the agent working memory.
