@@ -2983,6 +2983,26 @@ async def entity_profile(
             if cid_norm not in evidence_refs:
                 evidence_refs.append(cid_norm)
 
+    # Add connectivity info so the agent can decide whether to traverse
+    edge_count = 0
+    relationship_types = []
+    connected_entities = []
+    try:
+        neighbors = list(nx_graph.neighbors(resolved_entity_id))
+        edge_count = len(neighbors)
+        seen_rel_types = set()
+        for neighbor in neighbors[:20]:
+            edge_data = nx_graph.get_edge_data(resolved_entity_id, neighbor, default={})
+            rel_name = str(edge_data.get("relation_name", edge_data.get("label", ""))).strip()
+            if rel_name and rel_name not in seen_rel_types:
+                seen_rel_types.add(rel_name)
+                relationship_types.append(rel_name)
+            neighbor_name = str(nx_graph.nodes[neighbor].get("entity_name", neighbor))
+            if neighbor_name and not neighbor_name.startswith("passage_"):
+                connected_entities.append(neighbor_name)
+    except Exception:
+        pass
+
     return json.dumps(
         {
             "entity_id": resolved_entity_id,
@@ -2990,9 +3010,12 @@ async def entity_profile(
             "aliases": aliases[:12],
             "coarse_type": coarse_type,
             "short_description": short_desc,
+            "edge_count": edge_count,
+            "relationship_types": relationship_types[:10],
+            "connected_entities": connected_entities[:10],
             "evidence_refs": evidence_refs,
             "resolved_graph_reference_id": resolved_graph_id,
-            "status_message": "Entity profile resolved",
+            "status_message": f"Entity profile resolved. {edge_count} connections." + (" Use entity_traverse or relationship_search to explore." if edge_count > 0 else " No graph edges — use chunk_retrieve for evidence."),
         },
         indent=2,
         default=str,

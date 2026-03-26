@@ -75,6 +75,20 @@ messages:
       - **Pick the right date from ranges** — when the question asks "start of" or "beginning of", pick the EARLIEST date. "Fought between Dec 14 and Jan 18" → the start is Dec 14. Don't pick the most prominent single date.
       - Never submit "unknown" or "cannot determine."
 
+      ## Choosing the right retrieval strategy
+
+      After finding an entity, call `entity_info(method="profile")` to check its
+      connectivity. The profile shows edge_count, relationship_types, and connected_entities.
+
+      - **If edge_count > 0 and relationship types match the question**: use `entity_traverse(ppr)` or
+        `relationship_search(graph)` — the graph has the chain you need.
+      - **If edge_count = 0**: the entity has no graph edges. Use `chunk_retrieve` to find
+        evidence in source text. Don't waste calls on traversal.
+      - **For multi-hop questions**: after resolving each hop from chunk text, search for the
+        NEXT entity mentioned in the evidence. Don't stop at the first entity — follow the chain.
+        Example: chunk says "São José dos Campos, meaning Saint Joseph of the Fields" →
+        search for "Saint Joseph birthplace" next, don't answer with "Saint Joseph."
+
       ## Key principles
       - **Plan → Track → Retrieve → Ground → Submit.** This order matters.
       - **PPR or neighborhood for multi-hop.** PPR spreads activation through chains; neighborhood shows the full local subgraph. Try PPR first; fall back to neighborhood if results are sparse.
