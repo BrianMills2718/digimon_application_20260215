@@ -113,6 +113,12 @@ Both route through `llm_client.acall_llm` — smart retry, fallback chains, cost
 
 **Graph types**: ER (general-purpose), RK (keyword-enriched), Tree/Tree-Balanced (hierarchical), Passage (document-centric).
 
+**Cross-project import bridge**: `scripts/import_onto_canon_jsonl.py` imports
+onto-canon6 `entities.jsonl` / `relationships.jsonl` exports into DIGIMON's
+native GraphML artifact layout. Current policy is to merge duplicate entity
+names and skip relationships with a missing endpoint because the persisted
+graph is binary-edge-only.
+
 **Representation policy**:
 - Choose node vs edge vs attribute vs chunk-only evidence by operator utility and benchmark reasoning role, not by topic.
 - Do not materialize every detailed phrase as a node. Only materialize what must be directly operable for retrieval/composition.
