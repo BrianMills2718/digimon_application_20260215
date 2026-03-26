@@ -237,12 +237,12 @@ def _linearize(raw_json: str, tool_name: str, method: str = "") -> str:
 
     # Chunk results
     if tool_name == "chunk_retrieve":
-        chunks = data if isinstance(data, list) else data.get("chunks") or data.get("results") or []
+        chunks = data if isinstance(data, list) else data.get("chunks") or data.get("retrieved_chunks") or data.get("results") or []
         if isinstance(chunks, list) and chunks:
             items = []
             for c in chunks[:3]:
                 if isinstance(c, dict):
-                    text = (c.get("content", c.get("text", c.get("chunk_text", ""))) or "")[:150]
+                    text = (c.get("content", c.get("text", c.get("chunk_text", c.get("text_content", "")))) or "")[:150]
                     cid = c.get("chunk_id", c.get("id", ""))
                     items.append(f"[{cid}]: {text}...")
                 elif isinstance(c, str):
