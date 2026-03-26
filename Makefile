@@ -339,3 +339,9 @@ linearization-check:  ## Check for linearization data loss warnings
 
 check-rules:  ## Check CLAUDE.md rule violations (json_object, hardcoded paths, except:pass)
 	@~/projects/.claude/scripts/check-rules.sh . || true
+
+add-passages:  ## Add passage nodes to existing graph (no rebuild, $0 cost)
+	conda run -n digimon python scripts/add_passage_nodes.py --dataset $(DATASET)
+
+add-passages-dry:  ## Preview passage node additions
+	conda run -n digimon python scripts/add_passage_nodes.py --dataset $(DATASET) --dry-run
