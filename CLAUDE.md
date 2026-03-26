@@ -143,6 +143,8 @@ graph is binary-edge-only.
 
 **Extraction levels**: KG (names+relations), TKG (+ types, descriptions), RKG (+ keywords).
 
+**Graph attributes are composable layers, not monolithic builds.** A graph built with attributes {A, B, C, D} must be usable with any subset at retrieval time. Enrichments (passage nodes, co-occurrence edges, synonym edges, centrality) are post-build scripts that add layers without rebuilding. The base graph (entities + relationships from extraction) is built once; layers are added/removed independently via `make add-passages`, `make enrich`, etc.
+
 **Post-build enrichment** (no LLM cost):
 - Chunk co-occurrence edges (`augment_chunk_cooccurrence`)
 - PageRank centrality (`augment_centrality`)
