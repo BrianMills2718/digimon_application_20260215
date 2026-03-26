@@ -259,7 +259,7 @@ def _linearize_inner(raw_json: str, tool_name: str, method: str = "") -> str:
                     name = e.get("entity_name", e.get("name", "?"))
                     etype = e.get("entity_type", "")
                     score = e.get("score", e.get("similarity_score", ""))
-                    desc = (e.get("description", "") or "")[:60]
+                    desc = (e.get("description", "") or "")
                     parts = [f"'{name}'"]
                     if etype:
                         parts.append(f"({etype})")
@@ -281,7 +281,7 @@ def _linearize_inner(raw_json: str, tool_name: str, method: str = "") -> str:
         if isinstance(data, dict) and ("entity_name" in data or "description" in data):
             name = data.get("entity_name", "?")
             etype = data.get("entity_type", "")
-            desc = (data.get("description", "") or "")[:200]
+            desc = (data.get("description", "") or "")
             return f"{label}: '{name}' ({etype}). {desc}"
         return f"{label}: {str(data)[:300]}"
 
@@ -294,7 +294,7 @@ def _linearize_inner(raw_json: str, tool_name: str, method: str = "") -> str:
                 if isinstance(r, dict):
                     src = r.get("src_id", r.get("source", "?"))
                     tgt = r.get("tgt_id", r.get("target", "?"))
-                    rel = r.get("relation_name", r.get("relation", r.get("description", "?")))[:40]
+                    rel = r.get("relation_name", r.get("relation", r.get("description", "?")))
                     items.append(f"'{src}' →[{rel}]→ '{tgt}'")
             return f"{label}: Found {len(rels)} relationships:\n" + "\n".join(f"  - {item}" for item in items)
         return f"{label}: No relationships found."
@@ -304,13 +304,13 @@ def _linearize_inner(raw_json: str, tool_name: str, method: str = "") -> str:
         chunks = data if isinstance(data, list) else data.get("chunks") or data.get("retrieved_chunks") or data.get("results") or []
         if isinstance(chunks, list) and chunks:
             items = []
-            for c in chunks[:3]:
+            for c in chunks:
                 if isinstance(c, dict):
-                    text = (c.get("content", c.get("text", c.get("chunk_text", c.get("text_content", "")))) or "")[:150]
+                    text = (c.get("content", c.get("text", c.get("chunk_text", c.get("text_content", "")))) or "")
                     cid = c.get("chunk_id", c.get("id", ""))
-                    items.append(f"[{cid}]: {text}...")
+                    items.append(f"[{cid}]: {text}")
                 elif isinstance(c, str):
-                    items.append(c[:150] + "...")
+                    items.append(c)
             return f"{label}: Retrieved {len(chunks)} chunks:\n" + "\n".join(f"  - {item}" for item in items)
         return f"{label}: No chunks found."
 
