@@ -105,7 +105,7 @@ Both route through `llm_client.acall_llm` — smart retry, fallback chains, cost
 - Group frozen extraction cases by failure family. Change prompts, schemas, or validators to fix a failure family, not a single benchmark question.
 - Do not add entity-string-specific keep/drop lists or other case-shaped extraction rules. Fix the category boundary that explains the miss.
 - If a failure family is too narrow to prove generalization, broaden the frozen case set with another real-corpus target before promoting a fix.
-- Do not truncate answer-relevant tool results or evidence surfaces. If compact output is needed, keep an explicit path to the best available full evidence.
+- **NEVER truncate evidence text in tool results.** Chunk text, entity descriptions, relationship descriptions must be shown in full to the agent. Truncation hides answers and causes false "extraction failures." The linearization layer summarizes metadata (IDs, scores, counts) but NEVER truncates the actual evidence. This rule exists because we found truncation at 150 chars was silently hiding answers across multiple benchmark runs. If compact output is needed, keep an explicit path to the best available full evidence.
 - Do not set explicit max output tokens on DIGIMON LLM calls by default, especially for structured extraction or eval paths. Any exception needs code-local justification.
 - Treat single-pass wins as insufficient evidence when stochasticity is possible. Promote an extraction change only after it improves the frozen case set without regressing protected sentinels.
 
