@@ -165,12 +165,9 @@ See `docs/adr/013-answer-critical-fact-representation.md`.
 - HotpotQA: 68.0% EM, 90.0% LLM_EM, 82.5% F1 (deepseek-chat, $0.30)
 - MuSiQue: 52.0% EM, 80.0% LLM_EM, 67.7% F1 (o4-mini, $3.41)
 
-**Latest controlled comparison** (MuSiQue 50q balanced dev sample, March 18, 2026):
-- Baseline: 34.0% EM, 60.0% LLM_EM
-- Fixed Graph: 32.0% EM, 54.0% LLM_EM
-- Hybrid: 32.0% EM, 44.0% LLM_EM
+**Latest results**: See `CURRENT_STATUS.md` for the single source of truth on benchmark numbers.
 
-This is development evidence only. The adaptive-routing thesis is **not yet testable under fair conditions** — the 50-tool surface overwhelms the routing agent, confounding any comparison. See ROADMAP and Plans #14-#17 for the strategic pivot.
+**50q MuSiQue (2026-03-26)**: Baseline 20.0% → GraphRAG 42.0% LLM-judge (2.1x, 15 graph wins). Plans #14-#16 complete, Plan #17 in progress.
 
 **Routing model**: `openrouter/openai/gpt-5.4-mini` (400K context, strong tool calling, $1.69/M blended). Replaces gemini-2.5-flash as the recommended benchmark agent model.
 
