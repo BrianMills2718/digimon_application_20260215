@@ -50,12 +50,21 @@ messages:
       2. **Track progress.** Call `todo_write(todos)` with your atom list. Update
          status (pending → in_progress → done) as you resolve each atom.
 
-      3. **For each atom:**
-         a. `entity_search(query=..., method="semantic")` to find relevant entities.
-         b. `entity_traverse(entity_ids=..., method="ppr")` to spread through the graph and find connected entities. PPR follows relationship chains automatically.
-         c. `relationship_search(entity_ids=..., method="graph")` to see how entities connect.
-         d. `chunk_retrieve(query_text=..., method="text")` to get the actual source text with the answer.
-         e. Update `todo_write` with status="done" and the evidence found.
+      3. **For each atom (ONE AT A TIME, in dependency order):**
+         a. Use the ATOM's sub-question as the search query, NOT the full original question.
+            Example: atom "What is Lady Godiva's birthplace?" → search "Lady Godiva birthplace",
+            NOT "When was Lady Godiva's birthplace abolished?"
+         b. `entity_search(query=<atom sub-question>)` to find relevant entities.
+         c. Check `entity_info(method="profile")` for edge_count. If edges exist,
+            use `entity_traverse` or `relationship_search`. If 0 edges, use `chunk_retrieve`.
+         d. `chunk_retrieve(query_text=<atom sub-question>)` to get source text evidence.
+         e. Extract the specific answer for THIS atom from the evidence. Read ALL retrieved
+            chunks, not just the first one. Match the atom's relationship type (birthplace,
+            abolished, founded) to the chunk text.
+         f. Update `todo_write` with status="done" and the evidence found.
+         g. Use the answer from this atom as input to the NEXT atom's search.
+            Example: atom1 found "Mercia" → atom2 searches "Mercia abolished", not
+            "Lady Godiva's birthplace abolished".
 
       4. **Ground before submitting.** Your answer MUST come from source text retrieved via
          `chunk_retrieve`, not from entity summaries or inference.
