@@ -318,3 +318,14 @@ diagnose-failures:  ## Diagnose all failures in latest MuSiQue run
 	fails = [q['id'] for q in data['results'] if q.get('llm_em', 0) == 0]; \
 	print(f'Diagnosing {len(fails)} failures from {latest}'); \
 	[subprocess.run([sys.executable, 'scripts/diagnose_question.py', latest, qid]) for qid in fails]"
+
+linearization-check:  ## Check for linearization data loss warnings
+	@echo "=== Linearization Data Loss Warnings ==="
+	@grep '"data_loss_warning": true' results/.linearization_log.jsonl 2>/dev/null | \
+		conda run -n digimon python -c "import sys,json; lines=[json.loads(l) for l in sys.stdin]; print(f'{len(lines)} data loss warnings'); [print(f'  {l[\"tool\"]}({l[\"method\"]}): raw={l[\"raw_len\"]}b → summary={l[\"summary_len\"]}b') for l in lines[-10:]]" \
+		|| echo "  No warnings (or no log file yet)"
+	@echo ""
+	@echo "=== Compression Stats ==="
+	@cat results/.linearization_log.jsonl 2>/dev/null | \
+		conda run -n digimon python -c "import sys,json; lines=[json.loads(l) for l in sys.stdin]; print(f'{len(lines)} total linearizations, avg compression={sum(l[\"compression\"] for l in lines)/max(len(lines),1):.1%}')" \
+		|| echo "  No log file yet"

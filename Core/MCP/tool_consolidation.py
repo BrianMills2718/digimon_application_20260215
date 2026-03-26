@@ -155,16 +155,71 @@ CONSOLIDATED_BENCHMARK_CONTRACTS: dict[str, dict[str, object]] = {
 }
 
 
+def _log_linearization(raw: str, summary: str, tool_name: str, method: str, logger) -> None:
+    """Log linearization metrics and warn on data loss."""
+    import json as _json
+    import os
+    import time
+
+    raw_len = len(raw)
+    summary_len = len(summary)
+    compression = 1.0 - (summary_len / max(raw_len, 1))
+
+    # Detect data loss: raw has substantial content but summary says empty/not found
+    empty_indicators = ["no chunks found", "no relationships found", "no entities found",
+                        ": []", "found 0"]
+    summary_says_empty = any(ind in summary.lower() for ind in empty_indicators)
+    raw_has_content = raw_len > 50 and raw.strip() not in ('{}', '[]', 'null', '')
+
+    if summary_says_empty and raw_has_content:
+        logger.warning(
+            "LINEARIZATION_DATA_LOSS tool=%s method=%s raw_len=%d summary='%s' — "
+            "raw has content but linearized says empty. Check _linearize parsing.",
+            tool_name, method, raw_len, summary[:100],
+        )
+
+    # Log to JSONL for analysis
+    try:
+        entry = _json.dumps({
+            "ts": time.time(),
+            "tool": tool_name,
+            "method": method,
+            "raw_len": raw_len,
+            "summary_len": summary_len,
+            "compression": round(compression, 3),
+            "data_loss_warning": summary_says_empty and raw_has_content,
+        })
+        os.makedirs("results", exist_ok=True)
+        with open("results/.linearization_log.jsonl", "a") as f:
+            f.write(entry + "\n")
+    except OSError:
+        pass
+
+
 def _linearize(raw_json: str, tool_name: str, method: str = "") -> str:
+    """Wrapper that adds observability to linearization."""
+    import logging
+    summary = _linearize_inner(raw_json, tool_name, method)
+    _log_linearization(raw_json, summary, tool_name, method, logging.getLogger("digimon.linearize"))
+    return summary
+
+def _linearize_inner(raw_json: str, tool_name: str, method: str = "") -> str:
     """Linearize structured tool output into compact NL summary.
 
     Converts raw JSON into 2-5 line natural language summary for LLM context.
     Full JSON written to results/.last_tool_result.json for inspection.
     Per StructGPT IRR principle: LLMs reason better on linearized summaries
     than raw structured data.
+
+    Observability: logs raw vs linearized size to results/.linearization_log.jsonl
+    and warns if linearization produces empty result from non-empty raw data.
     """
     import json as _json
     import os
+    import logging
+    import time
+
+    _lin_logger = logging.getLogger("digimon.linearize")
 
     # Write full data to file for agent inspection if needed
     try:
