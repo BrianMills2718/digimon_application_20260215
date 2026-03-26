@@ -262,3 +262,18 @@ Sources (web, docs, OSINT) → research_v3 (ingestion + search)
 4. Feed onto-canon's canonicalized entities into graph builds
 
 **What DIGIMON is NOT**: Not a general-purpose RAG framework. Not a graph database. Not trying to beat SOTA benchmarks as an end goal. The contribution is the composable operator model and the evidence that adaptive routing outperforms fixed pipelines across question types.
+
+## TEMPORARY: llm_client Migration Required (2026-03-26)
+
+Plan #16 removed compatibility stubs from llm_client. These imports in
+`eval/run_agent_benchmark.py` are broken:
+
+- `triage_items` → moved to `prompt_eval.experiment_eval.triage_items`
+- `run_deterministic_checks_for_items` → moved to `prompt_eval.experiment_eval`
+- `review_items_with_rubric` → moved to `prompt_eval.experiment_eval`
+- `load_gate_policy` → moved to `prompt_eval.experiment_eval`
+- `build_gate_signals` → moved to `prompt_eval.experiment_eval`
+- `evaluate_gate_policy` → moved to `prompt_eval.experiment_eval`
+- `from llm_client import mcp_agent` → use `from llm_client.agent import mcp_agent`
+
+Fix: update imports to canonical paths. Do NOT add try/except silent fallbacks.
