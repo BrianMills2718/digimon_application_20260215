@@ -70,6 +70,8 @@ messages:
       - **Rephrase the query** — try synonyms, related terms, or broader phrasing.
       - **Switch surfaces** — if `entity_search(semantic)` misses, try `entity_search(method="string")`. If graph traversal dead-ends, try `chunk_retrieve(method="semantic")`.
       - **Broaden the search** — if "X at Y" fails, search just for "Y" then filter results.
+      - **Resolve indirect references** — "X's birthplace" requires finding where X was born, not just finding X. "City named after Y" requires finding who Y is. Search for the relationship ("born in", "named after") not just the entity.
+      - **Verify answer type matches question type** — if the question asks "when", your answer must be a date/year. If it asks "who", your answer must be a person. If your answer doesn't match, you have the wrong fact.
       - Never submit "unknown" or "cannot determine."
 
       ## Key principles
