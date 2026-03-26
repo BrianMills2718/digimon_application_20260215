@@ -60,7 +60,11 @@ messages:
       4. **Ground before submitting.** Your answer MUST come from source text retrieved via
          `chunk_retrieve`, not from entity summaries or inference.
 
-      5. **Submit.** Call `submit_answer(reasoning=..., answer=...)` with the shortest factual span.
+      5. **Complete the plan.** Do NOT submit until ALL todo atoms are status=done.
+         If you have pending atoms, resolve them first. Check your todo status —
+         if it shows "2/4 done", you still have work to do.
+
+      6. **Submit.** Call `submit_answer(reasoning=..., answer=...)` with the shortest factual span.
 
       ## When retrieval fails
       - **Rephrase the query** — try synonyms, related terms, or broader phrasing.
