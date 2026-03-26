@@ -329,3 +329,6 @@ linearization-check:  ## Check for linearization data loss warnings
 	@cat results/.linearization_log.jsonl 2>/dev/null | \
 		conda run -n digimon python -c "import sys,json; lines=[json.loads(l) for l in sys.stdin]; print(f'{len(lines)} total linearizations, avg compression={sum(l[\"compression\"] for l in lines)/max(len(lines),1):.1%}')" \
 		|| echo "  No log file yet"
+
+check-rules:  ## Check CLAUDE.md rule violations (json_object, hardcoded paths, except:pass)
+	@~/projects/.claude/scripts/check-rules.sh . || true
