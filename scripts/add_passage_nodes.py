@@ -35,7 +35,7 @@ async def add_passage_nodes(dataset_name: str, dry_run: bool = False) -> dict:
     print(f"Graph loaded: {graph_instance.node_num} nodes, {graph_instance.edge_num} edges")
 
     # Check if passage nodes already exist
-    all_nodes = await graph_instance._graph.nodes_data()
+    all_nodes = await graph_instance._graph.get_nodes_data()
     existing_passages = [n for n in all_nodes if n.get("node_type") == "passage"]
     if existing_passages:
         print(f"Graph already has {len(existing_passages)} passage nodes. Skipping.")
@@ -107,7 +107,7 @@ async def add_passage_nodes(dataset_name: str, dry_run: bool = False) -> dict:
 
     # Save
     print(f"\nSaving graph...")
-    await graph_instance._graph.save_graph()
+    await graph_instance._graph.persist(force=True)
 
     print(f"\nDone:")
     print(f"  Passage nodes created: {passage_count}")
