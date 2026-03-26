@@ -25,12 +25,12 @@ from __future__ import annotations
 
 # Consolidated tool names and their methods
 CONSOLIDATED_TOOLS: dict[str, list[str]] = {
-    "entity_search": ["semantic", "string", "tfidf"],
+    "entity_search": ["semantic", "string", "tfidf", "agent"],
     "entity_traverse": ["onehop", "ppr", "neighborhood", "link"],
     "entity_info": ["profile", "resolve"],
-    "relationship_search": ["graph", "semantic", "score"],
-    "chunk_retrieve": ["text", "semantic", "relationships", "cooccurrence", "by_ids", "by_entities"],
-    "subgraph_extract": ["khop", "steiner", "pcst"],
+    "relationship_search": ["graph", "semantic", "score", "agent"],
+    "chunk_retrieve": ["text", "semantic", "relationships", "cooccurrence", "by_ids", "by_entities", "ppr_weighted"],
+    "subgraph_extract": ["khop", "steiner", "pcst", "agent"],
     "community_search": ["from_entities", "from_level"],
     "reason": ["answer", "decompose", "synthesize", "extract"],
     "submit_answer": [],  # no method param
@@ -42,6 +42,7 @@ DISPATCH_MAP: dict[tuple[str, str], str] = {
     ("entity_search", "semantic"): "entity_vdb_search",
     ("entity_search", "string"): "entity_string_search",
     ("entity_search", "tfidf"): "entity_tfidf",
+    ("entity_search", "agent"): "entity_agent",
     ("entity_traverse", "onehop"): "entity_onehop",
     ("entity_traverse", "ppr"): "entity_ppr",
     ("entity_traverse", "neighborhood"): "entity_neighborhood",
@@ -51,15 +52,18 @@ DISPATCH_MAP: dict[tuple[str, str], str] = {
     ("relationship_search", "graph"): "relationship_onehop",
     ("relationship_search", "semantic"): "relationship_vdb_search",
     ("relationship_search", "score"): "relationship_score_aggregator",
+    ("relationship_search", "agent"): "relationship_agent",
     ("chunk_retrieve", "text"): "chunk_text_search",
     ("chunk_retrieve", "semantic"): "chunk_vdb_search",
     ("chunk_retrieve", "relationships"): "chunk_from_relationships",
     ("chunk_retrieve", "cooccurrence"): "chunk_occurrence",
     ("chunk_retrieve", "by_ids"): "chunk_get_text_by_chunk_ids",
     ("chunk_retrieve", "by_entities"): "chunk_get_text_by_entity_ids",
+    ("chunk_retrieve", "ppr_weighted"): "chunk_aggregator",
     ("subgraph_extract", "khop"): "subgraph_khop_paths",
     ("subgraph_extract", "steiner"): "subgraph_steiner_tree",
     ("subgraph_extract", "pcst"): "meta_pcst_optimize",
+    ("subgraph_extract", "agent"): "subgraph_agent_path",
     ("community_search", "from_entities"): "community_detect_from_entities",
     ("community_search", "from_level"): "community_get_layer",
     ("reason", "answer"): "meta_generate_answer",
@@ -92,7 +96,7 @@ CONSOLIDATED_BENCHMARK_CONTRACTS: dict[str, dict[str, object]] = {
     "entity_search": {
         "requires_any": ["QUERY_TEXT", "ENTITY_SET", "CHUNK_SET"],
         "produces": [{"kind": "ENTITY_SET", "ref_type": "id"}],
-        "methods": ["semantic", "string", "tfidf"],
+        "methods": ["semantic", "string", "tfidf", "agent"],
         "description": "Find entities by query. Use 'semantic' for meaning-based search, 'string' for exact/fuzzy name match, 'tfidf' for IDF-weighted ranking of known candidates.",
     },
     "entity_traverse": {
@@ -110,7 +114,7 @@ CONSOLIDATED_BENCHMARK_CONTRACTS: dict[str, dict[str, object]] = {
     "relationship_search": {
         "requires_any": ["ENTITY_SET", "QUERY_TEXT"],
         "produces": ["RELATIONSHIP_SET"],
-        "methods": ["graph", "semantic", "score"],
+        "methods": ["graph", "semantic", "score", "agent"],
         "description": "Find relationships. Use 'graph' for direct edges from entities, 'semantic' for meaning-based relationship search, 'score' for aggregated relationship scoring.",
     },
     "chunk_retrieve": {
@@ -119,13 +123,13 @@ CONSOLIDATED_BENCHMARK_CONTRACTS: dict[str, dict[str, object]] = {
             {"kind": "CHUNK_SET", "ref_type": "id"},
             {"kind": "CHUNK_SET", "ref_type": "fulltext"},
         ],
-        "methods": ["text", "semantic", "relationships", "cooccurrence", "by_ids", "by_entities"],
+        "methods": ["text", "semantic", "relationships", "cooccurrence", "by_ids", "by_entities", "ppr_weighted"],
         "description": "Get text evidence. Use 'text' for keyword search, 'semantic' for embedding search, 'relationships' for chunks containing specific relationships, 'cooccurrence' for chunks where entities co-occur, 'by_ids' to fetch specific chunks, 'by_entities' to get chunks mentioning specific entities.",
     },
     "subgraph_extract": {
         "requires_all": [{"kind": "ENTITY_SET", "ref_type": "id"}],
         "produces": ["SUBGRAPH"],
-        "methods": ["khop", "steiner", "pcst"],
+        "methods": ["khop", "steiner", "pcst", "agent"],
         "description": "Extract subgraph structure. Use 'khop' for k-hop paths between entities, 'steiner' for minimum spanning tree connecting entities, 'pcst' for prize-collecting Steiner tree optimization.",
     },
     "community_search": {
@@ -383,8 +387,13 @@ def build_consolidated_tools(dms: Any) -> list:
                 query_text=query, graph_reference_id=graph_reference_id,
                 top_k=top_k, candidate_entity_ids=candidate_entity_ids,
             )
+        elif method == "agent":
+            raw = await dms.entity_agent(
+                query_text=query, text_context=query,
+                max_entities=top_k,
+            )
         else:
-            return _json.dumps({"error": f"Invalid method '{method}'. Use: semantic, string, tfidf"})
+            return _json.dumps({"error": f"Invalid method '{method}'. Use: semantic, string, tfidf, agent"})
         return _linearize(raw, "entity_search", method)
 
     async def entity_traverse(
