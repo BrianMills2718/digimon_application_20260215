@@ -298,3 +298,23 @@ help:  ## Show all targets
 	@grep -E '^(graph|build|enrich).*:.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Options: DAYS=7 DATASET=HotpotQAsmallest NUM=3 MODEL=openrouter/openai/gpt-5.4-mini LIMIT=20"
+
+# --- Diagnosis ---
+.PHONY: diagnose diagnose-failures
+
+diagnose:  ## Diagnose a specific question (FILE= QID= required)
+ifndef FILE
+	@conda run -n digimon python scripts/diagnose_question.py
+else
+	@conda run -n digimon python scripts/diagnose_question.py $(FILE) $(QID)
+endif
+
+diagnose-failures:  ## Diagnose all failures in latest MuSiQue run
+	@conda run -n digimon python -c "\
+	import json, glob, subprocess, sys; \
+	files = sorted(glob.glob('results/MuSiQue_gpt-5-4-mini_consolidated_*.json')); \
+	latest = files[-1]; \
+	data = json.load(open(latest)); \
+	fails = [q['id'] for q in data['results'] if q.get('llm_em', 0) == 0]; \
+	print(f'Diagnosing {len(fails)} failures from {latest}'); \
+	[subprocess.run([sys.executable, 'scripts/diagnose_question.py', latest, qid]) for qid in fails]"
