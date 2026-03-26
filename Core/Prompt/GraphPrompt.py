@@ -321,12 +321,13 @@ Now please respond with the entity list in JSON format.
 Paragraph:```\n{user_input}\n```
 """
 
-OPENIE_POST_NET = """Your task is to construct an RDF (Resource Description Framework) graph from the given passages and named entity lists. 
-Respond with a JSON list of triples, with each triple representing a relationship in the RDF graph. 
+OPENIE_POST_NET = """Your task is to construct an RDF (Resource Description Framework) graph from the given passages and named entity lists.
+Respond with a JSON list of triples, with each triple representing a relationship in the RDF graph.
 
 Pay attention to the following requirements:
 - Each triple should contain at least one, but preferably two, of the named entities in the list for each passage.
 - Clearly resolve pronouns to their specific names to maintain clarity.
+- For each triple, set "object_entity" to true if the object is a real-world entity (person, place, organization, event, concept) that deserves its own node in the graph, or false if the object is a literal value (date, number, count, measurement, URL, description string) that should be stored as a property on the subject.
 
 # Here is an example for your reference:
 
@@ -348,18 +349,18 @@ Here is the example entity list:
 Based on the entity above, the triple list should be:
 
 {{"triples": [
-            ["Radio City", "located in", "India"],
-            ["Radio City", "is", "private FM radio station"],
-            ["Radio City", "started on", "3 July 2001"],
-            ["Radio City", "plays songs in", "Hindi"],
-            ["Radio City", "plays songs in", "English"]
-            ["Radio City", "forayed into", "New Media"],
-            ["Radio City", "launched", "PlanetRadiocity.com"],
-            ["PlanetRadiocity.com", "launched in", "May 2008"],
-            ["PlanetRadiocity.com", "is", "music portal"],
-            ["PlanetRadiocity.com", "offers", "news"],
-            ["PlanetRadiocity.com", "offers", "videos"],
-            ["PlanetRadiocity.com", "offers", "songs"]
+            {{"subject": "Radio City", "predicate": "located in", "object": "India", "object_entity": true}},
+            {{"subject": "Radio City", "predicate": "is", "object": "private FM radio station", "object_entity": false}},
+            {{"subject": "Radio City", "predicate": "started on", "object": "3 July 2001", "object_entity": false}},
+            {{"subject": "Radio City", "predicate": "plays songs in", "object": "Hindi", "object_entity": true}},
+            {{"subject": "Radio City", "predicate": "plays songs in", "object": "English", "object_entity": true}},
+            {{"subject": "Radio City", "predicate": "forayed into", "object": "New Media", "object_entity": true}},
+            {{"subject": "Radio City", "predicate": "launched", "object": "PlanetRadiocity.com", "object_entity": true}},
+            {{"subject": "PlanetRadiocity.com", "predicate": "launched in", "object": "May 2008", "object_entity": false}},
+            {{"subject": "PlanetRadiocity.com", "predicate": "is", "object": "music portal", "object_entity": false}},
+            {{"subject": "PlanetRadiocity.com", "predicate": "offers", "object": "news", "object_entity": true}},
+            {{"subject": "PlanetRadiocity.com", "predicate": "offers", "object": "videos", "object_entity": true}},
+            {{"subject": "PlanetRadiocity.com", "predicate": "offers", "object": "songs", "object_entity": true}}
     ]
 }}
 

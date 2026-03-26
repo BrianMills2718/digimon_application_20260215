@@ -208,6 +208,19 @@ class BaseGraph(ABC):
         node_data = dict(source_id=source_id, entity_name=entity_name, entity_type=new_entity_type,
                          description=description)
 
+        # Merge literal attributes from extraction (e.g. object_entity=false triples).
+        # Existing node attributes are preserved; new ones are added/overwritten.
+        merged_attributes = {}
+        if existing_data.get("attributes"):
+            for attr_val in existing_data["attributes"]:
+                if isinstance(attr_val, dict):
+                    merged_attributes.update(attr_val)
+        for attr_val in upsert_nodes_data.get("attributes", []):
+            if isinstance(attr_val, dict):
+                merged_attributes.update(attr_val)
+        if merged_attributes:
+            node_data["attributes"] = merged_attributes
+
         # Upsert the node with the merged data
         await self._graph.upsert_node(entity_name, node_data=node_data)
 

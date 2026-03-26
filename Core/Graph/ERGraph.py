@@ -361,13 +361,44 @@ class ERGraph(DelimiterExtractionMixin, BaseGraph):
     # Two-step helpers: tuple-based graph building (KG-level)
     # ------------------------------------------------------------------
 
-    async def _build_graph_from_tuples(self, entities, triples, chunk_key):
+    @staticmethod
+    def _normalize_triple(triple):
+        """Normalize a triple to (subject, predicate, object, object_entity).
+
+        Accepts both the new dict format (with object_entity) and the legacy
+        3-element list format (defaults object_entity to True for backward
+        compatibility).
         """
-        Build graph nodes/edges from NER entities (strings) and OpenIE triples ([src, rel, tgt]).
-        This is the KG-level path: entity name + relation name + weight only.
+        if isinstance(triple, dict):
+            subj = triple.get("subject", "")
+            pred = triple.get("predicate", "")
+            obj = triple.get("object", "")
+            obj_entity = triple.get("object_entity", True)
+            return subj, pred, obj, bool(obj_entity)
+
+        # Legacy list format: [subject, predicate, object]
+        if isinstance(triple, list):
+            if len(triple) > 0 and isinstance(triple[0], list):
+                triple = triple[0]
+            if len(triple) != 3:
+                return None
+            return triple[0], triple[1], triple[2], True
+
+        return None
+
+    async def _build_graph_from_tuples(self, entities, triples, chunk_key):
+        """Build graph nodes/edges from NER entities and OpenIE triples.
+
+        Triples may be dicts with an ``object_entity`` boolean. When
+        ``object_entity`` is False the object is a literal value (date,
+        number, description) and is stored as a property on the subject
+        node rather than creating a separate node and edge.
         """
         maybe_nodes = defaultdict(list)
         maybe_edges = defaultdict(list)
+        # Collect literal properties keyed by subject entity name.
+        # These will be merged onto subject nodes after the main loop.
+        literal_props: dict[str, dict[str, str]] = defaultdict(dict)
 
         for _entity in entities:
             entity_name = clean_str(_entity)
@@ -390,29 +421,51 @@ class ERGraph(DelimiterExtractionMixin, BaseGraph):
             maybe_nodes[entity_name].append(entity)
 
         for triple in triples:
-            if isinstance(triple, list) and len(triple) > 0 and isinstance(triple[0], list):
-                triple = triple[0]
-
-            if len(triple) != 3:
-                logger.warning(f"Triple length is not 3, triple is: {triple}, skipping.")
+            normalized = self._normalize_triple(triple)
+            if normalized is None:
+                logger.warning(f"Could not normalize triple: {triple}, skipping.")
                 continue
 
-            src_entity = clean_str(triple[0])
-            tgt_entity = clean_str(triple[2])
-            relation_name = clean_str(triple[1])
+            src_raw, predicate_raw, obj_raw, is_object_entity = normalized
+
+            src_entity = clean_str(src_raw)
+            tgt_entity = clean_str(obj_raw)
+            relation_name = clean_str(predicate_raw)
 
             valid_src_entity, src_reason = classify_entity_name(src_entity)
-            valid_tgt_entity, tgt_reason = classify_entity_name(tgt_entity)
-            if not valid_src_entity or not valid_tgt_entity or relation_name == '':
+            if not valid_src_entity or relation_name == '':
                 logger.warning(
-                    "Skipping invalid triple. chunk_key=%s triple=%r src_entity=%r src_reason=%s tgt_entity=%r tgt_reason=%s relation_name=%r",
+                    "Skipping invalid triple (bad subject or empty predicate). "
+                    "chunk_key=%s triple=%r src_entity=%r src_reason=%s",
                     chunk_key,
                     triple,
                     src_entity,
                     src_reason,
+                )
+                continue
+
+            if not is_object_entity:
+                # Store as a property on the subject node instead of
+                # creating a target node and edge.
+                prop_key = relation_name.replace(" ", "_")
+                literal_props[src_entity][prop_key] = tgt_entity
+                logger.debug(
+                    "Storing literal property. subject=%r predicate=%r value=%r",
+                    src_entity,
+                    relation_name,
+                    tgt_entity,
+                )
+                continue
+
+            valid_tgt_entity, tgt_reason = classify_entity_name(tgt_entity)
+            if not valid_tgt_entity:
+                logger.warning(
+                    "Skipping invalid triple (bad target). chunk_key=%s triple=%r "
+                    "tgt_entity=%r tgt_reason=%s",
+                    chunk_key,
+                    triple,
                     tgt_entity,
                     tgt_reason,
-                    relation_name,
                 )
                 continue
 
@@ -424,5 +477,22 @@ class ERGraph(DelimiterExtractionMixin, BaseGraph):
                 relation_name=relation_name,
             )
             maybe_edges[(relationship.src_id, relationship.tgt_id)].append(relationship)
+
+        # Merge literal properties onto subject Entity objects so they
+        # persist when nodes are upserted into the graph storage.
+        for subj_name, props in literal_props.items():
+            if subj_name in maybe_nodes:
+                for entity in maybe_nodes[subj_name]:
+                    entity.attributes.update(props)
+            else:
+                # Subject wasn't in the NER list — create a minimal node
+                # so the properties aren't lost.
+                entity = Entity(
+                    entity_name=subj_name,
+                    entity_type='',
+                    source_id=chunk_key,
+                    attributes=dict(props),
+                )
+                maybe_nodes[subj_name].append(entity)
 
         return dict(maybe_nodes), dict(maybe_edges)
