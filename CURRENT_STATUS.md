@@ -50,6 +50,18 @@ Note: "Projected" means these questions passed on re-run but the full 50q hasn't
 2. **Graph not rebuilt** — passage nodes, co-occurrence edges not in current graph (stalled at 45%)
 3. **Answer extraction errors** — 21 both-fail questions where agent finds evidence but picks wrong fact
 
+
+## Cost Tracking (from `make cost-by-task DAYS=7`)
+
+| Task | Calls | Cost | Notes |
+|------|-------|------|-------|
+| Benchmark runs | 6,365 | $57.10 | Includes all iteration runs |
+| Graph build | 20,161 | $20.25 | Stalled at 45%, includes retries |
+| Semantic plan | 516+469 | $0.85 | Planning + revision |
+| LLM judge | 518 | $0.18 | Post-eval scoring |
+| **Total (7 days)** | **~28,000** | **~$79** | Budget was $25-45 |
+
+**Budget exceeded**: ROADMAP estimated $25-45. Actual $79, mostly from benchmark iteration ($57) and graph build ($20). The 318-call runaway loops before AgentErrorBudget contributed significantly.
 ## Next Actions
 
 1. Fix llm_client exports OR migrate DIGIMON to canonical import paths

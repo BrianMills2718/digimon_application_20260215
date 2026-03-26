@@ -24,7 +24,7 @@ Phase A: Fix llm_client (Plan #14)          ✅ DONE
 Phase B: Operator consolidation (Plan #15)  ✅ DONE    Phase C: Build attributes (Plan #16)
     ↓ 28→10 tools, PPR damping fixed                      ↓ 🚧 PPR done, passage nodes pending
     ↓                                                      ↓
-Phase D: Re-test thesis (Plan #17)          ← preliminary 50q MuSiQue running
+Phase D: Re-test thesis (Plan #17)          🚧 50q results: 42.0% vs 20.0% baseline
     ↓ baseline vs adaptive (LLM-judge primary metric)
     ↓ only if adaptive routing still underperforms
 Phase E: PTC validation (Plan #18, conditional)
@@ -49,8 +49,10 @@ Phase E: PTC validation (Plan #18, conditional)
 - ✅ `enable_passage_nodes` implemented (commit dede57d) — passage nodes + entity→passage edges + VDB filtering
 - ✅ `skip_relationship_extraction` implemented (commit 32a9293) — co-occurrence-only build mode
 
-### Gate D→E: Thesis evidence
-- **H1 (graph value):** GraphRAG LLM-judge > baseline LLM-judge by ≥5% on diagnostic question set. Primary metric is LLM-judge, not EM. Secondary: ≥5 "graph wins" (baseline fails, GraphRAG succeeds).
+### Gate D→E: Thesis evidence — PASSED (2026-03-26)
+- ✅ **H1 (graph value):** GraphRAG 42.0% > baseline 20.0% LLM-judge (+22 pts) on MuSiQue 50q
+- ✅ 15 graph wins (≥5 required)
+- ⚠ 4 regressions (≤2 target not met — 2 fixed on re-run, 2 remain)
 - **If H1 passes and adaptive > fixed:** thesis validated, scale to 200q/1000q
 - **If H1 passes but adaptive ≤ fixed:** consider question-type classifier → 3-4 fixed pipelines. PTC (Phase E) becomes the next lever.
 - **If H1 fails:** graph architecture is the problem. Escalate to Brian.

@@ -3417,7 +3417,7 @@ async def main() -> None:
                 for r in results
             ]
 
-        from llm_client import triage_items  # fail loud if missing
+        from prompt_eval.experiment_eval import triage_items
         triage_report = triage_items(run_items)
         post_run_eval["triage"] = triage_report
         triage_counts = triage_report.get("category_counts") or {}
@@ -3427,7 +3427,7 @@ async def main() -> None:
         det_checks_raw = (args.post_det_checks or "").strip()
         deterministic_report = None
         if det_checks_raw.lower() not in {"", "none", "off", "0", "false"}:
-            from llm_client import run_deterministic_checks_for_items  # fail loud if missing
+            from prompt_eval.experiment_eval import run_deterministic_checks_for_items
             deterministic_report = run_deterministic_checks_for_items(
                 run_items,
                 checks=det_checks_raw,
@@ -3443,7 +3443,7 @@ async def main() -> None:
         review_report = None
         review_rubric = (args.post_review_rubric or "").strip()
         if not _is_disabled_token(review_rubric):
-            from llm_client import review_items_with_rubric  # fail loud if missing
+            from prompt_eval.experiment_eval import review_items_with_rubric
             review_report = review_items_with_rubric(
                 run_items,
                 rubric=review_rubric,
@@ -3465,7 +3465,7 @@ async def main() -> None:
         gate_policy_raw = (post_gate_policy_effective or "").strip()
         if gate_policy_raw:
             try:
-                from llm_client import load_gate_policy, build_gate_signals, evaluate_gate_policy  # fail loud if missing
+                from prompt_eval.experiment_eval import load_gate_policy, build_gate_signals, evaluate_gate_policy
                 gate_policy = load_gate_policy(gate_policy_raw)
                 gate_signals = build_gate_signals(
                     run_info=run_record,

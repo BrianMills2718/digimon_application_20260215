@@ -119,6 +119,8 @@ native GraphML artifact layout. Current policy is to merge duplicate entity
 names and skip relationships with a missing endpoint because the persisted
 graph is binary-edge-only.
 
+**Cross-project integration**: `scripts/import_onto_canon_jsonl.py` imports onto-canon6 entity/relationship exports into DIGIMON's GraphML format. See CLAUDE.md Vision section for the full pipeline (research_v3 → onto-canon → DIGIMON → grounded-research).
+
 **Representation policy**:
 - Choose node vs edge vs attribute vs chunk-only evidence by operator utility and benchmark reasoning role, not by topic.
 - Do not materialize every detailed phrase as a node. Only materialize what must be directly operable for retrieval/composition.
@@ -259,18 +261,3 @@ Sources (web, docs, OSINT) → research_v3 (ingestion + search)
 4. Feed onto-canon's canonicalized entities into graph builds
 
 **What DIGIMON is NOT**: Not a general-purpose RAG framework. Not a graph database. Not trying to beat SOTA benchmarks as an end goal. The contribution is the composable operator model and the evidence that adaptive routing outperforms fixed pipelines across question types.
-
-## TEMPORARY: llm_client Migration Required (2026-03-26)
-
-Plan #16 removed compatibility stubs from llm_client. These imports in
-`eval/run_agent_benchmark.py` are broken:
-
-- `triage_items` → moved to `prompt_eval.experiment_eval.triage_items`
-- `run_deterministic_checks_for_items` → moved to `prompt_eval.experiment_eval`
-- `review_items_with_rubric` → moved to `prompt_eval.experiment_eval`
-- `load_gate_policy` → moved to `prompt_eval.experiment_eval`
-- `build_gate_signals` → moved to `prompt_eval.experiment_eval`
-- `evaluate_gate_policy` → moved to `prompt_eval.experiment_eval`
-- `from llm_client import mcp_agent` → use `from llm_client.agent import mcp_agent`
-
-Fix: update imports to canonical paths. Do NOT add try/except silent fallbacks.

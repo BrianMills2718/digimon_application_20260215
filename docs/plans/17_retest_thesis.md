@@ -181,6 +181,19 @@ retriever:
 
 ---
 
+## Phase 3b: Cross-Benchmark Validation (stretch goal)
+
+Run 20q HotpotQA with the same consolidated tools and prompt to verify
+results aren't MuSiQue-specific. The prompt says "most questions here
+are 2-4 hops" which is MuSiQue-specific — HotpotQA is 2-hop only.
+
+```bash
+make bench DATASET=HotpotQAsmallest NUM=20
+```
+
+**Acceptance**: GraphRAG LLM-judge > baseline on HotpotQA too (any margin).
+If it regresses on HotpotQA, the prompt needs to be less MuSiQue-specific.
+
 ## Gate Criteria (from ROADMAP.md, updated for LLM-judge)
 
 - **H1 (graph value):** GraphRAG LLM-judge > baseline LLM-judge by ≥5% on the diagnostic question set
