@@ -155,6 +155,11 @@ CONSOLIDATED_BENCHMARK_CONTRACTS: dict[str, dict[str, object]] = {
 }
 
 
+# TEMPORARY: This project-local logging should migrate to llm_client shared
+# tool call observability when it ships. See:
+# ~/projects/PROJECTS_DEFERRED/tool_call_observability.md
+# The pattern (raw_size vs processed_size, data-loss detection) should
+# become fields on a shared ToolCallResult dataclass.
 def _log_linearization(raw: str, summary: str, tool_name: str, method: str, logger) -> None:
     """Log linearization metrics and warn on data loss."""
     import json as _json
