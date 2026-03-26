@@ -1662,6 +1662,12 @@ async def run_agent(
                 **({"finalization_fallback_models": finalization_fallback_models} if finalization_fallback_models else {}),
             )
 
+        # Mutable container for partial telemetry captured during timeout.
+        # When the agent loop is cancelled, llm_client catches CancelledError and
+        # returns an LLMCallResult with finish_reason='cancelled' that preserves
+        # accumulated tool_calls, turns, and metadata.
+        _partial_result_on_timeout: list = []  # single-element list as mutable box
+
         async def _invoke_agent_with_hard_timeout() -> object:
             """Enforce hard question timeout even if inner cancellation is slow."""
             agent_task = asyncio.create_task(_invoke_agent())
@@ -1672,7 +1678,7 @@ async def run_agent(
 
                 # Timeout hit: request cancellation, then bound how long we wait.
                 agent_task.cancel()
-                cancel_grace_s = 1.0
+                cancel_grace_s = 2.0
                 try:
                     await asyncio.wait_for(asyncio.shield(agent_task), timeout=cancel_grace_s)
                 except asyncio.CancelledError:
@@ -1680,6 +1686,18 @@ async def run_agent(
                 except asyncio.TimeoutError:
                     # Ignore slow/uncooperative cancellation; timeout should still surface.
                     pass
+
+                # Try to retrieve partial result if the task completed during
+                # cancellation grace period (llm_client catches CancelledError
+                # and returns a partial LLMCallResult).
+                if agent_task.done() and not agent_task.cancelled():
+                    try:
+                        partial = agent_task.result()
+                        if partial is not None:
+                            _partial_result_on_timeout.append(partial)
+                    except Exception:
+                        pass  # task raised — no partial result available
+
                 raise asyncio.TimeoutError
             finally:
                 # Drain task exceptions when it does finish to avoid unhandled warnings.
@@ -2058,11 +2076,43 @@ async def run_agent(
         )
         primary_failure_class, terminal_event_code, event_counts = _classify_run_error(timeout_error)
         failure_event_codes = [terminal_event_code] if terminal_event_code else ["QUESTION_TIMEOUT"]
-        return {
+
+        # Recover partial telemetry from the cancelled agent task if available.
+        # llm_client catches CancelledError and returns an LLMCallResult with
+        # finish_reason='cancelled' that preserves accumulated state.
+        partial_tool_calls: list[dict] = []
+        partial_usage: dict = {}
+        partial_cost: float = 0.0
+        partial_metadata: dict | None = None
+        partial_conversation_trace = None
+        if _partial_result_on_timeout:
+            partial_result = _partial_result_on_timeout[0]
+            partial_tool_calls = extract_tool_calls(getattr(partial_result, "raw_response", None))
+            if not partial_tool_calls and hasattr(partial_result, "tool_calls") and partial_result.tool_calls:
+                partial_tool_calls = [
+                    {
+                        "tool": tc.get("function", {}).get("name", ""),
+                        "arguments": tc.get("function", {}).get("arguments", {}),
+                        "result_preview": tc.get("result_preview", ""),
+                        "has_result": bool(tc.get("result_preview")),
+                        "has_error": tc.get("is_error", False),
+                    }
+                    for tc in partial_result.tool_calls
+                ]
+            partial_usage = getattr(partial_result, "usage", {}) or {}
+            partial_cost = getattr(partial_result, "cost", 0.0) or 0.0
+            raw_response = getattr(partial_result, "raw_response", None)
+            if raw_response is not None:
+                candidate_metadata = getattr(raw_response, "metadata", None)
+                if isinstance(candidate_metadata, dict):
+                    partial_metadata = candidate_metadata
+                partial_conversation_trace = getattr(raw_response, "conversation_trace", None)
+
+        timeout_result: dict = {
             "answer": "",
-            "tool_calls": [],
-            "usage": {},
-            "cost": 0.0,
+            "tool_calls": partial_tool_calls,
+            "usage": partial_usage,
+            "cost": partial_cost,
             "latency_s": round(elapsed, 2),
             "error": timeout_error,
             "primary_failure_class": primary_failure_class or "runtime",
@@ -2070,7 +2120,18 @@ async def run_agent(
             "first_terminal_failure_event_code": terminal_event_code or "QUESTION_TIMEOUT",
             "failure_event_codes": failure_event_codes,
             "failure_event_code_counts": event_counts or {"QUESTION_TIMEOUT": 1},
+            "partial_telemetry": True,
         }
+        if partial_conversation_trace is not None:
+            timeout_result["conversation_trace"] = partial_conversation_trace
+        if partial_metadata is not None:
+            timeout_result["control_loop_suppressed_calls"] = partial_metadata.get("control_loop_suppressed_calls")
+            timeout_result["submit_validation_reason_counts"] = partial_metadata.get("submit_validation_reason_counts")
+            timeout_result["retrieval_stagnation_triggered"] = partial_metadata.get("retrieval_stagnation_triggered")
+            timeout_result["evidence_turns_total"] = partial_metadata.get("evidence_turns_total")
+            timeout_result["evidence_turns_with_new_evidence"] = partial_metadata.get("evidence_turns_with_new_evidence")
+            timeout_result["evidence_turns_without_new_evidence"] = partial_metadata.get("evidence_turns_without_new_evidence")
+        return timeout_result
     except Exception as e:
         elapsed = time.monotonic() - t0
         error_text = str(e)
