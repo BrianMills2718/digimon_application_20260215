@@ -34,7 +34,12 @@ The agent decides what operators to call based on the question and intermediate 
 
 ```bash
 # Environment
-conda activate digimon
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# Optional: broader test/dev tooling
+pip install -r requirements-dev.txt
 
 # Build a graph from documents
 # (via MCP server or eval harness — see below)
@@ -44,6 +49,9 @@ python eval/run_agent_benchmark.py \
   --dataset HotpotQAsmallest --num 5 \
   --model gemini/gemini-2.5-flash --backend direct
 ```
+
+Use `DIGIMON_PYTHON=/path/to/python ./eval/run_overnight.sh` only when you need
+the overnight harness to use a different interpreter than the active shell.
 
 ### Configuration
 

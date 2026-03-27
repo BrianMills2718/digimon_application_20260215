@@ -44,7 +44,7 @@
 By April 1, 2026, deliver:
 
 1. **One truthful README** — reflects actual repo state (no references to deleted files)
-2. **One reproducible core slice** — fresh conda env, imports work, benchmark runs
+2. **One reproducible core slice** — fresh documented env, imports work, benchmark runs
 3. **One benchmark report** — 200q balanced sample on MuSiQue, comparing:
    - (A) Non-graph baseline: chunk retrieval + rerank + answer synthesis
    - (B) Fixed graph pipeline: entity search → one-hop → chunk → answer
@@ -83,6 +83,11 @@ Make the repo surface match reality. No new features.
 - [x] Deduplicate pytest config (remove duplication between pytest.ini and setup.cfg)
 - [x] Fix FUNCTIONALITY.md to match current state
 - [x] Add `docs/ACTIVE_DOCS.md` to define the canonical doc set
+- [x] Define `core` / `experimental` / `historical` repo lanes and test lanes
+- [x] Lazy-load `Core.MCP.DigimonToolServer` so core imports do not drag legacy MCP runtime dependencies into the default path
+- [x] Make social-media tools opt-in in the default registry path
+- [x] Remove hardcoded eval interpreter and repo paths from the maintained benchmark lane
+- [x] Align the documented setup contract: `requirements.txt` covers the core lane, `requirements-dev.txt` covers broader test/dev tooling
 
 **Still useful but not milestone-blocking:**
 - [ ] Update ISSUES.md with concrete problems found during cleanup

@@ -1,0 +1,15 @@
+-r requirements.txt
+
+# Test and verification tooling for experimental/historical lanes.
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.0.0
+pytest-mock>=3.10.0
+pytest-timeout>=2.1.0
+pytest-xdist>=3.0.0
+
+# Local formatting and static checks.
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.0.0
+pre-commit>=3.0.0

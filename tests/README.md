@@ -5,6 +5,10 @@ defines whether the current DIGIMON thesis lane is healthy.
 
 ## Test Lanes
 
+Install `requirements.txt` for the core lane. Install
+`requirements-dev.txt` when you want the broader pytest plugin/tooling surface
+used by experimental and historical lanes.
+
 ### Core
 
 Core tests cover the maintained default surface:
