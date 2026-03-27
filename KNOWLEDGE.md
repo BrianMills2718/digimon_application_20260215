@@ -45,3 +45,13 @@ The existing `/home/brian/miniconda3/envs/digimon/bin/python` environment has
 the real graph/VDB retrieval stack, but that env is missing `prompt_eval`, so
 benchmark execution completed and wrote JSON artifacts before crashing in the
 post-run evaluation import path.
+
+### 2026-03-27 — codex — bug-pattern
+The current MuSiQue multi-hop bottleneck is no longer raw retrieval; it is
+control-flow after subject resolution. The direct benchmark lane now supports
+atom-scoped query rewriting, atom completion updates, automatic subject
+profiling after high-confidence `entity_search(method='string')`, and
+bridge-candidate probing off downstream clues. Even so, the Lady Godiva case
+still loops when the outer agent ignores the resolved subject and falls back to
+more `chunk_retrieve` calls. The next structural lever is to turn successful
+subject resolution into an enforced state transition, not another advisory hint.

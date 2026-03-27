@@ -159,6 +159,16 @@ _BENCHMARK_SHORT_DESCS: dict[str, str] = {
     "submit_answer": "Submit your final answer. Call once with your best answer.",
 }
 
+_ATOM_BRIDGE_MIN_CONFIDENCE = float(
+    os.environ.get("DIGIMON_ATOM_BRIDGE_MIN_CONFIDENCE", "0.72")
+)
+_ATOM_BRIDGE_MAX_CANDIDATES = max(
+    2, int(os.environ.get("DIGIMON_ATOM_BRIDGE_MAX_CANDIDATES", "6"))
+)
+_ENTITY_SUBJECT_AUTO_PROFILE_MIN_SCORE = float(
+    os.environ.get("DIGIMON_ENTITY_SUBJECT_AUTO_PROFILE_MIN_SCORE", "90")
+)
+
 
 def _compact_tool_schemas() -> None:
     """Strip verbose descriptions and Pydantic title noise from tool schemas.
@@ -669,6 +679,7 @@ _current_question: str = ""
 _current_expected_answer_kind: str = ""
 _current_semantic_plan: dict[str, Any] = {}
 _current_semantic_plan_question: str = ""
+_atom_lifecycle_events: list[dict[str, Any]] = []
 _QUERY_LEADIN_RE = re.compile(
     r"^\s*(?:find|identify|determine|lookup|look up|resolve|show me|tell me|"
     r"what(?:'s| is| was)?|who(?:'s| is| was)?|when(?:'s| is| was| did)?|"
@@ -738,6 +749,7 @@ def _reset_todos() -> None:
     """Reset TODO state — call between questions."""
     global _current_question, _current_expected_answer_kind
     _todos.clear()
+    _atom_lifecycle_events.clear()
     _current_question = ""
     _current_expected_answer_kind = ""
 
@@ -886,6 +898,111 @@ def _resolved_dependency_values(atom: dict[str, Any] | None) -> list[str]:
     return values
 
 
+def _next_dependent_atom(atom: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Return the next pending/in-progress atom that directly depends on this atom."""
+    if not isinstance(atom, dict):
+        return None
+    atom_id = str(atom.get("atom_id") or "").strip()
+    if not atom_id:
+        return None
+    atoms = _current_semantic_plan.get("atoms")
+    if not isinstance(atoms, list):
+        return None
+    for candidate in atoms:
+        if not isinstance(candidate, dict):
+            continue
+        depends_on = [str(dep).strip() for dep in (candidate.get("depends_on") or [])]
+        if atom_id not in depends_on:
+            continue
+        todo = _todo_item_by_id(str(candidate.get("atom_id") or ""))
+        if todo and todo.get("status") in {"pending", "in_progress"}:
+            return candidate
+    return None
+
+
+def _bridge_candidate_names(payload: dict[str, Any], *, current_atom: dict[str, Any]) -> list[str]:
+    """Extract candidate bridge entities from structured payload fields."""
+    candidates: list[str] = []
+    seen: set[str] = set()
+    current_atom_text = " ".join(
+        part.strip().casefold()
+        for part in (
+            str(current_atom.get("sub_question") or ""),
+            str(payload.get("canonical_name") or ""),
+            str(payload.get("entity_id") or ""),
+        )
+        if part and part.strip()
+    )
+
+    def _maybe_add(value: Any) -> None:
+        candidate = str(value or "").strip()
+        if not candidate:
+            return
+        lowered = candidate.casefold()
+        if lowered in seen:
+            return
+        if lowered.startswith("chunk_") or lowered.startswith("passage_"):
+            return
+        if re.fullmatch(r"[0-9][0-9/ -]*", candidate):
+            return
+        if len(candidate) > 64:
+            return
+        if lowered and lowered in current_atom_text:
+            return
+        seen.add(lowered)
+        candidates.append(candidate)
+
+    for key in ("connected_entities", "neighbors"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    _maybe_add(
+                        item.get("canonical_name")
+                        or item.get("resolved_entity_name")
+                        or item.get("entity_name")
+                        or item.get("entity_id")
+                    )
+                else:
+                    _maybe_add(item)
+
+    relationships = payload.get("relationships")
+    if isinstance(relationships, list):
+        canonical_name = str(payload.get("canonical_name") or "").strip().casefold()
+        entity_id = str(payload.get("entity_id") or "").strip().casefold()
+        for rel in relationships:
+            if not isinstance(rel, dict):
+                continue
+            src = str(rel.get("src_id") or rel.get("source") or rel.get("source_id") or "").strip()
+            tgt = str(rel.get("tgt_id") or rel.get("target") or rel.get("target_id") or "").strip()
+            for endpoint in (src, tgt):
+                endpoint_norm = endpoint.casefold()
+                if endpoint_norm and endpoint_norm not in {canonical_name, entity_id}:
+                    _maybe_add(endpoint)
+
+    return candidates[:_ATOM_BRIDGE_MAX_CANDIDATES]
+
+
+def _best_entity_search_match(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the top structured entity-search match when present."""
+    matches = payload.get("matches") or payload.get("resolved_entities") or payload.get("similar_entities")
+    if not isinstance(matches, list) or not matches:
+        return None
+    best = matches[0]
+    if not isinstance(best, dict):
+        return None
+    return best
+
+
+def _dataset_name_from_graph_reference(graph_reference_id: str) -> str:
+    """Derive dataset name from the canonical graph reference ID."""
+    dataset_name = str(graph_reference_id or "").strip()
+    for suffix in ("_ERGraph", "_RKGraph", "_TreeGraphBalanced", "_TreeGraph", "_PassageGraph"):
+        if dataset_name.endswith(suffix):
+            return dataset_name[: -len(suffix)]
+    return dataset_name
+
+
 def _build_retrieval_query_contract(
     requested_query: str,
     *,
@@ -923,6 +1040,11 @@ def _build_retrieval_query_contract(
 
     effective = requested
     reasons: list[str] = []
+    preserve_explicit_entity_query = (
+        (tool_name == "entity_search" or tool_name.startswith("entity_"))
+        and bool(requested)
+        and _query_token_overlap(requested, _current_question) < 0.75
+    )
     if atom_query and (not effective or _query_token_overlap(effective, _current_question) >= 0.75):
         effective = atom_query
         reasons.append("full_question_rewritten_to_active_atom")
@@ -930,6 +1052,10 @@ def _build_retrieval_query_contract(
     if not effective and atom_query:
         effective = atom_query
         reasons.append("empty_query_rewritten_to_active_atom")
+
+    if atom_query and effective and _query_token_overlap(effective, atom_query) < 0.45 and not preserve_explicit_entity_query:
+        effective = atom_query
+        reasons.append("off_atom_query_rewritten_to_active_atom")
 
     if dependency_values:
         query_mentions_dependency = any(
@@ -971,6 +1097,10 @@ def _todo_status_line() -> str:
         content = (t.get("content") or t.get("task") or "").strip()
         if len(content) > 40:
             content = content[:37] + "..."
+        resolved = _extract_todo_result_value(t)
+        if status == "done" and resolved:
+            resolved = resolved[:30] + "..." if len(resolved) > 33 else resolved
+            content = f"{content} -> {resolved}"
         if status == "done":
             marker = "[x]"
         elif status == "in_progress":
@@ -982,6 +1112,555 @@ def _todo_status_line() -> str:
         parts.append(f"{marker} {tid}: {content}")
     items = " | ".join(parts)
     return f"[TODO: {done_count}/{total} done] {items}"
+
+
+def _record_atom_lifecycle_event(event: dict[str, Any]) -> None:
+    """Append an atom lifecycle event and mirror it to a JSONL log."""
+    payload = dict(event)
+    payload.setdefault("question", _current_question)
+    payload.setdefault("todo_status_line", _todo_status_line())
+    _atom_lifecycle_events.append(payload)
+    try:
+        os.makedirs("results", exist_ok=True)
+        with open("results/.atom_lifecycle_events.jsonl", "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError:
+        logger.warning("Failed to persist atom lifecycle event", exc_info=True)
+
+
+def _todo_dependencies_satisfied(atom: dict[str, Any] | None) -> bool:
+    """Return True when all declared dependencies are marked done."""
+    if not isinstance(atom, dict):
+        return False
+    for dep_id in atom.get("depends_on") or []:
+        dep_todo = _todo_item_by_id(str(dep_id))
+        if not dep_todo or dep_todo.get("status") != "done":
+            return False
+    return True
+
+
+def _promote_next_ready_atom() -> dict[str, Any] | None:
+    """Mark the next dependency-ready pending atom as in_progress."""
+    atoms = _current_semantic_plan.get("atoms")
+    if not isinstance(atoms, list):
+        return None
+    for atom in atoms:
+        if not isinstance(atom, dict):
+            continue
+        atom_id = str(atom.get("atom_id") or "").strip()
+        todo = _todo_item_by_id(atom_id)
+        if not todo or todo.get("status") != "pending":
+            continue
+        if not _todo_dependencies_satisfied(atom):
+            continue
+        todo["status"] = "in_progress"
+        event = {
+            "event": "atom_promoted",
+            "atom_id": atom_id,
+            "sub_question": atom.get("sub_question"),
+        }
+        _record_atom_lifecycle_event(event)
+        return event
+    return None
+
+
+def _extract_evidence_refs(payload: dict[str, Any]) -> list[str]:
+    """Collect compact evidence references from a tool payload."""
+    refs: list[str] = []
+    seen: set[str] = set()
+
+    def _maybe_add(value: Any) -> None:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        refs.append(text)
+
+    for key in ("chunk_ids", "evidence_refs"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            for item in value[:5]:
+                _maybe_add(item)
+
+    for list_key in ("chunks", "relationships", "resolved_entities", "matches", "similar_entities"):
+        items = payload.get(list_key)
+        if not isinstance(items, list):
+            continue
+        for item in items[:5]:
+            if not isinstance(item, dict):
+                continue
+            for key in ("chunk_id", "relationship_id", "resolved_entity_id", "entity_id", "entity_name"):
+                if key in item:
+                    _maybe_add(item.get(key))
+    return refs[:5]
+
+
+def _build_atom_completion_evidence(payload: dict[str, Any], *, tool_name: str, method: str) -> str:
+    """Linearize a tool payload into compact evidence for atom completion."""
+    lines: list[str] = []
+    refs = _extract_evidence_refs(payload)
+    if refs:
+        lines.append(f"Evidence refs: {', '.join(refs)}")
+
+    chunks = payload.get("chunks")
+    if isinstance(chunks, list):
+        for chunk in chunks[:3]:
+            if not isinstance(chunk, dict):
+                continue
+            chunk_id = str(chunk.get("chunk_id") or "").strip()
+            text = str(chunk.get("text") or chunk.get("text_content") or chunk.get("content") or "").strip()
+            if text:
+                lines.append(f"[{chunk_id or 'chunk'}] {text[:800]}")
+
+    relationships = payload.get("relationships")
+    if isinstance(relationships, list):
+        for rel in relationships[:8]:
+            if not isinstance(rel, dict):
+                continue
+            src = rel.get("src_id") or rel.get("source") or rel.get("source_id")
+            tgt = rel.get("tgt_id") or rel.get("target") or rel.get("target_id")
+            desc = rel.get("description") or rel.get("relationship_description") or rel.get("text") or ""
+            if src or tgt or desc:
+                lines.append(f"REL {src} -> {tgt}: {desc}".strip())
+
+    for key in ("resolved_entities", "matches", "similar_entities", "connected_entities", "neighbors", "ranked_entities"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            preview = []
+            for item in value[:8]:
+                if isinstance(item, dict):
+                    name = (
+                        item.get("resolved_entity_name")
+                        or item.get("canonical_name")
+                        or item.get("entity_name")
+                        or item.get("entity_id")
+                    )
+                    desc = item.get("description") or item.get("short_description") or ""
+                    preview.append(f"{name}: {desc}".strip(": "))
+                else:
+                    preview.append(str(item))
+            if preview:
+                lines.append(f"{key}: " + " | ".join(preview))
+        elif isinstance(value, dict):
+            preview = []
+            for entity, neighbors in list(value.items())[:4]:
+                preview.append(f"{entity}: {str(neighbors)[:300]}")
+            if preview:
+                lines.append(f"{key}: " + " | ".join(preview))
+
+    if not lines:
+        raw_preview = json.dumps(payload, ensure_ascii=False)[:1200]
+        lines.append(f"{tool_name}/{method}: {raw_preview}")
+
+    return "\n".join(lines[:12])
+
+
+async def _infer_atom_completion_with_llm(
+    atom: dict[str, Any],
+    todo: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    tool_name: str,
+    method: str,
+) -> dict[str, Any] | None:
+    """Ask a small internal judge whether the current atom is fully resolved."""
+    from pydantic import BaseModel, Field
+    from llm_client import acall_llm_structured, render_prompt
+
+    class AtomCompletionDecision(BaseModel):
+        should_mark_done: bool = Field(
+            description="True only if the evidence directly resolves the current atom."
+        )
+        resolved_value: str = Field(
+            description="Shortest factual span answering the atom. Empty if unresolved."
+        )
+        confidence: float = Field(
+            description="Confidence from 0 to 1 that the atom is directly resolved."
+        )
+        evidence_refs: list[str] = Field(
+            description="Chunk IDs or entity IDs that best support the resolved value."
+        )
+        rationale: str = Field(
+            description="Short explanation of why the atom is or is not resolved."
+        )
+
+    dependency_values = _resolved_dependency_values(atom)
+    evidence_text = _build_atom_completion_evidence(payload, tool_name=tool_name, method=method)
+    if not evidence_text.strip():
+        return None
+
+    prompt_path = str(Path(__file__).parent / "prompts" / "atom_completion_guard.yaml")
+    messages = render_prompt(
+        prompt_path,
+        question=_current_question or _current_semantic_plan_question or "",
+        atom_id=str(atom.get("atom_id") or ""),
+        atom_sub_question=str(atom.get("sub_question") or ""),
+        answer_kind=_normalize_answer_kind(str(atom.get("answer_kind") or "")) or "entity",
+        todo_content=str(todo.get("content") or ""),
+        dependency_values=", ".join(dependency_values) if dependency_values else "(none)",
+        tool_name=tool_name,
+        method=method,
+        effective_query=str((payload.get("query_contract") or {}).get("effective_query") or ""),
+        evidence_text=evidence_text,
+    )
+
+    llm = _state.get("agentic_llm")
+    model = llm.model if llm else _state["config"].llm.model
+    trace_id = f"digimon.atom_completion.{tool_name}.{uuid.uuid4().hex[:8]}"
+    try:
+        decision, _meta = await acall_llm_structured(
+            model,
+            messages,
+            response_model=AtomCompletionDecision,
+            task="digimon.atom_completion",
+            trace_id=trace_id,
+            max_budget=0,
+        )
+    except Exception as exc:
+        logger.warning("atom completion judge failed: %s", exc)
+        return None
+
+    resolved_value = str(decision.resolved_value or "").strip()
+    if not decision.should_mark_done or not resolved_value:
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": str(atom.get("atom_id") or ""),
+            "tool_name": tool_name,
+            "method": method,
+            "confidence": float(decision.confidence or 0.0),
+            "rationale": decision.rationale,
+        }
+
+    return {
+        "event": "atom_autocomplete",
+        "atom_id": str(atom.get("atom_id") or ""),
+        "resolved_value": resolved_value,
+        "confidence": float(decision.confidence or 0.0),
+        "evidence_refs": [str(ref).strip() for ref in (decision.evidence_refs or []) if str(ref).strip()],
+        "rationale": decision.rationale,
+        "tool_name": tool_name,
+        "method": method,
+    }
+
+
+async def _probe_bridge_candidates_with_text(
+    candidates: list[str],
+    *,
+    payload: dict[str, Any],
+    downstream_atom: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Probe bridge candidates with a lightweight downstream-focused text search."""
+    if not candidates:
+        return []
+
+    dataset_name = str(payload.get("resolved_dataset_name") or "").strip()
+    if not dataset_name:
+        dataset_name = _dataset_name_from_graph_reference(str(payload.get("resolved_graph_reference_id") or ""))
+    if not dataset_name:
+        return []
+
+    downstream_query = _compact_search_query(str(downstream_atom.get("sub_question") or ""))
+    focus_tokens = [
+        token
+        for token in downstream_query.split()
+        if token.lower() not in {"the", "when", "what", "where", "which", "entity", "identified", "in", "a1", "a2", "birthplace", "location"}
+    ]
+    if not focus_tokens:
+        return []
+    focus_text = " ".join(focus_tokens[:2])
+
+    probe_results: list[dict[str, Any]] = []
+    for candidate in candidates[:4]:
+        query = f"{candidate} {focus_text}".strip()
+        try:
+            raw = await chunk_text_search(query_text=query, dataset_name=dataset_name, top_k=2)
+            probe_payload = json.loads(raw)
+        except Exception:
+            continue
+        if not isinstance(probe_payload, dict):
+            continue
+        chunks = probe_payload.get("chunks")
+        if not isinstance(chunks, list) or not chunks:
+            continue
+        best_chunk = None
+        best_score = -1.0
+        for chunk in chunks[:2]:
+            if not isinstance(chunk, dict):
+                continue
+            text = str(chunk.get("text") or "").lower()
+            score = 0.0
+            if candidate.lower() in text:
+                score += 1.0
+            if any(token.lower() in text for token in focus_tokens[:2]):
+                score += 2.0
+            if re.search(r"\b\d{3,4}\b", text):
+                score += 1.5
+            if score > best_score:
+                best_score = score
+                best_chunk = chunk
+        if best_chunk and best_score > 0:
+            probe_results.append(
+                {
+                    "candidate": candidate,
+                    "query": query,
+                    "score": best_score,
+                    "chunk_id": str(best_chunk.get("chunk_id") or ""),
+                    "snippet": str(best_chunk.get("text") or "")[:400],
+                }
+            )
+
+    probe_results.sort(key=lambda item: (-float(item.get("score") or 0.0), item.get("candidate") or ""))
+    return probe_results
+
+
+async def _infer_bridge_candidate_with_llm(
+    atom: dict[str, Any],
+    todo: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    tool_name: str,
+    method: str,
+) -> dict[str, Any] | None:
+    """Infer a provisional bridge entity when downstream clues strongly favor one candidate."""
+    downstream_atom = _next_dependent_atom(atom)
+    if downstream_atom is None:
+        return None
+
+    candidates = _bridge_candidate_names(payload, current_atom=atom)
+    if len(candidates) < 2:
+        return None
+
+    probe_results = await _probe_bridge_candidates_with_text(
+        candidates,
+        payload=payload,
+        downstream_atom=downstream_atom,
+    )
+    if probe_results:
+        top_probe = probe_results[0]
+        runner_up_score = float(probe_results[1].get("score") or 0.0) if len(probe_results) > 1 else 0.0
+        top_score = float(top_probe.get("score") or 0.0)
+        if top_score >= 3.0 and top_score >= runner_up_score + 1.0:
+            resolved_value = str(top_probe.get("candidate") or "").strip()
+            chunk_id = str(top_probe.get("chunk_id") or "").strip()
+            return {
+                "event": "atom_autocomplete",
+                "atom_id": str(atom.get("atom_id") or ""),
+                "resolved_value": resolved_value,
+                "confidence": min(0.9, 0.55 + 0.08 * top_score),
+                "evidence_refs": [chunk_id] if chunk_id else [],
+                "rationale": (
+                    f"{resolved_value} is the only bridge candidate that surfaces the downstream clue "
+                    f"'{str(downstream_atom.get('sub_question') or '').strip()}' in text evidence."
+                ),
+                "tool_name": tool_name,
+                "method": method,
+                "resolution_mode": "bridge_probe",
+            }
+
+    from pydantic import BaseModel, Field
+    from llm_client import acall_llm_structured, render_prompt
+
+    class BridgeDecision(BaseModel):
+        should_advance: bool = Field(
+            description="True only if one bridge candidate is clearly favored by the downstream clue."
+        )
+        bridge_value: str = Field(
+            description="Chosen bridge entity value. Empty if no candidate is strong enough."
+        )
+        confidence: float = Field(
+            description="Confidence from 0 to 1 that the chosen bridge should advance the plan."
+        )
+        rationale: str = Field(
+            description="Short evidence-grounded explanation for the bridge choice or rejection."
+        )
+        evidence_refs: list[str] = Field(
+            description="Chunk or entity refs supporting the bridge choice."
+        )
+
+    evidence_text = _build_atom_completion_evidence(payload, tool_name=tool_name, method=method)
+    prompt_path = str(Path(__file__).parent / "prompts" / "atom_bridge_guard.yaml")
+    messages = render_prompt(
+        prompt_path,
+        question=_current_question or _current_semantic_plan_question or "",
+        atom_id=str(atom.get("atom_id") or ""),
+        atom_sub_question=str(atom.get("sub_question") or ""),
+        downstream_atom_id=str(downstream_atom.get("atom_id") or ""),
+        downstream_sub_question=str(downstream_atom.get("sub_question") or ""),
+        todo_content=str(todo.get("content") or ""),
+        source_entity=str(payload.get("canonical_name") or payload.get("entity_id") or ""),
+        candidates_json=json.dumps(candidates, ensure_ascii=False),
+        evidence_text=evidence_text,
+    )
+
+    llm = _state.get("agentic_llm")
+    model = llm.model if llm else _state["config"].llm.model
+    trace_id = f"digimon.atom_bridge.{tool_name}.{uuid.uuid4().hex[:8]}"
+    try:
+        decision, _meta = await acall_llm_structured(
+            model,
+            messages,
+            response_model=BridgeDecision,
+            task="digimon.atom_bridge",
+            trace_id=trace_id,
+            max_budget=0,
+        )
+    except Exception as exc:
+        logger.warning("atom bridge judge failed: %s", exc)
+        return None
+
+    bridge_value = str(decision.bridge_value or "").strip()
+    confidence = float(decision.confidence or 0.0)
+    if not decision.should_advance or not bridge_value or confidence < _ATOM_BRIDGE_MIN_CONFIDENCE:
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": str(atom.get("atom_id") or ""),
+            "tool_name": tool_name,
+            "method": method,
+            "confidence": confidence,
+            "rationale": str(decision.rationale or "").strip() or "Bridge evidence is still too weak to advance.",
+        }
+
+    return {
+        "event": "atom_autocomplete",
+        "atom_id": str(atom.get("atom_id") or ""),
+        "resolved_value": bridge_value,
+        "confidence": confidence,
+        "evidence_refs": [str(ref).strip() for ref in (decision.evidence_refs or []) if str(ref).strip()],
+        "rationale": str(decision.rationale or "").strip(),
+        "tool_name": tool_name,
+        "method": method,
+        "resolution_mode": "bridge_inference",
+    }
+
+
+def _apply_atom_completion_update(atom: dict[str, Any], todo: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
+    """Persist an atom-completion decision into TODO state and advance the plan."""
+    resolved_value = str(update.get("resolved_value") or "").strip()
+    evidence_refs = [str(ref).strip() for ref in (update.get("evidence_refs") or []) if str(ref).strip()]
+    todo["status"] = "done"
+    todo["answer"] = resolved_value
+    resolution_mode = str(update.get("resolution_mode") or "").strip()
+    if resolution_mode:
+        todo["resolution_mode"] = resolution_mode
+    if evidence_refs:
+        todo["evidence_refs"] = evidence_refs
+    atom_update = {
+        "event": "atom_completed",
+        "atom_id": str(atom.get("atom_id") or ""),
+        "sub_question": str(atom.get("sub_question") or ""),
+        "resolved_value": resolved_value,
+        "confidence": float(update.get("confidence") or 0.0),
+        "evidence_refs": evidence_refs,
+        "rationale": str(update.get("rationale") or ""),
+        "tool_name": str(update.get("tool_name") or ""),
+        "method": str(update.get("method") or ""),
+    }
+    if resolution_mode:
+        atom_update["resolution_mode"] = resolution_mode
+    _record_atom_lifecycle_event(atom_update)
+    promoted = _promote_next_ready_atom()
+    if promoted:
+        atom_update["next_atom"] = promoted.get("atom_id")
+    atom_update["todo_status_line"] = _todo_status_line()
+    return atom_update
+
+
+async def _maybe_complete_active_atom_from_payload(
+    payload: dict[str, Any],
+    *,
+    tool_name: str,
+    method: str,
+) -> dict[str, Any] | None:
+    """Try to auto-complete the current atom from a retrieval payload."""
+    atom, todo = _active_semantic_plan_atom()
+    if atom is None or todo is None:
+        return None
+    if todo.get("status") == "done":
+        return None
+    answer_kind = _normalize_answer_kind(str(atom.get("answer_kind") or ""))
+    if tool_name == "entity_search" and method == "string" and answer_kind == "entity":
+        top_match = _best_entity_search_match(payload)
+        score = float((top_match or {}).get("match_score") or (top_match or {}).get("score") or 0.0)
+        if top_match and score >= _ENTITY_SUBJECT_AUTO_PROFILE_MIN_SCORE:
+            candidate_name = str(
+                top_match.get("canonical_name")
+                or top_match.get("entity_name")
+                or top_match.get("resolved_entity_name")
+                or ""
+            ).strip()
+            resolved_graph_id = str(payload.get("resolved_graph_reference_id") or "").strip()
+            dataset_name = str(payload.get("dataset_name") or "").strip()
+            if candidate_name and resolved_graph_id:
+                try:
+                    profile_raw = await entity_profile(
+                        entity_name=candidate_name,
+                        graph_reference_id=resolved_graph_id,
+                        dataset_name=dataset_name,
+                    )
+                    profile_payload = json.loads(profile_raw)
+                except Exception:
+                    profile_payload = None
+                if isinstance(profile_payload, dict):
+                    update = await _infer_atom_completion_with_llm(
+                        atom,
+                        todo,
+                        profile_payload,
+                        tool_name="entity_info",
+                        method="profile",
+                    )
+                    if update and update.get("event") == "atom_autocomplete":
+                        return _apply_atom_completion_update(atom, todo, update)
+                    bridge_update = await _infer_bridge_candidate_with_llm(
+                        atom,
+                        todo,
+                        profile_payload,
+                        tool_name="entity_info",
+                        method="profile",
+                    )
+                    if bridge_update and bridge_update.get("event") == "atom_autocomplete":
+                        return _apply_atom_completion_update(atom, todo, bridge_update)
+        return None
+
+    if tool_name not in {"chunk_retrieve", "relationship_search", "entity_info"}:
+        return None
+
+    update = await _infer_atom_completion_with_llm(
+        atom,
+        todo,
+        payload,
+        tool_name=tool_name,
+        method=method,
+    )
+    if not update:
+        return None
+    if update.get("event") != "atom_autocomplete":
+        bridge_update: dict[str, Any] | None = None
+        if answer_kind == "entity" and tool_name in {"entity_info", "relationship_search"}:
+            bridge_update = await _infer_bridge_candidate_with_llm(
+                atom,
+                todo,
+                payload,
+                tool_name=tool_name,
+                method=method,
+            )
+        if bridge_update and bridge_update.get("event") == "atom_autocomplete":
+            return _apply_atom_completion_update(atom, todo, bridge_update)
+        if bridge_update and bridge_update.get("event") == "atom_judged_unresolved":
+            update = bridge_update
+        if tool_name == "chunk_retrieve" and answer_kind == "entity":
+            update["next_action"] = (
+                "Switch surfaces: resolve the subject entity in the graph with "
+                "entity_search(method='string'), then inspect entity_info(profile) "
+                "or relationship_search(graph). Do not guess a bridge entity yet."
+            )
+        elif tool_name in {"entity_info", "relationship_search"} and answer_kind == "entity":
+            update["next_action"] = (
+                "If the graph exposes multiple connected places, choose the bridge entity "
+                "that best fits the downstream atom before searching for the final date."
+            )
+        _record_atom_lifecycle_event(update)
+        return update
+    return _apply_atom_completion_update(atom, todo, update)
 
 
 def _normalize_answer_kind(answer_kind: str) -> str:
@@ -2589,6 +3268,8 @@ async def entity_string_search(
             "matches": results,
             "total_matches": len(scored),
             "query_contract": query_contract,
+            "resolved_graph_reference_id": resolved_graph_id,
+            "dataset_name": dataset_name,
         },
         indent=2,
     )
@@ -3228,6 +3909,7 @@ async def entity_profile(
             "connected_entities": connected_entities[:10],
             "evidence_refs": evidence_refs,
             "resolved_graph_reference_id": resolved_graph_id,
+            "resolved_dataset_name": _dataset_name_from_graph_reference(resolved_graph_id),
             "status_message": f"Entity profile resolved. {edge_count} connections." + (" Use entity_traverse or relationship_search to explore." if edge_count > 0 else " No graph edges — use chunk_retrieve for evidence."),
         },
         indent=2,
@@ -3648,6 +4330,8 @@ async def relationship_onehop(entity_ids: list[str] | str | None, graph_referenc
     )
     result = await relationship_one_hop_neighbors_tool(inputs, _state["context"])
     if BENCHMARK_MODE:
+        if os.environ.get("DIGIMON_CONSOLIDATED_TOOLS", "").strip().lower() in {"1", "true", "yes"}:
+            return _format_result(result)
         return _format_relationship_onehop(result)
     return _format_result(result)
 
