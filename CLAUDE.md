@@ -11,6 +11,31 @@ DIGIMON is a **composable retrieval system** where agents build and query knowle
 - **Retrieval is adaptive**: The agent chooses text search for simple factoid questions, VDB for semantic similarity, and graph traversal (PPR, multi-hop, subgraph extraction) only when the question structure demands it. Graph operators are available but not forced.
 - **Graph isn't always better**: For many question types, text search or VDB outperforms graph traversal. The adaptive agent should recognize this and use simpler methods when they're sufficient, avoiding the cost and noise of graph operations on questions that don't need them.
 
+## Autonomous Execution Mandate
+
+For active DIGIMON implementation and benchmark iterations, the default is
+**continuous autonomous execution**:
+
+- Do not pause after a partial slice just to ask what to do next.
+- If uncertainty remains, log it in the active plan or `KNOWLEDGE.md` and keep
+  moving with the best bounded next step.
+- Treat benchmark failures as routing, representation, tool-contract, or
+  answer-synthesis diagnostics. Investigate, classify, fix, re-run.
+- Continue through the planned phase sequence until one of these happens:
+  1. the current milestone's acceptance criteria are met,
+  2. a real external blocker appears (missing dependency, unavailable service,
+     corrupted artifact, exhausted budget guardrail),
+  3. three materially different attempts fail without new information, which
+     triggers a documented strategy change instead of another blind retry.
+- "Needs more iteration" is not a stopping condition by itself. The agent must
+  record the current failure family, choose the next systemic fix, and continue.
+
+For the current thesis work, this means the agent should keep running the
+failure-driven loop overnight: implement the next control-layer fix, verify on a
+small slice, run the targeted MuSiQue batch, diagnose the remaining misses, and
+immediately start the next systemic repair until the active plan is exhausted or
+an explicit escalation criterion is hit.
+
 ## Core Architecture
 
 **Uniform operator signature** (all 28 operators):

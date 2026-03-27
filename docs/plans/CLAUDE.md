@@ -34,6 +34,7 @@ See [ROADMAP.md](ROADMAP.md) for phase sequence, gates, budget, and escalation c
 | 17 | [Re-Test Thesis with Clean Architecture](17_retest_thesis.md) | High | 🚧 In Progress | - |
 | 18 | [PTC Validation (conditional)](18_ptc_validation.md) | Medium | 📋 Planned | - |
 | 20 | [Tool Linearization + Restore Planning Tools](20_tool_linearization_and_planning_restore.md) | High | ✅ Complete | - |
+| 21 | [Autonomous Failure-Iteration Sprint](21_autonomous_failure_iteration_sprint.md) | High | 🚧 In Progress | Decision-grade Plan #17 rerun |
 
 ## Status Key
 
