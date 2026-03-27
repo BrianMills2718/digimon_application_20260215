@@ -6,7 +6,6 @@ import json as _json
 from typing import List, Tuple, Dict, Any, Optional
 
 import numpy as np
-from pydantic import BaseModel
 
 from Core.AgentSchema.context import GraphRAGContext
 from Core.AgentSchema.tool_contracts import (
@@ -25,11 +24,6 @@ from Core.AgentSchema.tool_contracts import (
 )
 from Core.Schema.EntityRelation import Entity as CoreEntity
 from Core.Graph.BaseGraph import BaseGraph
-from Core.Index.FaissIndex import FaissIndex
-from Core.Index.BaseIndex import BaseIndex
-from Core.Index.Schema import FAISSIndexConfig
-from Core.AgentTools.index_config_helper import create_faiss_index_config
-from Core.Provider.BaseEmb import BaseEmb
 
 logger = logging.getLogger(__name__)
 

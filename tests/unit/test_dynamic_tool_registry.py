@@ -34,6 +34,7 @@ class TestDynamicToolRegistry:
         assert "Entity.VDBSearch" in registry
         assert "graph.BuildERGraph" in registry
         assert "corpus.PrepareFromDirectory" in registry
+        assert "social.IngestCOVIDDataset" not in registry
     
     def test_tool_categorization(self, registry):
         """Test that tools are correctly categorized"""
@@ -96,7 +97,9 @@ class TestDynamicToolRegistry:
         """Test discovering tools by tags"""
         entity_tools = registry.discover_tools(tags=["entity"])
         assert len(entity_tools) > 0
-        assert all("Entity" in tid for tid in entity_tools)
+        assert "Entity.VDBSearch" in entity_tools
+        assert "Entity.PPR" in entity_tools
+        assert "Chunk.GetTextForEntities" in entity_tools
         
         graph_tools = registry.discover_tools(tags=["graph"])
         assert len(graph_tools) > 0

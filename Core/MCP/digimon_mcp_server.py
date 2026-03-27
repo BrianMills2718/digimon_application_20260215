@@ -22,12 +22,6 @@ from Core.AgentSchema.corpus_tool_contracts import (
     PrepareCorpusInputs, PrepareCorpusOutputs
 )
 
-# Import tool implementations
-from Core.AgentTools.entity_tools import entity_vdb_search_tool
-from Core.AgentTools.graph_construction_tools import build_er_graph
-from Core.AgentTools.corpus_tools import prepare_corpus_from_directory
-from Core.AgentTools.chunk_tools import chunk_get_text_for_entities_tool
-
 # Import core dependencies
 from Option.Config2 import Config
 from Core.Provider.LiteLLMProvider import LiteLLMProvider
@@ -90,6 +84,8 @@ class DigimonToolServer:
     async def entity_vdb_search_wrapper(self, **params):
         """Wrapper for Entity.VDBSearch tool"""
         try:
+            from Core.AgentTools.entity_tools import entity_vdb_search_tool
+
             # Extract session info
             session_id = params.pop('session_id', 'default')
             dataset_name = params.pop('dataset_name', 'default')
@@ -117,6 +113,8 @@ class DigimonToolServer:
     async def graph_build_wrapper(self, **params):
         """Wrapper for Graph.Build tool (using ERGraph as default)"""
         try:
+            from Core.AgentTools.graph_construction_tools import build_er_graph
+
             # Extract session info
             session_id = params.pop('session_id', 'default')
             dataset_name = params.get('target_dataset_name', 'default')
@@ -157,6 +155,8 @@ class DigimonToolServer:
     async def corpus_prepare_wrapper(self, **params):
         """Wrapper for Corpus.Prepare tool"""
         try:
+            from Core.AgentTools.corpus_tools import prepare_corpus_from_directory
+
             # Extract session info
             session_id = params.pop('session_id', 'default')
             
@@ -182,6 +182,8 @@ class DigimonToolServer:
     async def chunk_retrieve_wrapper(self, **params):
         """Wrapper for Chunk.Retrieve tool (using GetTextForEntities)"""
         try:
+            from Core.AgentTools.chunk_tools import chunk_get_text_for_entities_tool
+
             # Extract session info
             session_id = params.pop('session_id', 'default')
             dataset_name = params.pop('dataset_name', 'default')

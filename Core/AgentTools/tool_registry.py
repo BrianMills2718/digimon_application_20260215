@@ -1,10 +1,11 @@
 # Core/AgentTools/tool_registry.py
 
+import os
+from importlib import import_module
 from typing import Dict, List, Callable, Type, Any, Optional, Tuple, Set
 from enum import Enum
 from dataclasses import dataclass, field
 from datetime import datetime
-import inspect
 from pydantic import BaseModel
 from Core.Common.Logger import logger
 
@@ -74,58 +75,17 @@ class DynamicToolRegistry:
     and discovery capabilities.
     """
     
-    def __init__(self):
+    def __init__(self, include_experimental: Optional[bool] = None):
         self._tools: Dict[str, ToolRegistration] = {}
         self._capability_index: Dict[ToolCapability, Set[str]] = {cap: set() for cap in ToolCapability}
         self._category_index: Dict[ToolCategory, Set[str]] = {cat: set() for cat in ToolCategory}
+        if include_experimental is None:
+            include_experimental = os.environ.get("DIGIMON_ENABLE_EXPERIMENTAL_TOOLS", "0") == "1"
+        self.include_experimental = include_experimental
         self._initialize_default_tools()
-        
+
     def _initialize_default_tools(self):
-        """Initialize with default DIGIMON tools"""
-        # Import tool functions
-        from Core.AgentTools.entity_tools import entity_vdb_search_tool, entity_ppr_tool
-        from Core.AgentTools.entity_vdb_tools import entity_vdb_build_tool
-        from Core.AgentTools.entity_onehop_tools import entity_onehop_neighbors_tool
-        from Core.AgentTools.entity_relnode_tools import entity_relnode_extract_tool
-        from Core.AgentTools.relationship_tools import (
-            relationship_one_hop_neighbors_tool,
-            relationship_vdb_build_tool,
-            relationship_vdb_search_tool,
-            relationship_score_aggregator_tool,
-            relationship_agent_tool,
-        )
-        from Core.AgentTools.chunk_tools import (
-            chunk_from_relationships_tool, chunk_get_text_for_entities_tool,
-            chunk_occurrence_tool, chunk_aggregator_tool,
-        )
-        from Core.AgentTools.community_tools import (
-            community_detect_from_entities_tool, community_get_layer_tool,
-        )
-        from Core.AgentTools.subgraph_tools import (
-            subgraph_khop_paths_tool, subgraph_steiner_tree_tool, subgraph_agent_path_tool,
-        )
-        from Core.AgentTools.entity_tools import (
-            entity_agent_tool, entity_link_tool, entity_tfidf_tool,
-        )
-        from Core.AgentTools.graph_construction_tools import (
-            build_er_graph, build_rk_graph, build_tree_graph, 
-            build_tree_graph_balanced, build_passage_graph
-        )
-        from Core.AgentTools.corpus_tools import prepare_corpus_from_directory
-        from Core.AgentTools.graph_visualization_tools import visualize_graph
-        from Core.AgentTools.graph_analysis_tools import analyze_graph
-        
-        # Import social media analysis tools
-        try:
-            from Core.AgentTools.social_media_dataset_tools import (
-                ingest_covid_conspiracy_dataset, DatasetIngestionInput
-            )
-            from Core.AgentTools.automated_interrogative_planner import (
-                generate_interrogative_analysis_plans, AutoInterrogativePlanInput
-            )
-        except ImportError:
-            logger.warning("Social media analysis tools not found, skipping registration")
-        
+        """Initialize with default DIGIMON tools."""
         # Import input models
         from Core.AgentSchema.tool_contracts import (
             EntityVDBSearchInputs, EntityVDBBuildInputs, EntityPPRInputs,
@@ -144,7 +104,38 @@ class DynamicToolRegistry:
             BuildERGraphInputs, BuildRKGraphInputs, BuildTreeGraphInputs,
             BuildTreeGraphBalancedInputs, BuildPassageGraphInputs
         )
-        
+
+        entity_vdb_search_tool = _lazy_tool_callable("Core.AgentTools.entity_tools", "entity_vdb_search_tool")
+        entity_ppr_tool = _lazy_tool_callable("Core.AgentTools.entity_tools", "entity_ppr_tool")
+        entity_vdb_build_tool = _lazy_tool_callable("Core.AgentTools.entity_vdb_tools", "entity_vdb_build_tool")
+        entity_onehop_neighbors_tool = _lazy_tool_callable("Core.AgentTools.entity_onehop_tools", "entity_onehop_neighbors_tool")
+        entity_relnode_extract_tool = _lazy_tool_callable("Core.AgentTools.entity_relnode_tools", "entity_relnode_extract_tool")
+        relationship_one_hop_neighbors_tool = _lazy_tool_callable("Core.AgentTools.relationship_tools", "relationship_one_hop_neighbors_tool")
+        relationship_vdb_build_tool = _lazy_tool_callable("Core.AgentTools.relationship_tools", "relationship_vdb_build_tool")
+        relationship_vdb_search_tool = _lazy_tool_callable("Core.AgentTools.relationship_tools", "relationship_vdb_search_tool")
+        relationship_score_aggregator_tool = _lazy_tool_callable("Core.AgentTools.relationship_tools", "relationship_score_aggregator_tool")
+        relationship_agent_tool = _lazy_tool_callable("Core.AgentTools.relationship_tools", "relationship_agent_tool")
+        chunk_from_relationships_tool = _lazy_tool_callable("Core.AgentTools.chunk_tools", "chunk_from_relationships_tool")
+        chunk_get_text_for_entities_tool = _lazy_tool_callable("Core.AgentTools.chunk_tools", "chunk_get_text_for_entities_tool")
+        chunk_occurrence_tool = _lazy_tool_callable("Core.AgentTools.chunk_tools", "chunk_occurrence_tool")
+        chunk_aggregator_tool = _lazy_tool_callable("Core.AgentTools.chunk_tools", "chunk_aggregator_tool")
+        community_detect_from_entities_tool = _lazy_tool_callable("Core.AgentTools.community_tools", "community_detect_from_entities_tool")
+        community_get_layer_tool = _lazy_tool_callable("Core.AgentTools.community_tools", "community_get_layer_tool")
+        subgraph_khop_paths_tool = _lazy_tool_callable("Core.AgentTools.subgraph_tools", "subgraph_khop_paths_tool")
+        subgraph_steiner_tree_tool = _lazy_tool_callable("Core.AgentTools.subgraph_tools", "subgraph_steiner_tree_tool")
+        subgraph_agent_path_tool = _lazy_tool_callable("Core.AgentTools.subgraph_tools", "subgraph_agent_path_tool")
+        entity_agent_tool = _lazy_tool_callable("Core.AgentTools.entity_tools", "entity_agent_tool")
+        entity_link_tool = _lazy_tool_callable("Core.AgentTools.entity_tools", "entity_link_tool")
+        entity_tfidf_tool = _lazy_tool_callable("Core.AgentTools.entity_tools", "entity_tfidf_tool")
+        build_er_graph = _lazy_tool_callable("Core.AgentTools.graph_construction_tools", "build_er_graph")
+        build_rk_graph = _lazy_tool_callable("Core.AgentTools.graph_construction_tools", "build_rk_graph")
+        build_tree_graph = _lazy_tool_callable("Core.AgentTools.graph_construction_tools", "build_tree_graph")
+        build_tree_graph_balanced = _lazy_tool_callable("Core.AgentTools.graph_construction_tools", "build_tree_graph_balanced")
+        build_passage_graph = _lazy_tool_callable("Core.AgentTools.graph_construction_tools", "build_passage_graph")
+        prepare_corpus_from_directory = _lazy_tool_callable("Core.AgentTools.corpus_tools", "prepare_corpus_from_directory")
+        visualize_graph = _lazy_tool_callable("Core.AgentTools.graph_visualization_tools", "visualize_graph")
+        analyze_graph = _lazy_tool_callable("Core.AgentTools.graph_analysis_tools", "analyze_graph")
+
         # Register entity tools
         self.register_tool(
             tool_id="Entity.VDBSearch",
@@ -534,42 +525,62 @@ class DynamicToolRegistry:
                 tags=["graph", "analysis", "statistics"]
             )
         )
-        
-        # Register social media analysis tools if available
+
+        if self.include_experimental:
+            self._register_experimental_tools()
+
+        logger.info(
+            f"DynamicToolRegistry: Initialized with {len(self._tools)} "
+            f"default tools (experimental={self.include_experimental})"
+        )
+
+    def _register_experimental_tools(self) -> None:
+        """Register preserved non-default tools behind an explicit opt-in."""
         try:
-            self.register_tool(
+            from Core.AgentTools.social_media_dataset_tools import DatasetIngestionInput
+            from Core.AgentTools.automated_interrogative_planner import AutoInterrogativePlanInput
+        except ImportError as exc:
+            logger.warning("Experimental social media tools unavailable: %s", exc)
+            return
+
+        ingest_covid_conspiracy_dataset = _lazy_tool_callable(
+            "Core.AgentTools.social_media_dataset_tools",
+            "ingest_covid_conspiracy_dataset",
+        )
+        generate_interrogative_analysis_plans = _lazy_tool_callable(
+            "Core.AgentTools.automated_interrogative_planner",
+            "generate_interrogative_analysis_plans",
+        )
+
+        self.register_tool(
+            tool_id="social.IngestCOVIDDataset",
+            function=ingest_covid_conspiracy_dataset,
+            metadata=ToolMetadata(
                 tool_id="social.IngestCOVIDDataset",
-                function=ingest_covid_conspiracy_dataset,
-                metadata=ToolMetadata(
-                    tool_id="social.IngestCOVIDDataset",
-                    name="COVID Conspiracy Dataset Ingestion",
-                    description="Ingest COVID-19 conspiracy theory tweets from Hugging Face",
-                    category=ToolCategory.WRITE,
-                    capabilities={ToolCapability.DATA_PREPARATION},
-                    input_model=DatasetIngestionInput,
-                    tags=["social", "dataset", "covid", "conspiracy", "twitter"],
-                    performance_hint="Downloads dataset from internet"
-                )
+                name="COVID Conspiracy Dataset Ingestion",
+                description="Ingest COVID-19 conspiracy theory tweets from Hugging Face",
+                category=ToolCategory.WRITE,
+                capabilities={ToolCapability.DATA_PREPARATION},
+                input_model=DatasetIngestionInput,
+                tags=["social", "dataset", "covid", "conspiracy", "twitter"],
+                performance_hint="Downloads dataset from internet"
             )
-            
-            self.register_tool(
+        )
+
+        self.register_tool(
+            tool_id="social.AutoInterrogativePlanner",
+            function=generate_interrogative_analysis_plans,
+            metadata=ToolMetadata(
                 tool_id="social.AutoInterrogativePlanner",
-                function=generate_interrogative_analysis_plans,
-                metadata=ToolMetadata(
-                    tool_id="social.AutoInterrogativePlanner",
-                    name="Automated Interrogative Analysis Planner",
-                    description="Generate diverse analysis scenarios with interrogative views",
-                    category=ToolCategory.ANALYZE,
-                    capabilities={ToolCapability.ANALYSIS},
-                    input_model=AutoInterrogativePlanInput,
-                    tags=["social", "planning", "analysis", "interrogative"],
-                    performance_hint="LLM-powered planning"
-                )
+                name="Automated Interrogative Analysis Planner",
+                description="Generate diverse analysis scenarios with interrogative views",
+                category=ToolCategory.ANALYZE,
+                capabilities={ToolCapability.ANALYSIS},
+                input_model=AutoInterrogativePlanInput,
+                tags=["social", "planning", "analysis", "interrogative"],
+                performance_hint="LLM-powered planning"
             )
-        except Exception as e:
-            logger.warning(f"Could not register social media tools: {e}")
-        
-        logger.info(f"DynamicToolRegistry: Initialized with {len(self._tools)} default tools")
+        )
     
     def register_tool(
         self,
@@ -702,6 +713,20 @@ class DynamicToolRegistry:
     def __contains__(self, tool_id: str) -> bool:
         """Check if tool is registered"""
         return tool_id in self._tools
+
+
+def _lazy_tool_callable(module_path: str, attr_name: str) -> Callable:
+    """Return a callable that imports the real tool implementation on first use."""
+
+    def _wrapped(*args, **kwargs):
+        module = import_module(module_path)
+        target = getattr(module, attr_name)
+        return target(*args, **kwargs)
+
+    _wrapped.__name__ = attr_name
+    _wrapped.__qualname__ = attr_name
+    _wrapped.__doc__ = f"Lazy proxy for {module_path}.{attr_name}"
+    return _wrapped
 
 
 # Global registry instance
