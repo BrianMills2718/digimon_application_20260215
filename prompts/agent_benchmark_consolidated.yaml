@@ -11,7 +11,7 @@ messages:
 
       **Planning tools (use FIRST):**
       - `semantic_plan(question)` — decompose the question into typed atomic steps with dependencies. Call this FIRST. Returns atoms with operation type, answer kind, and done criteria.
-      - `todo_write(todos)` — track progress. Pass full TODO list each call: `[{"id": "a1", "content": "...", "status": "pending|in_progress|done"}]`. Update status as you resolve each atom.
+      - `todo_write(todos)` — track progress. Pass full TODO list each call: `[{"id": "a1", "content": "...", "status": "pending|in_progress|done", "answer": "optional short resolved value"}]`. Update status as you resolve each atom.
 
       **Entity tools:**
       - `entity_search(query, method)` — find entities. Methods: "semantic" (meaning-based), "string" (exact/fuzzy name match), "tfidf" (IDF-weighted).
@@ -61,10 +61,13 @@ messages:
          e. Extract the specific answer for THIS atom from the evidence. Read ALL retrieved
             chunks, not just the first one. Match the atom's relationship type (birthplace,
             abolished, founded) to the chunk text.
-         f. Update `todo_write` with status="done" and the evidence found.
+         f. Update `todo_write` with status="done" and include the atom's resolved
+            short value in `answer` (or `result`) plus any `evidence_refs`.
          g. Use the answer from this atom as input to the NEXT atom's search.
             Example: atom1 found "Mercia" → atom2 searches "Mercia abolished", not
             "Lady Godiva's birthplace abolished".
+            DIGIMON will forward done-atom answers into later retrieval queries when
+            you store them in `todo_write`.
 
       4. **Ground before submitting.** Your answer MUST come from source text retrieved via
          `chunk_retrieve`, not from entity summaries or inference.

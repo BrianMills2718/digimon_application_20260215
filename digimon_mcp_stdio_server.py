@@ -153,7 +153,7 @@ _BENCHMARK_SHORT_DESCS: dict[str, str] = {
     "subgraph_steiner_tree": "Minimal subgraph connecting a set of entities.",
     "meta_pcst_optimize": "Prize-collecting Steiner tree optimization (algorithmic).",
     "list_available_resources": "List loaded graphs, VDBs, and sparse matrices.",
-    "todo_write": "Replace full TODO list. Each item: id, content, status.",
+    "todo_write": "Replace full TODO list. Each item: id, content, status; optional answer/result for done atoms.",
     "semantic_plan": "Build typed semantic decomposition (atoms/dependencies/composition).",
     "bridge_disambiguate": "Choose best bridge entity from ambiguous candidates using downstream evidence.",
     "submit_answer": "Submit your final answer. Call once with your best answer.",
@@ -669,6 +669,21 @@ _current_question: str = ""
 _current_expected_answer_kind: str = ""
 _current_semantic_plan: dict[str, Any] = {}
 _current_semantic_plan_question: str = ""
+_QUERY_LEADIN_RE = re.compile(
+    r"^\s*(?:find|identify|determine|lookup|look up|resolve|show me|tell me|"
+    r"what(?:'s| is| was)?|who(?:'s| is| was)?|when(?:'s| is| was| did)?|"
+    r"where(?:'s| is| was)?|which)\b[:\s-]*",
+    flags=re.IGNORECASE,
+)
+_QUERY_PLACEHOLDER_RE = re.compile(
+    r"\b(?:that|this|these|those|it|its|their|his|her|them|there|then)\b",
+    flags=re.IGNORECASE,
+)
+_QUERY_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9'/-]*")
+_QUERY_STOPWORDS = {
+    "a", "an", "and", "at", "by", "for", "from", "how", "in", "into", "of",
+    "on", "or", "the", "to", "was", "were", "when", "where", "which", "who",
+}
 
 def _dedup_chunk(chunk_id: str, text: str) -> tuple[bool, str]:
     """Track a chunk. Returns (is_new, text_or_reference).
@@ -756,6 +771,188 @@ def _semantic_plan_atom_by_id(atom_id: str) -> dict[str, Any] | None:
         if isinstance(atom, dict) and (atom.get("atom_id") or "").strip() == aid:
             return atom
     return None
+
+
+def _todo_item_by_id(todo_id: str) -> dict[str, Any] | None:
+    """Return the current TODO item for a given ID, if present."""
+    tid = (todo_id or "").strip()
+    if not tid:
+        return None
+    for item in _todos:
+        if isinstance(item, dict) and (item.get("id") or "").strip() == tid:
+            return item
+    return None
+
+
+def _normalize_query_compare_text(text: str) -> str:
+    """Normalize a query string for token-overlap comparisons."""
+    cleaned = re.sub(r"[^a-z0-9\s]+", " ", (text or "").lower())
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _query_token_overlap(left: str, right: str) -> float:
+    """Return Jaccard overlap between normalized token sets."""
+    left_tokens = set(_normalize_query_compare_text(left).split())
+    right_tokens = set(_normalize_query_compare_text(right).split())
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return len(left_tokens.intersection(right_tokens)) / len(left_tokens.union(right_tokens))
+
+
+def _compact_search_query(text: str) -> str:
+    """Strip question wrappers so retrieval queries focus on informative terms."""
+    candidate = _QUERY_LEADIN_RE.sub("", (text or "").strip())
+    candidate = _QUERY_PLACEHOLDER_RE.sub(" ", candidate)
+    candidate = re.sub(r"[^\w\s'/-]+", " ", candidate)
+    tokens = [token.strip() for token in candidate.split() if token.strip()]
+    filtered = [token for token in tokens if token.lower() not in _QUERY_STOPWORDS]
+    compact = " ".join(filtered or tokens)
+    return re.sub(r"\s+", " ", compact).strip(" ?.-")
+
+
+def _extract_todo_result_value(item: dict[str, Any] | None) -> str:
+    """Extract a compact resolved value from a completed TODO item."""
+    if not isinstance(item, dict):
+        return ""
+    for key in ("answer", "result", "resolved_value", "value", "output"):
+        raw = item.get(key)
+        if isinstance(raw, (list, tuple)):
+            value = ", ".join(str(part).strip() for part in raw if str(part).strip())
+        else:
+            value = str(raw or "").strip()
+        if value:
+            return value
+
+    content = str(item.get("content") or item.get("task") or "").strip()
+    for pattern in (
+        r"(?:=>|->|=)\s*(?P<value>[^|;]+)$",
+        r":\s*(?P<value>[A-Z0-9][^|;]+)$",
+    ):
+        match = re.search(pattern, content)
+        if not match:
+            continue
+        value = match.group("value").strip()
+        if value:
+            return value
+    return ""
+
+
+def _active_semantic_plan_atom() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Return the active semantic-plan atom and its TODO item."""
+    atoms = _current_semantic_plan.get("atoms")
+    if not isinstance(atoms, list) or not atoms:
+        return None, None
+
+    for status in ("in_progress", "pending"):
+        for todo in _todos:
+            if not isinstance(todo, dict) or todo.get("status") != status:
+                continue
+            atom = _semantic_plan_atom_by_id(str(todo.get("id") or ""))
+            if atom is not None:
+                return atom, todo
+
+    done_ids = {
+        str(todo.get("id") or "").strip()
+        for todo in _todos
+        if isinstance(todo, dict) and todo.get("status") == "done"
+    }
+    for atom in atoms:
+        if not isinstance(atom, dict):
+            continue
+        atom_id = str(atom.get("atom_id") or "").strip()
+        if atom_id and atom_id not in done_ids:
+            return atom, _todo_item_by_id(atom_id)
+    return None, None
+
+
+def _resolved_dependency_values(atom: dict[str, Any] | None) -> list[str]:
+    """Collect resolved values for dependencies of the active atom."""
+    if not isinstance(atom, dict):
+        return []
+    values: list[str] = []
+    seen: set[str] = set()
+    for dep_id in atom.get("depends_on") or []:
+        todo = _todo_item_by_id(str(dep_id))
+        if not todo or todo.get("status") != "done":
+            continue
+        value = _extract_todo_result_value(todo)
+        if not value:
+            continue
+        norm = value.casefold()
+        if norm in seen:
+            continue
+        seen.add(norm)
+        values.append(value)
+    return values
+
+
+def _build_retrieval_query_contract(
+    requested_query: str,
+    *,
+    tool_name: str,
+) -> tuple[str, dict[str, Any]]:
+    """Rewrite retrieval queries to the active atom and forward dependency values."""
+    requested = (requested_query or "").strip()
+    atom, todo = _active_semantic_plan_atom()
+    contract: dict[str, Any] = {
+        "tool_name": tool_name,
+        "requested_query": requested,
+        "effective_query": requested,
+        "rewritten": False,
+        "rewrite_reason": [],
+        "active_atom_id": "",
+        "active_atom_sub_question": "",
+        "active_atom_status": "",
+        "dependency_values_used": [],
+    }
+    if atom is None:
+        return requested, contract
+
+    atom_id = str(atom.get("atom_id") or "").strip()
+    atom_query = str(atom.get("sub_question") or "").strip()
+    active_status = str((todo or {}).get("status") or "").strip()
+    dependency_values = _resolved_dependency_values(atom)
+    contract.update(
+        {
+            "active_atom_id": atom_id,
+            "active_atom_sub_question": atom_query,
+            "active_atom_status": active_status,
+            "dependency_values_used": dependency_values,
+        }
+    )
+
+    effective = requested
+    reasons: list[str] = []
+    if atom_query and (not effective or _query_token_overlap(effective, _current_question) >= 0.75):
+        effective = atom_query
+        reasons.append("full_question_rewritten_to_active_atom")
+
+    if not effective and atom_query:
+        effective = atom_query
+        reasons.append("empty_query_rewritten_to_active_atom")
+
+    if dependency_values:
+        query_mentions_dependency = any(
+            _normalize_query_compare_text(dep) in _normalize_query_compare_text(effective)
+            for dep in dependency_values
+        )
+        if not query_mentions_dependency:
+            focus = _compact_search_query(effective or atom_query or requested)
+            dep_prefix = " ".join(dependency_values[:2])
+            effective = f"{dep_prefix} {focus}".strip()
+            reasons.append("dependency_values_forwarded")
+
+    compact_effective = _compact_search_query(effective or atom_query or requested)
+    if compact_effective and _normalize_query_compare_text(compact_effective) != _normalize_query_compare_text(effective):
+        effective = compact_effective
+        reasons.append("query_compacted_for_search")
+
+    contract["effective_query"] = effective
+    contract["rewrite_reason"] = reasons
+    contract["rewritten"] = bool(
+        reasons and _normalize_query_compare_text(effective) != _normalize_query_compare_text(requested)
+    )
+    return effective, contract
 
 
 def _todo_status_line() -> str:
@@ -2052,7 +2249,11 @@ async def entity_vdb_search(
     from Core.AgentTools.entity_tools import entity_vdb_search_tool
     from Core.AgentSchema.tool_contracts import EntityVDBSearchInputs
 
-    effective_query = (query_text or query or "").strip()
+    requested_query = (query_text or query or "").strip()
+    effective_query, query_contract = _build_retrieval_query_contract(
+        requested_query,
+        tool_name="entity_vdb_search",
+    )
     if not effective_query:
         return json.dumps({"error": "query_text is required"})
 
@@ -2125,6 +2326,7 @@ async def entity_vdb_search(
     payload = {
         "similar_entities": merged_sorted,
         "resolved_vdb_reference_id": resolved_vdb,
+        "query_contract": query_contract,
     }
     if len(query_variants) > 1:
         payload["query_variants_used"] = query_variants
@@ -2289,7 +2491,11 @@ async def entity_string_search(
         matches: list of {entity_name, entity_type, description, match_type}
     """
     await _ensure_initialized()
-    if not query.strip():
+    effective_query, query_contract = _build_retrieval_query_contract(
+        query,
+        tool_name="entity_string_search",
+    )
+    if not effective_query.strip():
         return json.dumps({"error": "query is required"})
 
     resolved_graph_id = _resolve_graph_reference_id(
@@ -2360,7 +2566,7 @@ async def entity_string_search(
 
         attrs = dict(G.nodes[raw_node_id])
         aliases = _entity_aliases(attrs)
-        match = score_entity_candidate(query_text=query, candidate_name=node_id, aliases=aliases)
+        match = score_entity_candidate(query_text=effective_query, candidate_name=node_id, aliases=aliases)
         if match.score <= 0:
             continue
         scored.append((match.score, node_id, match.match_type, attrs))
@@ -2378,7 +2584,14 @@ async def entity_string_search(
             "match_score": score,
         })
 
-    return json.dumps({"matches": results, "total_matches": len(scored)}, indent=2)
+    return json.dumps(
+        {
+            "matches": results,
+            "total_matches": len(scored),
+            "query_contract": query_contract,
+        },
+        indent=2,
+    )
 
 
 @mcp.tool()
@@ -4129,7 +4342,10 @@ async def chunk_text_search(query_text: str, dataset_name: str,
     from Core.Schema.SlotTypes import EntityRecord, SlotKind, SlotValue
 
     resolved_dataset_name = _resolve_dataset_name(dataset_name)
-    query_text_norm = (query_text or "").strip()
+    query_text_norm, query_contract = _build_retrieval_query_contract(
+        query_text,
+        tool_name="chunk_text_search",
+    )
     normalized_entities = _normalize_string_list(entity_names)
     if not query_text_norm and normalized_entities:
         query_text_norm = " ".join(normalized_entities)
@@ -4219,6 +4435,7 @@ async def chunk_text_search(query_text: str, dataset_name: str,
             ],
             "resolved_graph_reference_id": enriched.get("resolved_graph_reference_id"),
             "entity_candidates": compact_candidates,
+            "query_contract": query_contract,
         }, indent=2, default=str)
     return json.dumps(
         {
@@ -4227,6 +4444,7 @@ async def chunk_text_search(query_text: str, dataset_name: str,
             "entity_candidates": [],
             "entity_candidates_by_chunk": {},
             "candidate_summary": {"n_chunks_with_candidates": 0, "n_candidates": 0},
+            "query_contract": query_contract,
         },
         indent=2,
         default=str,
@@ -4290,7 +4508,10 @@ async def chunk_vdb_search(query_text: str, dataset_name: str,
     from Core.Schema.SlotTypes import SlotKind, SlotValue
 
     resolved_dataset_name = _resolve_dataset_name(dataset_name)
-    query_text_norm = (query_text or "").strip()
+    query_text_norm, query_contract = _build_retrieval_query_contract(
+        query_text,
+        tool_name="chunk_vdb_search",
+    )
     normalized_entities = _normalize_string_list(entity_names)
     if not query_text_norm and normalized_entities:
         query_text_norm = " ".join(normalized_entities)
@@ -4327,7 +4548,7 @@ async def chunk_vdb_search(query_text: str, dataset_name: str,
             )
         enriched = _enrich_chunks_with_entity_candidates(
             dataset_name=resolved_dataset_name,
-            query_text=query_text,
+            query_text=query_text_norm,
             chunks=deduped,
             max_candidates_per_chunk=max_candidates_per_chunk,
             max_total_candidates=24,
@@ -4356,6 +4577,7 @@ async def chunk_vdb_search(query_text: str, dataset_name: str,
                 ],
                 "resolved_graph_reference_id": enriched.get("resolved_graph_reference_id"),
                 "entity_candidates": compact_candidates,
+                "query_contract": query_contract,
             },
             indent=2,
             default=str,
@@ -4367,6 +4589,7 @@ async def chunk_vdb_search(query_text: str, dataset_name: str,
             "entity_candidates": [],
             "entity_candidates_by_chunk": {},
             "candidate_summary": {"n_chunks_with_candidates": 0, "n_candidates": 0},
+            "query_contract": query_contract,
         },
         indent=2,
         default=str,
@@ -6456,17 +6679,22 @@ if BENCHMARK_MODE:
             return json.dumps(result, indent=2)
 
     @mcp.tool()
-    async def todo_write(todos: list[dict[str, str]]) -> str:
+    async def todo_write(todos: list[dict[str, Any]]) -> str:
         """Replace the full TODO list. Each item must have id, content, and status.
 
         This is the only TODO management tool. Call it to set or update your
         plan. Pass the complete list every time — it replaces the previous state.
+        When an atom is resolved, include its short answer in `answer` or
+        `result` so later atoms can reuse it.
 
         Args:
             todos: List of TODO items. Each dict must contain:
                 - id: Short identifier (e.g., "a1", "a2")
                 - content: What this step needs to accomplish
                 - status: One of "pending", "in_progress", "done", "blocked"
+              Optional fields preserved for downstream atom execution:
+                - answer/result/resolved_value/value: short resolved value
+                - evidence_refs: chunk IDs or other evidence handles
 
         Returns:
             Confirmation with summary counts and compact status line.
@@ -6503,7 +6731,13 @@ if BENCHMARK_MODE:
             if tid in seen_ids:
                 raise ValueError(f"Duplicate TODO id: '{tid}'.")
             seen_ids.add(tid)
-            validated.append({"id": tid, "content": content, "status": status})
+            normalized_item = {"id": tid, "content": content, "status": status}
+            for extra_key in ("answer", "result", "resolved_value", "value", "output", "evidence_refs"):
+                extra_value = item.get(extra_key)
+                if extra_value is None:
+                    continue
+                normalized_item[extra_key] = extra_value
+            validated.append(normalized_item)
         _todos.clear()
         _todos.extend(validated)
         status_line = _todo_status_line()

@@ -212,6 +212,32 @@ def _linearize(raw_json: str, tool_name: str, method: str = "") -> str:
     _log_linearization(raw_json, summary, tool_name, method, logging.getLogger("digimon.linearize"))
     return summary
 
+
+def _format_query_contract(data: dict[str, Any]) -> str:
+    """Render query-rewrite metadata into a short natural-language prefix."""
+    query_contract = data.get("query_contract")
+    if not isinstance(query_contract, dict):
+        return ""
+    effective = str(query_contract.get("effective_query") or "").strip()
+    requested = str(query_contract.get("requested_query") or "").strip()
+    atom_id = str(query_contract.get("active_atom_id") or "").strip()
+    deps = query_contract.get("dependency_values_used") or []
+    dep_text = ""
+    if isinstance(deps, list) and deps:
+        dep_text = f" using {', '.join(str(dep) for dep in deps[:2])}"
+    if effective and str(query_contract.get("rewritten") or "").lower() in {"true", "1"}:
+        label = atom_id or "current atom"
+        return f"Query rewritten for {label}{dep_text}: {effective}\n"
+    if effective and atom_id and _normalize_whitespace(effective) != _normalize_whitespace(requested):
+        return f"Active atom {atom_id} query{dep_text}: {effective}\n"
+    return ""
+
+
+def _normalize_whitespace(text: str) -> str:
+    """Normalize whitespace for compact text comparisons."""
+    return " ".join((text or "").split())
+
+
 def _linearize_inner(raw_json: str, tool_name: str, method: str = "") -> str:
     """Linearize structured tool output into compact NL summary.
 
@@ -251,6 +277,7 @@ def _linearize_inner(raw_json: str, tool_name: str, method: str = "") -> str:
 
     # Entity results
     if tool_name in ("entity_search", "entity_traverse", "entity_info"):
+        query_prefix = _format_query_contract(data) if isinstance(data, dict) else ""
         entities = data if isinstance(data, list) else data.get("similar_entities") or data.get("ranked_entities") or data.get("entities") or data.get("neighbors") or []
         if isinstance(entities, list) and entities:
             items = []
@@ -276,14 +303,14 @@ def _linearize_inner(raw_json: str, tool_name: str, method: str = "") -> str:
             if shown < total:
                 summary += f" (showing top {shown})"
             summary += ":\n" + "\n".join(f"  - {item}" for item in items)
-            return summary
+            return query_prefix + summary
         # Profile/resolve results
         if isinstance(data, dict) and ("entity_name" in data or "description" in data):
             name = data.get("entity_name", "?")
             etype = data.get("entity_type", "")
             desc = (data.get("description", "") or "")
-            return f"{label}: '{name}' ({etype}). {desc}"
-        return f"{label}: {str(data)[:300]}"
+            return query_prefix + f"{label}: '{name}' ({etype}). {desc}"
+        return query_prefix + f"{label}: {str(data)[:300]}"
 
     # Relationship results
     if tool_name == "relationship_search":
@@ -301,6 +328,7 @@ def _linearize_inner(raw_json: str, tool_name: str, method: str = "") -> str:
 
     # Chunk results
     if tool_name == "chunk_retrieve":
+        query_prefix = _format_query_contract(data) if isinstance(data, dict) else ""
         chunks = data if isinstance(data, list) else data.get("chunks") or data.get("retrieved_chunks") or data.get("results") or []
         if isinstance(chunks, list) and chunks:
             items = []
@@ -311,8 +339,8 @@ def _linearize_inner(raw_json: str, tool_name: str, method: str = "") -> str:
                     items.append(f"[{cid}]: {text}")
                 elif isinstance(c, str):
                     items.append(c)
-            return f"{label}: Retrieved {len(chunks)} chunks:\n" + "\n".join(f"  - {item}" for item in items)
-        return f"{label}: No chunks found."
+            return query_prefix + f"{label}: Retrieved {len(chunks)} chunks:\n" + "\n".join(f"  - {item}" for item in items)
+        return query_prefix + f"{label}: No chunks found."
 
     # Reason results
     if tool_name == "reason":

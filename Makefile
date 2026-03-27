@@ -21,7 +21,8 @@ CORE_TESTS := \
 	tests/unit/test_eval_graph_manifest.py \
 	tests/unit/test_graph_capabilities.py \
 	tests/unit/test_operator_package_import.py \
-	tests/unit/test_prebuild_graph_cli.py
+	tests/unit/test_prebuild_graph_cli.py \
+	tests/unit/test_semantic_plan_query_contract.py
 CORE_PY_MODULES := \
 	Core/Graph \
 	Core/Operators \
