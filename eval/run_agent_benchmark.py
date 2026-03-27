@@ -827,6 +827,7 @@ def _build_mcp_servers(
         dataset_name: Pre-load this dataset's graph+VDB on MCP server startup
     """
     import llm_client  # triggers auto-load of ~/.secrets/api_keys.env
+    python_command = os.environ.get("DIGIMON_PYTHON") or sys.executable
     env = {}
     for key in (
         "OPENAI_API_KEY",
@@ -857,7 +858,7 @@ def _build_mcp_servers(
         env["DIGIMON_SKIP_VDB_PRELOAD"] = "1"
     return {
         "digimon-kgrag": {
-            "command": "/home/brian/miniconda3/envs/digimon/bin/python",
+            "command": python_command,
             "args": ["-u", str(Path(__file__).parent.parent / "digimon_mcp_stdio_server.py")],
             "env": env,
         },

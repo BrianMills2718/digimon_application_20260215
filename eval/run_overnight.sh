@@ -5,8 +5,11 @@
 # Usage: nohup ./eval/run_overnight.sh > eval/overnight.log 2>&1 &
 set -euo pipefail
 
-cd /home/brian/projects/Digimon_for_KG_application
-PYTHON=/home/brian/miniconda3/envs/digimon/bin/python
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+PYTHON="${DIGIMON_PYTHON:-${PYTHON:-python}}"
 DATASET=HotpotQA_200
 
 echo "========================================"
@@ -17,13 +20,13 @@ echo "========================================"
 # Step 1: Pre-build graph + VDBs
 echo ""
 echo "[Phase 1] Building graph + VDBs (~20-40 min)..."
-$PYTHON eval/prebuild_graph.py $DATASET
+"$PYTHON" eval/prebuild_graph.py "$DATASET"
 echo "[Phase 1] Complete: $(date)"
 
 # Step 2: Run agent benchmark
 echo ""
 echo "[Phase 2] Running agent benchmark (200 questions, ~2-3 hours)..."
-$PYTHON eval/run_agent_benchmark.py \
+"$PYTHON" eval/run_agent_benchmark.py \
     --dataset $DATASET \
     --n 200 \
     --model "gemini/gemini-3-flash-preview" \
