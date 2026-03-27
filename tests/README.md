@@ -1,137 +1,79 @@
 # DIGIMON Test Suite
 
-This directory contains all tests for the DIGIMON GraphRAG system.
+This directory contains tests for multiple repo lanes. Not every preserved test
+defines whether the current DIGIMON thesis lane is healthy.
 
-## Test Organization
+## Test Lanes
 
-```
-tests/
-├── unit/           # Fast, isolated unit tests
-├── integration/    # Integration tests (may require services)
-│   ├── backend/    # Backend integration tests
-│   └── cli/        # CLI integration tests
-├── e2e/            # End-to-end tests (full pipeline)
-├── fixtures/       # Test data and fixtures
-└── mocks/          # Mock objects and utilities
-```
+### Core
 
-## Running Tests
+Core tests cover the maintained default surface:
 
-### Run all tests
+- benchmark harness
+- graph manifest and capability checks
+- active graph build CLI contracts
+- operator package import safety
+
+Run them with:
+
 ```bash
-pytest
+make test-core
+make check-core
 ```
 
-### Run specific test categories
+### Experimental
+
+Experimental tests cover preserved but non-default capabilities:
+
+- integration workflows
+- broader agent-platform work
+- preserved end-to-end experiments
+
+Run them with:
+
 ```bash
-# Unit tests only
-pytest tests/unit
-
-# Integration tests
-pytest tests/integration
-
-# End-to-end tests
-pytest tests/e2e
+make test-experimental
 ```
 
-### Run with coverage
+### Historical
+
+Historical tests are preserved for reference but are not expected to be
+portable-by-default. They often depend on machine-specific paths, old repo
+layouts, or superseded workflows.
+
+Run them with:
+
 ```bash
-pytest --cov=Core --cov-report=html
+make test-historical
 ```
 
-### Run expensive tests (requires --run-expensive flag)
-```bash
-pytest --run-expensive
-```
+## Markers
 
-### Run tests in parallel
-```bash
-pytest -n auto
-```
-
-### Using the test runner script
-```bash
-./run_tests.sh                    # Run all tests
-./run_tests.sh --coverage         # With coverage report
-./run_tests.sh --expensive        # Include expensive LLM tests
-./run_tests.sh --parallel         # Run in parallel
-./run_tests.sh --test tests/unit  # Run specific tests
-```
-
-## Test Markers
-
-- `@pytest.mark.unit` - Unit tests (fast, no external dependencies)
+- `@pytest.mark.core` - Maintained thesis-lane coverage
+- `@pytest.mark.experimental` - Preserved but non-default capability coverage
+- `@pytest.mark.historical` - Preserved legacy coverage
+- `@pytest.mark.unit` - Unit tests
 - `@pytest.mark.integration` - Integration tests
 - `@pytest.mark.e2e` - End-to-end tests
-- `@pytest.mark.slow` - Slow running tests
+- `@pytest.mark.slow` - Slow-running tests
 - `@pytest.mark.llm` - Tests requiring LLM API calls
 - `@pytest.mark.requires_data` - Tests requiring specific data files
 
-## Writing Tests
+## Current Guidance
 
-### Unit Test Example
-```python
-import pytest
-from Core.Common.RetryUtils import RetryConfig
-
-class TestRetryConfig:
-    def test_default_config(self):
-        config = RetryConfig()
-        assert config.max_attempts == 3
-```
-
-### Integration Test Example
-```python
-import pytest
-from Core.AgentBrain.agent_brain import PlanningAgent
-
-@pytest.mark.integration
-class TestPlanningAgent:
-    @pytest.fixture
-    def agent(self, mock_orchestrator, mock_llm_provider):
-        return PlanningAgent(
-            orchestrator=mock_orchestrator,
-            llm_provider=mock_llm_provider
-        )
-    
-    async def test_generate_plan(self, agent):
-        plan = await agent.generate_plan("Test query")
-        assert plan is not None
-```
-
-### E2E Test Example
-```python
-import pytest
-
-@pytest.mark.e2e
-@pytest.mark.llm
-async def test_full_pipeline():
-    # Test complete pipeline from corpus to answer
-    pass
-```
+- New tests for benchmark, graph build, manifests, and active retrieval paths
+  should default to `core`.
+- Tests for preserved platform work should use `experimental`.
+- Tests with hardcoded machine assumptions or obsolete workflows should use
+  `historical` until repaired.
 
 ## Test Data
 
-Test data files should be placed in `tests/fixtures/data/`. Use the `test_data_dir` fixture to access them:
+Test data files should be placed in `tests/fixtures/data/`. Use the
+`test_data_dir` fixture to access them.
 
-```python
-def test_with_data(test_data_dir):
-    data_file = test_data_dir / "sample.txt"
-    assert data_file.exists()
-```
+## CI And Verification
 
-## Mocking
-
-Common mocks are available in `conftest.py`:
-- `mock_llm_provider` - Mocked LLM provider
-- `mock_orchestrator` - Mocked agent orchestrator
-- `mock_context` - Mocked GraphRAG context
-
-## CI/CD Integration
-
-Tests are automatically run on:
-- Push to main/develop branches
-- Pull requests
-- Can be triggered manually
-
-See `.github/workflows/ci.yml` for CI configuration.
+The repo should eventually enforce `core` as the default required lane. Until
+then, treat `make test-core` as the authoritative health check for the active
+surface and run experimental or historical lanes intentionally.

@@ -4,106 +4,33 @@
 # Configuration
 SCRIPTS_META := scripts/meta
 PLANS_DIR := docs/plans
-
-# --- Session Start ---
-.PHONY: status
-
-status:  ## Show git status
-	@git status --short --branch
-
-# --- During Implementation ---
-.PHONY: test test-quick check
-
-test:  ## Run pytest
-	pytest tests/ -v
-
-test-quick:  ## Run pytest (no traceback)
-	pytest tests/ -q --tb=no
-
-check:  ## Run all checks (test, mypy, lint)
-	@echo "Running tests..."
-	@pytest tests/ -q --tb=short
-	@echo ""
-	@echo "Running mypy..."
-	@mypy src/ --ignore-missing-imports
-	@echo ""
-	@echo "All checks passed!"
-
-# --- PR Workflow ---
-.PHONY: pr-ready pr merge finish
-
-pr-ready:  ## Rebase on main and push
-	@git fetch origin main
-	@git rebase origin/main
-	@git push -u origin HEAD
-
-pr:  ## Create PR (opens browser)
-	@gh pr create --fill --web
-
-merge:  ## Merge PR (PR=number required)
-ifndef PR
-	$(error PR is required. Usage: make merge PR=123)
-endif
-	@python $(SCRIPTS_META)/merge_pr.py $(PR)
-
-finish:  ## Merge PR + cleanup branch (BRANCH=name PR=number required)
-ifndef BRANCH
-	$(error BRANCH is required. Usage: make finish BRANCH=plan-42-feature PR=123)
-endif
-ifndef PR
-	$(error PR is required. Usage: make finish BRANCH=plan-42-feature PR=123)
-endif
-	@gh pr merge $(PR) --squash --delete-branch
-	@git checkout main && git pull --ff-only
-	@git branch -d $(BRANCH) 2>/dev/null || true
-
-# --- Plans ---
-.PHONY: plan-tests plan-complete
-
-plan-tests:  ## Check plan's required tests (PLAN=N required)
-ifndef PLAN
-	$(error PLAN is required. Usage: make plan-tests PLAN=42)
-endif
-	@python $(SCRIPTS_META)/check_plan_tests.py --plan $(PLAN)
-
-plan-complete:  ## Mark plan complete with verification (PLAN=N required)
-ifndef PLAN
-	$(error PLAN is required. Usage: make plan-complete PLAN=42)
-endif
-	@python $(SCRIPTS_META)/complete_plan.py --plan $(PLAN)
-
-# --- Help ---
-.PHONY: help-meta
-
-help-meta:  ## Show meta-process targets
-	@echo "Meta-Process Targets:"
-	@echo ""
-	@echo "  Session:"
-	@echo "    status          Show git status"
-	@echo ""
-	@echo "  Development:"
-	@echo "    test            Run tests"
-	@echo "    check           Run all checks"
-	@echo ""
-	@echo "  PR Workflow:"
-	@echo "    pr-ready        Rebase + push"
-	@echo "    pr              Create PR"
-	@echo "    merge           Merge PR (PR=number)"
-	@echo "    finish          Merge + cleanup (BRANCH=name PR=number)"
-	@echo ""
-	@echo "  Plans:"
-	@echo "    plan-tests      Check plan tests (PLAN=N)"
-	@echo "    plan-complete   Complete plan (PLAN=N)"
-
-# === META-PROCESS TARGETS ===
-# Added by meta-process install.sh
-
-# Configuration
-SCRIPTS_META := scripts/meta
-PLANS_DIR := docs/plans
 GITHUB_ACCOUNT ?= BrianMills2718
 PR_AUTO_EXPECTED_REPO ?= $(notdir $(CURDIR))
 
+PROJECT := Digimon_for_KG_application
+DAYS ?= 7
+LIMIT ?= 20
+DATASET ?= HotpotQAsmallest
+NUM ?= 3
+MODEL ?= openrouter/openai/gpt-5.4-mini
+PYTHON ?= .venv/bin/python
+PYTEST ?= .venv/bin/pytest
+LLM_CLIENT_CLI := conda run -n digimon python -m llm_client
+CORE_TESTS := \
+	tests/unit/test_benchmark_tool_modes.py \
+	tests/unit/test_eval_graph_manifest.py \
+	tests/unit/test_graph_capabilities.py \
+	tests/unit/test_operator_package_import.py \
+	tests/unit/test_prebuild_graph_cli.py
+CORE_PY_MODULES := \
+	Core/Graph \
+	Core/Operators \
+	Core/Schema \
+	Core/MCP/tool_consolidation.py \
+	eval/benchmark.py \
+	eval/graph_manifest.py \
+	eval/run_agent_benchmark.py
+
 # --- Session Start ---
 .PHONY: status
 
@@ -111,22 +38,40 @@ status:  ## Show git status
 	@git status --short --branch
 
 # --- During Implementation ---
-.PHONY: test test-quick check
+.PHONY: test test-quick check test-core check-core test-experimental test-historical
 
-test:  ## Run pytest
-	pytest tests/ -v
+test:  ## Run the full pytest suite
+	$(PYTEST) tests/ -v
 
-test-quick:  ## Run pytest (no traceback)
-	pytest tests/ -q --tb=no
+test-quick:  ## Run the full pytest suite (concise output)
+	$(PYTEST) tests/ -q --tb=no
 
-check:  ## Run all checks (test, mypy, lint)
-	@echo "Running tests..."
-	@pytest tests/ -q --tb=short
+check:  ## Run the legacy all-repo check entrypoint
+	@echo "Running full test suite..."
+	@$(PYTEST) tests/ -q --tb=short
 	@echo ""
-	@echo "Running mypy..."
-	@mypy src/ --ignore-missing-imports
+	@echo "Compiling Python sources..."
+	@$(PYTHON) -m compileall Core eval >/dev/null
 	@echo ""
 	@echo "All checks passed!"
+
+test-core:  ## Run the maintained core-thesis tests
+	$(PYTEST) $(CORE_TESTS) -q
+
+check-core:  ## Run the maintained core-thesis verification
+	@echo "Running core thesis tests..."
+	@$(PYTEST) $(CORE_TESTS) -q
+	@echo ""
+	@echo "Compiling core thesis modules..."
+	@$(PYTHON) -m compileall $(CORE_PY_MODULES) >/dev/null
+	@echo ""
+	@echo "Core checks passed!"
+
+test-experimental:  ## Run preserved experimental tests (excluding historical)
+	$(PYTEST) tests/integration tests/e2e -m "not historical" -q
+
+test-historical:  ## Run historical tests that are preserved but not portable-by-default
+	$(PYTEST) -m historical -q
 
 # --- PR Workflow ---
 .PHONY: pr-ready pr merge finish pr-auto-check pr-auto
@@ -182,47 +127,6 @@ endif
 
 dead-code:  ## Run dead code detection
 	@python $(SCRIPTS_META)/check_dead_code.py
-
-# --- Help ---
-.PHONY: help-meta
-
-help-meta:  ## Show meta-process targets
-	@echo "Meta-Process Targets:"
-	@echo ""
-	@echo "  Session:"
-	@echo "    status          Show git status"
-	@echo ""
-	@echo "  Development:"
-	@echo "    test            Run tests"
-	@echo "    check           Run all checks"
-	@echo ""
-	@echo "  PR Workflow:"
-	@echo "    pr-ready        Rebase + push"
-	@echo "    pr              Create PR"
-	@echo "    pr-auto-check   Preflight autonomous PR flow"
-	@echo "    pr-auto         Non-interactive PR + auto-merge request"
-	@echo "    merge           Merge PR (PR=number)"
-	@echo "    finish          Merge + cleanup (BRANCH=name PR=number)"
-	@echo ""
-	@echo "  Quality:"
-	@echo "    dead-code       Run dead code detection"
-	@echo ""
-	@echo "  Plans:"
-	@echo "    plan-tests      Check plan tests (PLAN=N)"
-	@echo "    plan-complete   Complete plan (PLAN=N)"
-
-# =============================================================================
-# DIGIMON-SPECIFIC TARGETS
-# =============================================================================
-
-# Configuration
-PROJECT := Digimon_for_KG_application
-DAYS ?= 7
-LIMIT ?= 20
-DATASET ?= HotpotQAsmallest
-NUM ?= 3
-MODEL ?= openrouter/openai/gpt-5.4-mini
-LLM_CLIENT_CLI := conda run -n digimon python -m llm_client
 
 # --- Observability (shared llm_client DB) ---
 .PHONY: cost cost-by-model cost-by-task errors recent summary
@@ -281,7 +185,7 @@ graph-stats:  ## Show graph node/edge counts for a dataset
 	@conda run -n digimon python -c "import networkx as nx; G=nx.read_graphml('results/$(DATASET)/er_graph/nx_data.graphml'); print(f'Nodes: {G.number_of_nodes()}, Edges: {G.number_of_edges()}')"
 
 # --- Graph Build ---
-.PHONY: build-progress enrich
+.PHONY: build-progress enrich add-passages add-passages-dry
 
 build-progress:  ## Check graph build checkpoint progress
 	@conda run -n digimon python -c "import json; d=json.load(open('results/$(DATASET)/er_graph/_checkpoint_processed.json')); print(f'{len(d)} chunks processed')" 2>/dev/null || echo "No checkpoint found"
@@ -289,25 +193,14 @@ build-progress:  ## Check graph build checkpoint progress
 enrich:  ## Run post-build enrichment (synonym edges + centrality)
 	conda run -n digimon python scripts/post_build_enrichment.py --dataset $(DATASET)
 
-# --- Help ---
-.PHONY: help
+add-passages:  ## Add passage nodes to existing graph (no rebuild, $0 cost)
+	conda run -n digimon python scripts/add_passage_nodes.py --dataset $(DATASET)
 
-help:  ## Show all targets
-	@echo "DIGIMON — composable GraphRAG retrieval engine"
-	@echo ""
-	@echo "Observability:"
-	@grep -E '^(cost|errors|recent|summary).*:.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
-	@echo ""
-	@echo "Benchmark:"
-	@grep -E '^bench.*:.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
-	@echo ""
-	@echo "Graph:"
-	@grep -E '^(graph|build|enrich).*:.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
-	@echo ""
-	@echo "Options: DAYS=7 DATASET=HotpotQAsmallest NUM=3 MODEL=openrouter/openai/gpt-5.4-mini LIMIT=20"
+add-passages-dry:  ## Preview passage node additions
+	conda run -n digimon python scripts/add_passage_nodes.py --dataset $(DATASET) --dry-run
 
 # --- Diagnosis ---
-.PHONY: diagnose diagnose-failures
+.PHONY: diagnose diagnose-failures linearization-check check-rules
 
 diagnose:  ## Diagnose a specific question (FILE= QID= required)
 ifndef FILE
@@ -340,8 +233,56 @@ linearization-check:  ## Check for linearization data loss warnings
 check-rules:  ## Check CLAUDE.md rule violations (json_object, hardcoded paths, except:pass)
 	@~/projects/.claude/scripts/check-rules.sh . || true
 
-add-passages:  ## Add passage nodes to existing graph (no rebuild, $0 cost)
-	conda run -n digimon python scripts/add_passage_nodes.py --dataset $(DATASET)
+# --- Help ---
+.PHONY: help help-meta
 
-add-passages-dry:  ## Preview passage node additions
-	conda run -n digimon python scripts/add_passage_nodes.py --dataset $(DATASET) --dry-run
+help-meta:  ## Show meta-process targets
+	@echo "Meta-Process Targets:"
+	@echo ""
+	@echo "  Session:"
+	@echo "    status          Show git status"
+	@echo ""
+	@echo "  Development:"
+	@echo "    test            Run tests"
+	@echo "    check           Run all checks"
+	@echo "    test-core       Run maintained core-thesis tests"
+	@echo "    check-core      Run maintained core-thesis verification"
+	@echo "    test-experimental Run preserved experimental tests"
+	@echo "    test-historical Run historical tests"
+	@echo ""
+	@echo "  PR Workflow:"
+	@echo "    pr-ready        Rebase + push"
+	@echo "    pr              Create PR"
+	@echo "    pr-auto-check   Preflight autonomous PR flow"
+	@echo "    pr-auto         Non-interactive PR + auto-merge request"
+	@echo "    merge           Merge PR (PR=number)"
+	@echo "    finish          Merge + cleanup (BRANCH=name PR=number)"
+	@echo ""
+	@echo "  Quality:"
+	@echo "    dead-code       Run dead code detection"
+	@echo ""
+	@echo "  Plans:"
+	@echo "    plan-tests      Check plan tests (PLAN=N)"
+	@echo "    plan-complete   Complete plan (PLAN=N)"
+
+help:  ## Show all targets
+	@echo "DIGIMON — adaptive GraphRAG research system"
+	@echo ""
+	@echo "Core Thesis Lane:"
+	@echo "  make test-core           Run maintained core-thesis tests"
+	@echo "  make check-core          Run maintained core-thesis verification"
+	@echo "  make bench               Run adaptive benchmark"
+	@echo "  make bench-baseline      Run non-graph baseline benchmark"
+	@echo "  make bench-musique       Run MuSiQue diagnostic benchmark"
+	@echo ""
+	@echo "Experimental And Historical:"
+	@echo "  make test-experimental   Run preserved experimental tests"
+	@echo "  make test-historical     Run historical tests"
+	@echo ""
+	@echo "Observability:"
+	@grep -E '^(cost|cost-by-model|cost-by-task|errors|recent|summary):.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
+	@echo ""
+	@echo "Graph And Diagnosis:"
+	@grep -E '^(graph-stats|build-progress|enrich|add-passages|add-passages-dry|diagnose|diagnose-failures|linearization-check|check-rules):.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
+	@echo ""
+	@echo "Options: DAYS=7 DATASET=HotpotQAsmallest NUM=3 MODEL=openrouter/openai/gpt-5.4-mini LIMIT=20"

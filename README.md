@@ -2,6 +2,26 @@
 
 DIGIMON is a knowledge-graph-based retrieval system with 28 typed, composable operators that agents compose into retrieval DAGs at runtime. Built on the [GraphRAG framework](https://github.com/JayLZhou/GraphRAG) by Zhou et al.
 
+## Supported Default Surface
+
+The maintained default path in this repo is the **core thesis lane**:
+
+- graph build and enrichment
+- direct benchmark backend
+- operator consolidation
+- benchmark prompts and manifests
+- evaluation on multi-hop QA
+
+That is the surface used to answer the current investment question: does graph-assisted retrieval, and then adaptive routing, beat simpler baselines enough to justify continued investment?
+
+See `docs/REPO_SURFACE.md` for the full `core` / `experimental` / `historical` split.
+
+## Preserved Experimental Capabilities
+
+The repo also preserves older or broader capabilities, including agent-platform work, memory systems, social-media analysis flows, cross-modal tools, and legacy MCP/UI paths.
+
+These capabilities are still in the repository, but they are not the default maintained path and are not the primary source of truth for whether the core thesis lane is healthy.
+
 ## What It Does
 
 1. **Build** a knowledge graph from documents (entity-relationship extraction via LLM)
