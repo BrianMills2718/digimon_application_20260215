@@ -148,7 +148,6 @@ typing-inspection==0.4.0
 tzdata==2025.2
 Unidecode==1.4.0
 ujson==5.10.0
-umap==0.1.1
 umap-learn==0.5.7
 urllib3==2.3.0
 werkzeug==3.1.3
