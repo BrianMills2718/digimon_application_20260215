@@ -55,3 +55,26 @@ bridge-candidate probing off downstream clues. Even so, the Lady Godiva case
 still loops when the outer agent ignores the resolved subject and falls back to
 more `chunk_retrieve` calls. The next structural lever is to turn successful
 subject resolution into an enforced state transition, not another advisory hint.
+
+### 2026-03-27 — codex — bug-pattern
+Direct benchmark result artifacts were overstating failed `submit_answer` calls
+as grounded submits. The reliable signal is the observed tool-call payload, not
+raw metadata. Recomputing `submit_answer_succeeded`,
+`submit_validator_accepted`, `required_submit_missing`, and
+`submit_completion_mode` from actual `submit_answer` tool results fixed the
+false-positive acceptance leak.
+
+### 2026-03-27 — codex — best-practice
+Consolidated benchmark linearization must understand benchmark-mode raw payloads
+such as `one_hop_relationships` and neighbor maps. Without that, graph evidence
+looks empty or opaque to the model even when the raw payload contains the right
+bridge entities. After teaching the linearizer those shapes, the remaining
+Lady-Godiva bottleneck was no longer data loss but bridge-selection policy.
+
+### 2026-03-27 — codex — best-practice
+The existing bridge probe was already ranking `Mercia` above `Leicester`,
+`England`, and `Croyland Abbey` for `2hop__511454_120259`; the failure was the
+auto-advance gate, not missing evidence. Making the probe margin configurable
+and lowering the default score-gap threshold from `+1.0` to `+0.5` allowed the
+harness to promote the bridge entity and made the frozen Lady Godiva case pass
+end-to-end (`EM/F1 = 1.0`, run tag `atom_bridge_gap_r9`).

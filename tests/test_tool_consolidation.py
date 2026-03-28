@@ -4,12 +4,16 @@ Verifies that the consolidation layer correctly maps method arguments
 to underlying operator implementations without changing behavior.
 """
 
+import json
+
 import pytest
 from Core.MCP.tool_consolidation import (
     CONSOLIDATED_TOOLS,
     DISPATCH_MAP,
     get_original_tool_name,
     CONSOLIDATED_BENCHMARK_CONTRACTS,
+    build_consolidated_tools,
+    _linearize,
 )
 
 
@@ -90,3 +94,165 @@ class TestBenchmarkContracts:
                     f"Contract methods mismatch for {tool_name}: "
                     f"contract={contract['methods']}, tools={methods}"
                 )
+
+
+class _FakeDMS:
+    """Minimal MCP surface for testing consolidated wrapper context forwarding."""
+
+    def __init__(self) -> None:
+        self.captured_payloads: list[tuple[str, str, dict[str, object]]] = []
+        self.last_entity_profile_kwargs: dict[str, object] | None = None
+        self.last_relationship_kwargs: dict[str, object] | None = None
+        self.active_atom: dict[str, object] | None = None
+        self.dependency_values: list[str] = []
+
+    async def _maybe_complete_active_atom_from_payload(
+        self,
+        payload,
+        *,
+        tool_name: str,
+        method: str,
+    ):
+        self.captured_payloads.append((tool_name, method, payload))
+        return None
+
+    def _active_semantic_plan_atom(self):
+        return self.active_atom, None
+
+    def _resolved_dependency_values(self, atom):
+        return list(self.dependency_values) if atom == self.active_atom else []
+
+    async def entity_profile(self, **kwargs: object) -> str:
+        self.last_entity_profile_kwargs = dict(kwargs)
+        return json.dumps({"canonical_name": "godiva", "connected_entities": ["mercia"]})
+
+    async def relationship_onehop(self, **kwargs: object) -> str:
+        self.last_relationship_kwargs = dict(kwargs)
+        return json.dumps({"relationships": [{"src_id": "godiva", "tgt_id": "mercia"}]})
+
+
+@pytest.mark.asyncio
+async def test_entity_info_wrapper_forwards_context_to_atom_hook() -> None:
+    """Top-level entity_info calls should preserve graph/dataset context for bridge probes."""
+    dms = _FakeDMS()
+    tools = {tool.__name__: tool for tool in build_consolidated_tools(dms)}
+
+    await tools["entity_info"](
+        method="profile",
+        entity_name="godiva",
+        graph_reference_id="MuSiQue_ERGraph",
+        dataset_name="MuSiQue",
+    )
+
+    tool_name, method, payload = dms.captured_payloads[-1]
+    assert (tool_name, method) == ("entity_info", "profile")
+    assert payload["resolved_graph_reference_id"] == "MuSiQue_ERGraph"
+    assert payload["resolved_dataset_name"] == "MuSiQue"
+    assert payload["requested_entity_name"] == "godiva"
+
+
+@pytest.mark.asyncio
+async def test_relationship_wrapper_forwards_context_to_atom_hook() -> None:
+    """Top-level relationship_search calls should preserve graph/query context for bridge probes."""
+    dms = _FakeDMS()
+    tools = {tool.__name__: tool for tool in build_consolidated_tools(dms)}
+
+    await tools["relationship_search"](
+        method="graph",
+        entity_ids=["godiva"],
+        graph_reference_id="MuSiQue_ERGraph",
+        query_text="When was Lady Godiva's birthplace abolished?",
+    )
+
+    tool_name, method, payload = dms.captured_payloads[-1]
+    assert (tool_name, method) == ("relationship_search", "graph")
+    assert payload["resolved_graph_reference_id"] == "MuSiQue_ERGraph"
+    assert payload["requested_query"] == "When was Lady Godiva's birthplace abolished?"
+    assert payload["requested_entity_ids"] == ["godiva"]
+
+
+@pytest.mark.asyncio
+async def test_entity_info_wrapper_rewrites_scope_from_resolved_dependency() -> None:
+    """Downstream profile lookups should pivot from the subject to the resolved bridge entity."""
+    dms = _FakeDMS()
+    dms.active_atom = {"atom_id": "A2", "sub_question": "When was Mercia abolished?"}
+    dms.dependency_values = ["mercia"]
+    tools = {tool.__name__: tool for tool in build_consolidated_tools(dms)}
+
+    await tools["entity_info"](
+        method="profile",
+        entity_name="godiva",
+        graph_reference_id="MuSiQue_ERGraph",
+        dataset_name="MuSiQue",
+    )
+
+    assert dms.last_entity_profile_kwargs is not None
+    assert dms.last_entity_profile_kwargs["entity_name"] == "mercia"
+    _, _, payload = dms.captured_payloads[-1]
+    assert payload["entity_scope_contract"]["rewritten"] is True
+    assert payload["entity_scope_contract"]["effective_entities"] == ["mercia"]
+
+
+@pytest.mark.asyncio
+async def test_relationship_wrapper_rewrites_scope_from_resolved_dependency() -> None:
+    """Downstream graph traversals should use the resolved dependency entity by default."""
+    dms = _FakeDMS()
+    dms.active_atom = {"atom_id": "A2", "sub_question": "When was Mercia abolished?"}
+    dms.dependency_values = ["mercia"]
+    tools = {tool.__name__: tool for tool in build_consolidated_tools(dms)}
+
+    await tools["relationship_search"](
+        method="graph",
+        entity_ids=["godiva"],
+        graph_reference_id="MuSiQue_ERGraph",
+    )
+
+    assert dms.last_relationship_kwargs is not None
+    assert dms.last_relationship_kwargs["entity_ids"] == ["mercia"]
+    _, _, payload = dms.captured_payloads[-1]
+    assert payload["entity_scope_contract"]["rewritten"] is True
+    assert payload["entity_scope_contract"]["effective_entities"] == ["mercia"]
+
+
+def test_linearize_relationship_search_graph_payload_preserves_one_hop_edges() -> None:
+    """One-hop relationship payloads should not collapse into an empty summary."""
+    raw = json.dumps(
+        {
+            "one_hop_relationships": [
+                {
+                    "src_id": "godiva",
+                    "tgt_id": "mercia",
+                    "relation_name": "chunk_cooccurrence",
+                    "description": "Godiva was the wife of Leofric, Earl of Mercia.",
+                    "attributes": {"source_id": "chunk_84"},
+                    "weight": 1.0,
+                }
+            ]
+        }
+    )
+
+    summary = _linearize(raw, "relationship_search", "graph")
+
+    assert "No relationships found" not in summary
+    assert "mercia" in summary
+    assert "chunk_84" in summary
+
+
+def test_linearize_entity_traverse_neighbor_map_preserves_neighbor_candidates() -> None:
+    """Neighbor maps should be summarized as entities, not raw dict blobs."""
+    raw = json.dumps(
+        {
+            "neighbors": {
+                "godiva": [
+                    {"entity_id": "mercia", "coarse_type": "geo", "score": 0.92},
+                    {"entity_id": "leicester", "coarse_type": "geo", "score": 0.88},
+                ]
+            }
+        }
+    )
+
+    summary = _linearize(raw, "entity_traverse", "onehop")
+
+    assert "Found 2 neighboring entities" in summary
+    assert "mercia" in summary
+    assert "leicester" in summary

@@ -23,6 +23,9 @@ Consolidation mapping:
 
 from __future__ import annotations
 
+import json as _json
+import logging
+
 # Consolidated tool names and their methods
 CONSOLIDATED_TOOLS: dict[str, list[str]] = {
     "entity_search": ["semantic", "string", "tfidf", "agent"],
@@ -74,6 +77,8 @@ DISPATCH_MAP: dict[tuple[str, str], str] = {
 
 
 from typing import Any
+
+_HOOK_LOGGER = logging.getLogger("digimon.tool_consolidation")
 
 
 def get_original_tool_name(consolidated_name: str, method: str) -> str:
@@ -213,10 +218,44 @@ def _linearize(raw_json: str, tool_name: str, method: str = "") -> str:
     return summary
 
 
+def _attach_hook_context(raw_json: str, **context: Any) -> str:
+    """Attach wrapper execution context for atom-completion hooks.
+
+    Raw MCP payloads often omit the dataset, graph, or original query that the
+    consolidated wrapper already knows. Bridge probes and atom advancement rely
+    on that context, so preserve it here before the hook runs.
+    """
+    try:
+        payload = _json.loads(raw_json)
+    except Exception:
+        return raw_json
+    if not isinstance(payload, dict):
+        return raw_json
+
+    normalized = {
+        key: value
+        for key, value in context.items()
+        if value not in ("", None, [], {})
+    }
+    if not normalized:
+        return raw_json
+
+    requested = {k: v for k, v in normalized.items() if k.startswith("requested_")}
+    if requested:
+        hook_context = payload.get("hook_context")
+        if not isinstance(hook_context, dict):
+            hook_context = {}
+        for key, value in requested.items():
+            hook_context.setdefault(key, value)
+        payload["hook_context"] = hook_context
+
+    for key, value in normalized.items():
+        payload.setdefault(key, value)
+    return _json.dumps(payload)
+
+
 async def _run_atom_completion_hook(dms: Any, raw: str, *, tool_name: str, method: str) -> str:
     """Let the MCP server auto-complete atoms from retrieval results when possible."""
-    import json as _json
-
     hook = getattr(dms, "_maybe_complete_active_atom_from_payload", None)
     setattr(dms, "_last_atom_update", None)
     if not callable(hook):
@@ -230,6 +269,11 @@ async def _run_atom_completion_hook(dms: Any, raw: str, *, tool_name: str, metho
     try:
         atom_update = await hook(payload, tool_name=tool_name, method=method)
     except Exception:
+        _HOOK_LOGGER.exception(
+            "Atom-completion hook failed for %s(%s)",
+            tool_name,
+            method,
+        )
         return raw
     if isinstance(atom_update, dict):
         setattr(dms, "_last_atom_update", atom_update)
@@ -264,6 +308,26 @@ def _format_query_contract(data: dict[str, Any]) -> str:
     return ""
 
 
+def _format_entity_scope_contract(data: dict[str, Any]) -> str:
+    """Render entity-scope rewrites into a short natural-language prefix."""
+    scope = data.get("entity_scope_contract")
+    if not isinstance(scope, dict):
+        return ""
+    effective = scope.get("effective_entities") or []
+    requested = scope.get("requested_entities") or []
+    atom_id = str(scope.get("active_atom_id") or "").strip()
+    if not isinstance(effective, list) or not effective:
+        return ""
+    effective_text = ", ".join(str(value) for value in effective[:2])
+    requested_text = ", ".join(str(value) for value in requested[:2]) if isinstance(requested, list) else ""
+    if bool(scope.get("rewritten")):
+        label = atom_id or "current atom"
+        if requested_text:
+            return f"Entity scope rewritten for {label}: {requested_text} -> {effective_text}\n"
+        return f"Entity scope rewritten for {label}: {effective_text}\n"
+    return ""
+
+
 def _format_atom_update(data: dict[str, Any]) -> str:
     """Render atom lifecycle updates into a short natural-language prefix."""
     atom_update = data.get("atom_update")
@@ -271,12 +335,16 @@ def _format_atom_update(data: dict[str, Any]) -> str:
         return ""
     event = str(atom_update.get("event") or "").strip()
     atom_id = str(atom_update.get("atom_id") or "").strip()
+    evidence_refs = atom_update.get("evidence_refs") or []
+    evidence_text = ""
+    if isinstance(evidence_refs, list) and evidence_refs:
+        evidence_text = f" Evidence refs: {', '.join(str(ref) for ref in evidence_refs[:4])}."
     if event == "atom_completed":
         resolved = str(atom_update.get("resolved_value") or "").strip()
         next_atom = str(atom_update.get("next_atom") or "").strip()
         if next_atom:
-            return f"Atom {atom_id} completed: {resolved}. Advancing to {next_atom}.\n"
-        return f"Atom {atom_id} completed: {resolved}.\n"
+            return f"Atom {atom_id} completed: {resolved}.{evidence_text} Advancing to {next_atom}.\n"
+        return f"Atom {atom_id} completed: {resolved}.{evidence_text}\n"
     if event == "atom_judged_unresolved":
         rationale = str(atom_update.get("rationale") or "").strip()
         next_action = str(atom_update.get("next_action") or "").strip()
@@ -292,6 +360,93 @@ def _format_atom_update(data: dict[str, Any]) -> str:
 def _normalize_whitespace(text: str) -> str:
     """Normalize whitespace for compact text comparisons."""
     return " ".join((text or "").split())
+
+
+def _format_graph_neighbor_map(neighbors: dict[str, Any], *, label: str) -> str:
+    """Summarize one-hop neighbor maps into compact natural language."""
+    if not isinstance(neighbors, dict) or not neighbors:
+        return f"{label}: No entities found."
+
+    lines: list[str] = []
+    total_neighbors = 0
+    for src, raw_items in list(neighbors.items())[:3]:
+        if not isinstance(raw_items, list) or not raw_items:
+            continue
+        preview: list[str] = []
+        for item in raw_items[:6]:
+            if isinstance(item, dict):
+                name = str(
+                    item.get("entity_name")
+                    or item.get("entity_id")
+                    or item.get("canonical_name")
+                    or "?"
+                )
+                coarse_type = str(item.get("coarse_type") or item.get("entity_type") or "").strip()
+                score = item.get("score")
+                bits = [f"'{name}'"]
+                if coarse_type:
+                    bits.append(f"({coarse_type})")
+                if isinstance(score, (int, float)):
+                    bits.append(f"score={score:.2f}")
+                preview.append(" ".join(bits))
+            else:
+                preview.append(str(item))
+        total_neighbors += len(raw_items)
+        lines.append(f"  - {src}: {', '.join(preview)}")
+
+    if not lines:
+        return f"{label}: No entities found."
+    return f"{label}: Found {total_neighbors} neighboring entities:\n" + "\n".join(lines)
+
+
+def _format_relationship_items(rels: list[Any], *, label: str) -> str:
+    """Summarize relationship payloads, including one-hop graph edges."""
+    if not isinstance(rels, list) or not rels:
+        return f"{label}: No relationships found."
+
+    items: list[str] = []
+    for rel_item in rels[:10]:
+        if not isinstance(rel_item, dict):
+            items.append(str(rel_item))
+            continue
+        src = str(
+            rel_item.get("src_id")
+            or rel_item.get("source_node_id")
+            or rel_item.get("source")
+            or "?"
+        )
+        tgt = str(
+            rel_item.get("tgt_id")
+            or rel_item.get("target_node_id")
+            or rel_item.get("target")
+            or "?"
+        )
+        relation = str(
+            rel_item.get("relation_name")
+            or rel_item.get("type")
+            or rel_item.get("relation")
+            or "related_to"
+        )
+        desc = _normalize_whitespace(str(rel_item.get("description") or ""))
+        attrs = rel_item.get("attributes")
+        source_ref = ""
+        if isinstance(attrs, dict):
+            source_ref = str(attrs.get("source_id") or "").strip()
+
+        line = f"'{src}' →[{relation}]→ '{tgt}'"
+        extras: list[str] = []
+        if desc and desc.casefold() not in {relation.casefold(), f"{src} {relation} {tgt}".casefold()}:
+            extras.append(desc[:140])
+        weight = rel_item.get("weight")
+        if isinstance(weight, (int, float)):
+            extras.append(f"weight={weight:.2f}")
+        if source_ref:
+            extras.append(source_ref)
+        if extras:
+            line += " — " + "; ".join(extras)
+        items.append(line)
+
+    return f"{label}: Found {len(rels)} relationships:\n" + "\n".join(f"  - {item}" for item in items)
 
 
 def _linearize_inner(raw_json: str, tool_name: str, method: str = "") -> str:
@@ -331,6 +486,7 @@ def _linearize_inner(raw_json: str, tool_name: str, method: str = "") -> str:
 
     label = f"{tool_name}({method})" if method else tool_name
     query_prefix = _format_query_contract(data) if isinstance(data, dict) else ""
+    entity_scope_prefix = _format_entity_scope_contract(data) if isinstance(data, dict) else ""
     atom_prefix = _format_atom_update(data) if isinstance(data, dict) else ""
     todo_prefix = ""
     if isinstance(data, dict):
@@ -379,7 +535,10 @@ def _linearize_inner(raw_json: str, tool_name: str, method: str = "") -> str:
             if shown < total:
                 summary += f" (showing top {shown})"
             summary += ":\n" + "\n".join(f"  - {item}" for item in items)
-            return atom_prefix + query_prefix + todo_prefix + summary
+            return atom_prefix + query_prefix + entity_scope_prefix + todo_prefix + summary
+        if isinstance(entities, dict) and entities:
+            summary = _format_graph_neighbor_map(entities, label=label)
+            return atom_prefix + query_prefix + entity_scope_prefix + todo_prefix + summary
         # Profile/resolve results
         if isinstance(data, dict) and (
             "entity_name" in data or "description" in data or "canonical_name" in data or "entity_id" in data
@@ -403,22 +562,19 @@ def _linearize_inner(raw_json: str, tool_name: str, method: str = "") -> str:
                     else:
                         preview.append(str(item))
                 summary += " connected_entities=" + ", ".join(preview) + "."
-            return atom_prefix + query_prefix + todo_prefix + summary
-        return atom_prefix + query_prefix + todo_prefix + f"{label}: {str(data)[:300]}"
+            return atom_prefix + query_prefix + entity_scope_prefix + todo_prefix + summary
+        return atom_prefix + query_prefix + entity_scope_prefix + todo_prefix + f"{label}: {str(data)[:300]}"
 
     # Relationship results
     if tool_name == "relationship_search":
-        rels = data if isinstance(data, list) else data.get("relationships") or data.get("edges") or []
-        if isinstance(rels, list) and rels:
-            items = []
-            for r in rels[:8]:
-                if isinstance(r, dict):
-                    src = r.get("src_id", r.get("source", "?"))
-                    tgt = r.get("tgt_id", r.get("target", "?"))
-                    rel = r.get("relation_name", r.get("relation", r.get("description", "?")))
-                    items.append(f"'{src}' →[{rel}]→ '{tgt}'")
-            return atom_prefix + query_prefix + todo_prefix + f"{label}: Found {len(rels)} relationships:\n" + "\n".join(f"  - {item}" for item in items)
-        return atom_prefix + query_prefix + todo_prefix + f"{label}: No relationships found."
+        rels = data if isinstance(data, list) else (
+            data.get("relationships")
+            or data.get("edges")
+            or data.get("one_hop_relationships")
+            or []
+        )
+        summary = _format_relationship_items(rels, label=label)
+        return atom_prefix + query_prefix + entity_scope_prefix + todo_prefix + summary
 
     # Chunk results
     if tool_name == "chunk_retrieve":
@@ -432,8 +588,8 @@ def _linearize_inner(raw_json: str, tool_name: str, method: str = "") -> str:
                     items.append(f"[{cid}]: {text}")
                 elif isinstance(c, str):
                     items.append(c)
-            return atom_prefix + query_prefix + todo_prefix + f"{label}: Retrieved {len(chunks)} chunks:\n" + "\n".join(f"  - {item}" for item in items)
-        return atom_prefix + query_prefix + todo_prefix + f"{label}: No chunks found."
+            return atom_prefix + query_prefix + entity_scope_prefix + todo_prefix + f"{label}: Retrieved {len(chunks)} chunks:\n" + "\n".join(f"  - {item}" for item in items)
+        return atom_prefix + query_prefix + entity_scope_prefix + todo_prefix + f"{label}: No chunks found."
 
     # Reason results
     if tool_name == "reason":
@@ -444,17 +600,88 @@ def _linearize_inner(raw_json: str, tool_name: str, method: str = "") -> str:
                 for i, s in enumerate(subs, 1):
                     q = s.get("entity_name", s.get("sub_question", str(s)))[:80] if isinstance(s, dict) else str(s)[:80]
                     items.append(f"  {i}. {q}")
-            return atom_prefix + query_prefix + todo_prefix + f"Decomposed into {len(subs)} sub-questions:\n" + "\n".join(items)
+            return atom_prefix + query_prefix + entity_scope_prefix + todo_prefix + f"Decomposed into {len(subs)} sub-questions:\n" + "\n".join(items)
         if method == "answer":
             answer = data.get("answer", str(data)[:200]) if isinstance(data, dict) else str(data)[:200]
-            return atom_prefix + query_prefix + todo_prefix + f"Generated answer: {answer}"
+            return atom_prefix + query_prefix + entity_scope_prefix + todo_prefix + f"Generated answer: {answer}"
         if method == "synthesize":
             answer = data.get("synthesis", data.get("answer", str(data)[:200])) if isinstance(data, dict) else str(data)[:200]
-            return atom_prefix + query_prefix + todo_prefix + f"Synthesized answer: {answer}"
+            return atom_prefix + query_prefix + entity_scope_prefix + todo_prefix + f"Synthesized answer: {answer}"
 
     # Default: truncate
     text = str(data)[:400]
-    return atom_prefix + query_prefix + todo_prefix + f"{label}: {text}"
+    return atom_prefix + query_prefix + entity_scope_prefix + todo_prefix + f"{label}: {text}"
+
+
+def _normalize_scope_value(value: Any) -> str:
+    """Normalize entity-scope terms for dependency-overlap checks."""
+    return " ".join(str(value or "").casefold().split())
+
+
+def _entity_scope_list(value: list[str] | str | None) -> list[str]:
+    """Coerce one-or-many entity scope values into a compact string list."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        stripped = value.strip()
+        return [stripped] if stripped else []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _rewrite_entity_scope_for_active_atom(
+    dms: Any,
+    *,
+    tool_name: str,
+    entity_names: list[str] | str | None = None,
+    entity_ids: list[str] | str | None = None,
+) -> tuple[list[str], dict[str, Any]]:
+    """Forward resolved dependency entities into downstream entity-scoped tools."""
+    active_atom_fn = getattr(dms, "_active_semantic_plan_atom", None)
+    dependency_fn = getattr(dms, "_resolved_dependency_values", None)
+    if not callable(active_atom_fn) or not callable(dependency_fn):
+        return _entity_scope_list(entity_names) or _entity_scope_list(entity_ids), {}
+
+    atom, _todo = active_atom_fn()
+    if not isinstance(atom, dict):
+        return _entity_scope_list(entity_names) or _entity_scope_list(entity_ids), {}
+
+    dependency_values = dependency_fn(atom)
+    if not isinstance(dependency_values, list) or not dependency_values:
+        return _entity_scope_list(entity_names) or _entity_scope_list(entity_ids), {}
+
+    requested_entities = _entity_scope_list(entity_names) or _entity_scope_list(entity_ids)
+    dependency_norms = {_normalize_scope_value(value) for value in dependency_values if _normalize_scope_value(value)}
+    requested_norms = {_normalize_scope_value(value) for value in requested_entities if _normalize_scope_value(value)}
+    if requested_norms and any(
+        requested == dep or requested in dep or dep in requested
+        for requested in requested_norms
+        for dep in dependency_norms
+    ):
+        return requested_entities, {
+            "tool_name": tool_name,
+            "active_atom_id": str(atom.get("atom_id") or "").strip(),
+            "requested_entities": requested_entities,
+            "effective_entities": requested_entities,
+            "dependency_values_used": dependency_values,
+            "rewritten": False,
+            "rewrite_reason": [],
+        }
+
+    effective_entities = [str(value).strip() for value in dependency_values if str(value).strip()][:2]
+    if not effective_entities:
+        return requested_entities, {}
+
+    return effective_entities, {
+        "tool_name": tool_name,
+        "active_atom_id": str(atom.get("atom_id") or "").strip(),
+        "requested_entities": requested_entities,
+        "effective_entities": effective_entities,
+        "dependency_values_used": dependency_values,
+        "rewritten": True,
+        "rewrite_reason": ["dependency_entity_scope_forwarded"],
+    }
 
 
 def build_consolidated_tools(dms: Any) -> list:
@@ -466,8 +693,6 @@ def build_consolidated_tools(dms: Any) -> list:
     Returns:
         List of async callables ready for llm_client python_tools= parameter.
     """
-    import json as _json
-
     async def entity_search(
         query: str,
         method: str = "semantic",
@@ -515,6 +740,13 @@ def build_consolidated_tools(dms: Any) -> list:
             )
         else:
             return _json.dumps({"error": f"Invalid method '{method}'. Use: semantic, string, tfidf, agent"})
+        raw = _attach_hook_context(
+            raw,
+            requested_query=query,
+            resolved_dataset_name=dataset_name,
+            resolved_graph_reference_id=graph_reference_id,
+            resolved_vdb_reference_id=vdb_reference_id,
+        )
         raw = await _run_atom_completion_hook(dms, raw, tool_name="entity_search", method=method)
         return _linearize(raw, "entity_search", method)
 
@@ -578,6 +810,14 @@ def build_consolidated_tools(dms: Any) -> list:
         else:
 
             return _json.dumps({"error": f"Invalid method '{method}'. Use: onehop, ppr, neighborhood, link"})
+        raw = _attach_hook_context(
+            raw,
+            resolved_dataset_name=dataset_name,
+            resolved_graph_reference_id=graph_reference_id,
+            resolved_vdb_reference_id=vdb_reference_id,
+            requested_entity_ids=entity_ids,
+            requested_entity_names=entity_names,
+        )
         raw = await _run_atom_completion_hook(dms, raw, tool_name="entity_traverse", method=method)
         return _linearize(raw, "entity_traverse", method)
 
@@ -607,9 +847,22 @@ def build_consolidated_tools(dms: Any) -> list:
             vdb_reference_id: VDB for resolve method.
             top_k_per_name: Candidates per name for resolve.
         """
+        effective_scope: list[str] = []
+        entity_scope_contract: dict[str, Any] = {}
+        effective_entity_name = entity_name
+        if method == "profile":
+            effective_scope, entity_scope_contract = _rewrite_entity_scope_for_active_atom(
+                dms,
+                tool_name="entity_info",
+                entity_names=entity_name,
+                entity_ids=entity_id,
+            )
+            if effective_scope:
+                effective_entity_name = effective_scope[0]
+                entity_id = ""
         if method == "profile":
             raw = await dms.entity_profile(
-                entity_id=entity_id, entity_name=entity_name,
+                entity_id=entity_id, entity_name=effective_entity_name,
                 graph_reference_id=graph_reference_id, dataset_name=dataset_name,
             )
         elif method == "resolve":
@@ -620,6 +873,16 @@ def build_consolidated_tools(dms: Any) -> list:
         else:
 
             return _json.dumps({"error": f"Invalid method '{method}'. Use: profile, resolve"})
+        raw = _attach_hook_context(
+            raw,
+            resolved_dataset_name=dataset_name,
+            resolved_graph_reference_id=graph_reference_id,
+            resolved_vdb_reference_id=vdb_reference_id,
+            requested_entity_name=entity_name,
+            requested_entity_id=entity_id,
+            requested_entity_names=entity_names,
+            entity_scope_contract=entity_scope_contract,
+        )
         raw = await _run_atom_completion_hook(dms, raw, tool_name="entity_info", method=method)
         return _linearize(raw, "entity_info", method)
 
@@ -648,9 +911,19 @@ def build_consolidated_tools(dms: Any) -> list:
             top_k: Max results.
             entity_scores: Entity importance scores for score method.
         """
+        effective_entity_ids = entity_ids
+        entity_scope_contract: dict[str, Any] = {}
+        if method == "graph":
+            scope, entity_scope_contract = _rewrite_entity_scope_for_active_atom(
+                dms,
+                tool_name="relationship_search",
+                entity_ids=entity_ids,
+            )
+            if scope:
+                effective_entity_ids = scope
         if method == "graph":
             raw = await dms.relationship_onehop(
-                entity_ids=entity_ids, graph_reference_id=graph_reference_id,
+                entity_ids=effective_entity_ids, graph_reference_id=graph_reference_id,
             )
         elif method == "semantic":
             raw = await dms.relationship_vdb_search(
@@ -665,6 +938,14 @@ def build_consolidated_tools(dms: Any) -> list:
         else:
 
             return _json.dumps({"error": f"Invalid method '{method}'. Use: graph, semantic, score"})
+        raw = _attach_hook_context(
+            raw,
+            requested_query=query_text,
+            requested_entity_ids=entity_ids,
+            resolved_graph_reference_id=graph_reference_id,
+            resolved_vdb_reference_id=vdb_reference_id,
+            entity_scope_contract=entity_scope_contract,
+        )
         raw = await _run_atom_completion_hook(dms, raw, tool_name="relationship_search", method=method)
         return _linearize(raw, "relationship_search", method)
 
@@ -702,6 +983,19 @@ def build_consolidated_tools(dms: Any) -> list:
             document_collection_id: Document collection for relationships/cooccurrence.
             graph_reference_id: Graph reference for by_entities.
         """
+        effective_entity_names = entity_names
+        effective_entity_ids = entity_ids
+        entity_scope_contract: dict[str, Any] = {}
+        if method == "by_entities":
+            scope, entity_scope_contract = _rewrite_entity_scope_for_active_atom(
+                dms,
+                tool_name="chunk_retrieve",
+                entity_names=entity_names,
+                entity_ids=entity_ids,
+            )
+            if scope:
+                effective_entity_names = scope
+                effective_entity_ids = []
         if method == "text":
             raw = await dms.chunk_text_search(
                 query_text=query_text, dataset_name=dataset_name,
@@ -729,12 +1023,22 @@ def build_consolidated_tools(dms: Any) -> list:
             )
         elif method == "by_entities":
             raw = await dms.chunk_get_text_by_entity_ids(
-                entity_ids=entity_ids, entity_names=entity_names,
+                entity_ids=effective_entity_ids, entity_names=effective_entity_names,
                 graph_reference_id=graph_reference_id, dataset_name=dataset_name,
             )
         else:
 
             return _json.dumps({"error": f"Invalid method '{method}'. Use: text, semantic, relationships, cooccurrence, by_ids, by_entities"})
+        raw = _attach_hook_context(
+            raw,
+            requested_query=query_text,
+            requested_entity_names=entity_names,
+            requested_entity_ids=entity_ids,
+            requested_chunk_ids=chunk_ids,
+            resolved_dataset_name=dataset_name,
+            resolved_graph_reference_id=graph_reference_id,
+            entity_scope_contract=entity_scope_contract,
+        )
         raw = await _run_atom_completion_hook(dms, raw, tool_name="chunk_retrieve", method=method)
         return _linearize(raw, "chunk_retrieve", method)
 

@@ -17,8 +17,10 @@ For active DIGIMON implementation and benchmark iterations, the default is
 **continuous autonomous execution**:
 
 - Do not pause after a partial slice just to ask what to do next.
+- Do not stop because a run is incomplete, ambiguous, or only partially
+  improved. That is diagnostic signal, not a stopping condition.
 - If uncertainty remains, log it in the active plan or `KNOWLEDGE.md` and keep
-  moving with the best bounded next step.
+  moving with the best bounded next step in the current phase sequence.
 - Treat benchmark failures as routing, representation, tool-contract, or
   answer-synthesis diagnostics. Investigate, classify, fix, re-run.
 - Continue through the planned phase sequence until one of these happens:
@@ -29,6 +31,9 @@ For active DIGIMON implementation and benchmark iterations, the default is
      triggers a documented strategy change instead of another blind retry.
 - "Needs more iteration" is not a stopping condition by itself. The agent must
   record the current failure family, choose the next systemic fix, and continue.
+- Every overnight-style run must leave an artifact trail: updated plan status,
+  runtime findings in `KNOWLEDGE.md`, and a verified commit for each completed
+  implementation slice. Never leave meaningful progress only in chat.
 
 For the current thesis work, this means the agent should keep running the
 failure-driven loop overnight: implement the next control-layer fix, verify on a

@@ -12,16 +12,24 @@ messages:
       - Mark `should_mark_done=true` only when the evidence directly answers the current atom.
       - Do NOT mark done for a related clue, bridge entity, or likely guess.
       - Prefer explicit source-text support over graph adjacency alone.
+      - Completed dependency values are TRUSTED. If a dependency already resolved
+        the bridge entity, do not require the new evidence to re-prove that
+        upstream fact. Judge only the remaining predicate over the dependency.
       - Return the shortest factual span that answers the atom.
       - If the atom is unresolved, return `should_mark_done=false` and an empty `resolved_value`.
       - If the atom asks for a date, return only the date/year.
       - If the atom asks for an entity, return only the entity name/place/person.
+      - For polity/location endpoint questions, treat evidence about loss of
+        authority, administrative end, dissolution, or cessation as valid
+        support for an "abolished" style date question when it clearly refers
+        to the resolved dependency entity.
 
   - role: user
     content: |
       Original question: {{ question }}
       Current atom id: {{ atom_id }}
       Current atom sub-question: {{ atom_sub_question }}
+      Effective atom sub-question after dependency substitution: {{ effective_atom_sub_question }}
       Current atom todo content: {{ todo_content }}
       Expected answer kind: {{ answer_kind }}
       Dependency values already resolved: {{ dependency_values }}

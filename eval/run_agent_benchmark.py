@@ -1365,6 +1365,55 @@ def _extract_answer_from_freeform_content(content: str) -> str | None:
     return None
 
 
+def _submit_tool_call_accepted(tool_call: dict[str, Any]) -> bool:
+    """Return True only for explicit accepted submit_answer confirmations."""
+    if bool(tool_call.get("has_error") or tool_call.get("is_error") or tool_call.get("error")):
+        return False
+    result_preview = tool_call.get("result_preview")
+    if isinstance(result_preview, str):
+        lowered_preview = result_preview.lower()
+        if '"status": "submitted"' in lowered_preview or '"status":"submitted"' in lowered_preview:
+            return True
+        if (
+            '"status": "submitted_with_warning"' in lowered_preview
+            or '"status":"submitted_with_warning"' in lowered_preview
+            or '"error"' in lowered_preview
+            or "pending_atoms" in lowered_preview
+        ):
+            return False
+        if '"status"' in lowered_preview:
+            return False
+    return False
+
+
+def _derive_submit_observability(tool_calls: list[dict[str, Any]]) -> dict[str, Any]:
+    """Derive submit-answer observability directly from observed tool calls."""
+    submit_events: list[dict[str, Any]] = []
+    successful_submit = False
+    for tool_call in tool_calls:
+        tool_name = str(tool_call.get("tool", "")).strip()
+        if not tool_name.endswith("submit_answer"):
+            continue
+        submit_events.append(tool_call)
+        if _submit_tool_call_accepted(tool_call):
+            successful_submit = True
+
+    return {
+        "submit_events": submit_events,
+        "requires_submit_answer": True if submit_events else None,
+        "submit_answer_call_count": len(submit_events),
+        "submit_answer_attempted": bool(submit_events),
+        "submit_answer_succeeded": successful_submit,
+        "submit_validator_accepted": successful_submit,
+        "required_submit_missing": bool(submit_events) and not successful_submit,
+        "submit_completion_mode": (
+            "grounded_submit"
+            if successful_submit
+            else ("missing_required_submit" if submit_events else None)
+        ),
+    }
+
+
 _WARNING_EVIDENCE_METRIC_RE = re.compile(
     r"METRIC:\s+evidence_turns=(?P<total>\d+),\s+new_evidence_turns=(?P<new>\d+),\s+"
     r"stagnant_evidence_turns=(?P<stagnant>\d+),\s+retrieval_stagnation_streak_max=(?P<streak>\d+),\s+"
@@ -1871,10 +1920,8 @@ async def run_agent(
                     continue
 
                 result_preview = tc.get("result_preview")
-                if isinstance(result_preview, str):
-                    # Accept only explicit submit confirmations when result preview is available.
-                    if '"status": "submitted"' not in result_preview:
-                        continue
+                if not _submit_tool_call_accepted(tc):
+                    continue
 
                 args = tc.get("arguments", {})
                 if isinstance(args, str):
@@ -1904,41 +1951,31 @@ async def run_agent(
                 lines = [l.strip() for l in answer.split("\n") if l.strip()]
                 answer = lines[-1] if lines else answer
 
+        derived_submit = _derive_submit_observability(tool_calls)
+        if derived_submit["submit_events"]:
+            requires_submit_answer = True
+            submit_answer_call_count = derived_submit["submit_answer_call_count"]
+            submit_answer_attempted = derived_submit["submit_answer_attempted"]
+            submit_answer_succeeded = derived_submit["submit_answer_succeeded"]
+            submit_validator_accepted = derived_submit["submit_validator_accepted"]
+            required_submit_missing = derived_submit["required_submit_missing"]
+            submit_completion_mode = derived_submit["submit_completion_mode"]
+
         # SDK-backed runs do not always populate MCPAgent metadata fields.
-        # Synthesize submit-answer observability so missing submit is explicit.
-        if _is_agent_sdk_model(model):
-            submit_events: list[dict[str, Any]] = []
-            successful_submit = False
-            for tc in tool_calls:
-                tool_name = str(tc.get("tool", "")).strip()
-                if not tool_name.endswith("submit_answer"):
-                    continue
-                submit_events.append(tc)
-                has_error = bool(tc.get("has_error") or tc.get("is_error") or tc.get("error"))
-                if has_error:
-                    continue
-                result_preview = tc.get("result_preview")
-                if isinstance(result_preview, str):
-                    lowered_preview = result_preview.lower()
-                    # Treat explicit reject statuses as unsuccessful; otherwise
-                    # consider non-error submit calls successful.
-                    if "status" in lowered_preview and "rejected" in lowered_preview:
-                        continue
-                successful_submit = True
+        # Synthesize missing-submit observability even when no submit call is
+        # preserved in the final tool-call list.
+        if _is_agent_sdk_model(model) and not derived_submit["submit_events"]:
+            requires_submit_answer = True
+            submit_answer_call_count = 0
+            submit_answer_attempted = False
+            submit_answer_succeeded = False
+            submit_validator_accepted = False
+            required_submit_missing = True
+            submit_completion_mode = "missing_required_submit"
 
-            if requires_submit_answer is None:
-                requires_submit_answer = True
-            if submit_answer_call_count is None:
-                submit_answer_call_count = len(submit_events)
-            if submit_answer_attempted is None:
-                submit_answer_attempted = bool(submit_answer_call_count)
-            if submit_answer_succeeded is None:
-                submit_answer_succeeded = successful_submit
-            if required_submit_missing is None and requires_submit_answer:
-                required_submit_missing = not bool(submit_answer_succeeded)
-
-            sdk_result_error = getattr(result, "error", None)
-            if required_submit_missing and not sdk_result_error:
+        if required_submit_missing:
+            result_error = getattr(result, "error", None)
+            if not result_error:
                 if primary_failure_class is None:
                     primary_failure_class = "required_submit_missing"
                 elif primary_failure_class != "required_submit_missing":

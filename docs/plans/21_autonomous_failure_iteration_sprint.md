@@ -25,6 +25,19 @@ slice.
 **Why:** Prompt tweaks already plateaued. The next gains require harness-level
 enforcement, better atom-state telemetry, and fast reruns on the same failures.
 
+**Latest observed bottleneck (2026-03-27, updated):**
+- The frozen Lady Godiva bridge case now passes after three structural repairs:
+  failed-submit observability is derived from tool calls, consolidated
+  linearization now preserves graph one-hop payloads, and bridge-probe
+  auto-advance accepts a configurable score gap.
+- The active bottleneck has moved up one level: scale the repaired bridge logic
+  from the single frozen case to the 3-question smoke slice and the 16-question
+  failure tranche without reintroducing invalid tool calls or unsupported
+  free-form final answers.
+- The next implementation order is therefore fixed: persist this slice,
+  rerun the 3q smoke set, rerun the 16-failure slice, then classify any
+  remaining misses before touching broader MuSiQue dev.
+
 ---
 
 ## Pre-made Decisions
@@ -41,6 +54,17 @@ enforcement, better atom-state telemetry, and fast reruns on the same failures.
 ---
 
 ## 24-Hour Phase Sequence
+
+### Phase 0: Root-Cause Audit
+
+0. Read the latest 1q/3q artifacts, tool traces, and atom lifecycle logs.
+1. Convert the current failure into one explicit control diagnosis before
+   editing code.
+
+**Acceptance:**
+- The next implementation slice is tied to observed trace evidence, not prompt
+  speculation.
+- The active plan names the current failure family and why it happens.
 
 ### Phase 1: Instruction + Plan Alignment
 
@@ -59,10 +83,14 @@ enforcement, better atom-state telemetry, and fast reruns on the same failures.
    atom complete, even if the model is reluctant.
 6. When an atom resolves, persist a compact resolved value that downstream
    retrieval can consume.
+7. Ensure consolidated wrappers pass dataset/graph/query context into the
+   atom-completion hook so bridge probes can run on top-level retrieval calls.
 
 **Acceptance:**
 - Unit tests cover atom-value extraction and dependent-query forwarding.
 - Targeted smoke traces show resolved values entering downstream retrieval.
+- Top-level `entity_info(profile)` / `relationship_search(graph)` runs can
+  perform bridge inference without relying on a hidden auto-profile branch.
 
 ### Phase 3: Atom Advancement + Guardrails
 
@@ -76,6 +104,9 @@ enforcement, better atom-state telemetry, and fast reruns on the same failures.
 **Acceptance:**
 - Smoke runs show fewer repeated searches on the same atom.
 - At least one previously failing question visibly advances from `a1` to `a2`.
+- The current Lady Godiva path shows a hard transition from subject resolution
+  to a downstream `Mercia abolished` style retrieval, not another generic
+  birthplace search.
 
 ### Phase 4: Observability + Benchmark Environment Repair
 
@@ -94,11 +125,25 @@ enforcement, better atom-state telemetry, and fast reruns on the same failures.
 13. Group remaining misses by systemic family: representation, entity
     resolution, atom closure, answer synthesis, or tool contract.
 14. Fix the highest-yield family first and rerun immediately.
+15. If bridge questions improve but submission still blocks on dependent
+    disambiguation atoms, implement harness-side handling for those optional
+    clarifier atoms before scaling further.
 
 **Acceptance:**
 - The failure slice improves over the current post-prompt baseline.
 - Lady Godiva and similarly structured bridge questions are either fixed or
   classified with a concrete next repair.
+
+**Progress update (2026-03-27):**
+- `2hop__511454_120259` now passes end-to-end in the frozen single-question
+  lane (`atom_bridge_gap_r9`) after:
+  - failed-submit observability override from tool calls
+  - relationship/neighbor linearization repair
+  - configurable bridge-probe score-gap threshold
+- Next verification rung is no longer another 1q tweak. It is:
+  - 3q smoke rerun
+  - 16-question failure-slice rerun
+  - failure-family triage from those results
 
 ### Phase 6: Scale And Record
 
@@ -142,12 +187,14 @@ enforcement, better atom-state telemetry, and fast reruns on the same failures.
 
 - [ ] Project instructions explicitly codify autonomous continuous execution.
 - [ ] Plan index includes this sprint plan.
-- [ ] Atom lifecycle observability is present in benchmark artifacts.
+- [x] Atom lifecycle observability is present in benchmark artifacts.
 - [ ] The benchmark environment completes end-to-end on the canonical run path.
+- [x] Frozen single-question bridge rerun (`2hop__511454_120259`) shows
+      measurable improvement over the post-prompt baseline.
 - [ ] Frozen MuSiQue failure slice rerun shows measurable improvement over the
       current post-prompt baseline.
 - [ ] Remaining misses are classified into concrete failure families.
-- [ ] Overnight results are written into plans / knowledge artifacts.
+- [x] Overnight results are written into plans / knowledge artifacts.
 
 ---
 
