@@ -116,6 +116,70 @@ def test_extract_todo_result_value_prefers_structured_answer_field() -> None:
     assert value == "Mercia"
 
 
+def test_normalize_semantic_plan_language_rewrites_entity_identified_placeholder() -> None:
+    """Semantic-plan output should rewrite synthetic dependency placeholders into readable atoms."""
+    plan = {
+        "final_answer_kind": "date",
+        "atoms": [
+            {
+                "atom_id": "a1",
+                "sub_question": "What is Lady Godiva's birthplace?",
+                "operation": "lookup",
+                "answer_kind": "entity",
+                "output_var": "birthplace",
+                "depends_on": [],
+                "done_criteria": "Find Lady Godiva's birthplace.",
+            },
+            {
+                "atom_id": "a2",
+                "sub_question": "When was the entity identified as 'birthplace' abolished?",
+                "operation": "temporal",
+                "answer_kind": "date",
+                "output_var": "abolished_date",
+                "depends_on": ["a1"],
+                "done_criteria": "Find when the entity identified as 'birthplace' was abolished.",
+            },
+        ],
+    }
+
+    normalized = dms._normalize_semantic_plan_language(plan)
+
+    assert normalized["atoms"][1]["sub_question"] == "When was that birthplace abolished?"
+    assert normalized["atoms"][1]["done_criteria"] == "Find when that birthplace was abolished."
+
+
+def test_normalize_semantic_plan_language_rewrites_dollar_placeholder() -> None:
+    """Dollar-prefixed output vars should also normalize into readable dependent phrasing."""
+    plan = {
+        "final_answer_kind": "date",
+        "atoms": [
+            {
+                "atom_id": "a1",
+                "sub_question": "What is Lady Godiva's birthplace?",
+                "operation": "lookup",
+                "answer_kind": "entity",
+                "output_var": "birthplace",
+                "depends_on": [],
+                "done_criteria": "Find Lady Godiva's birthplace.",
+            },
+            {
+                "atom_id": "a2",
+                "sub_question": "When was $birthplace abolished?",
+                "operation": "temporal",
+                "answer_kind": "date",
+                "output_var": "abolished_date",
+                "depends_on": ["a1"],
+                "done_criteria": "Find when $birthplace was abolished.",
+            },
+        ],
+    }
+
+    normalized = dms._normalize_semantic_plan_language(plan)
+
+    assert normalized["atoms"][1]["sub_question"] == "When was that birthplace abolished?"
+    assert normalized["atoms"][1]["done_criteria"] == "Find when that birthplace was abolished."
+
+
 def test_pending_todo_ids_for_submit_reports_unfinished_atoms() -> None:
     """Final submission should stay blocked until all semantic-plan atoms are done."""
     _prime_lady_godiva_plan()

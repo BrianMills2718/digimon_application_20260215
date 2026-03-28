@@ -1088,6 +1088,78 @@ def _next_dependent_atom(atom: dict[str, Any] | None) -> dict[str, Any] | None:
     return None
 
 
+def _humanize_output_var(output_var: str) -> str:
+    """Convert planner variable names into compact natural-language noun phrases."""
+    text = re.sub(r"[_\-]+", " ", str(output_var or "").strip().strip("$"))
+    text = re.sub(r"\s+", " ", text).strip().strip("'\"")
+    return text.lower()
+
+
+def _rewrite_output_var_reference(text: str, *, output_var: str) -> str:
+    """Rewrite synthetic planner variable references into readable dependent phrasing."""
+    updated = str(text or "").strip()
+    humanized = _humanize_output_var(output_var)
+    if not updated or not humanized:
+        return updated
+
+    replacement = f"that {humanized}"
+    escaped_var = re.escape(str(output_var or "").strip())
+    patterns = (
+        rf"\${escaped_var}\b",
+        rf"\bthe\s+entity\s+identified(?:\s+in\s+[A-Za-z0-9_]+)?\s+as\s+['\"]{escaped_var}['\"]",
+        rf"\bentity\s+identified(?:\s+in\s+[A-Za-z0-9_]+)?\s+as\s+['\"]{escaped_var}['\"]",
+        rf"\bthe\s+entity\s+identified(?:\s+in\s+[A-Za-z0-9_]+)?\s+as\s+{escaped_var}\b",
+        rf"\bentity\s+identified(?:\s+in\s+[A-Za-z0-9_]+)?\s+as\s+{escaped_var}\b",
+    )
+    for pattern in patterns:
+        updated = re.sub(pattern, replacement, updated, flags=re.IGNORECASE)
+
+    updated = re.sub(r"\bthat\s+that\b", "that", updated, flags=re.IGNORECASE)
+    updated = re.sub(r"\bthe\s+that\b", "that", updated, flags=re.IGNORECASE)
+    updated = re.sub(r"\s+\?", "?", updated)
+    updated = re.sub(r"\s+", " ", updated).strip()
+    return updated
+
+
+def _normalize_semantic_plan_language(plan_dict: dict[str, Any]) -> dict[str, Any]:
+    """Normalize planner-generated variable references before exposing the plan to the agent."""
+    atoms = plan_dict.get("atoms")
+    if not isinstance(atoms, list):
+        return plan_dict
+
+    output_vars_by_atom_id: dict[str, str] = {}
+    for atom in atoms:
+        if not isinstance(atom, dict):
+            continue
+        atom_id = str(atom.get("atom_id") or "").strip()
+        output_var = str(atom.get("output_var") or "").strip()
+        if atom_id and output_var:
+            output_vars_by_atom_id[atom_id] = output_var
+
+    for atom in atoms:
+        if not isinstance(atom, dict):
+            continue
+        dependency_vars = [
+            output_vars_by_atom_id[dep_id]
+            for dep_id in (str(dep).strip() for dep in (atom.get("depends_on") or []))
+            if dep_id in output_vars_by_atom_id
+        ]
+        if not dependency_vars:
+            continue
+        for field_name in ("sub_question", "done_criteria"):
+            field_value = atom.get(field_name)
+            if not isinstance(field_value, str):
+                continue
+            normalized = field_value
+            for dependency_var in dependency_vars:
+                normalized = _rewrite_output_var_reference(
+                    normalized,
+                    output_var=dependency_var,
+                )
+            atom[field_name] = normalized
+    return plan_dict
+
+
 def _bridge_candidate_names(payload: dict[str, Any], *, current_atom: dict[str, Any]) -> list[str]:
     """Extract candidate bridge entities from structured payload fields."""
     candidates: list[str] = []
@@ -7805,8 +7877,9 @@ if BENCHMARK_MODE:
                 for atom in target_atoms:
                     atom.answer_kind = inferred_kind
 
+            normalized_plan = _normalize_semantic_plan_language(plan.model_dump())
             _current_semantic_plan.clear()
-            _current_semantic_plan.update(plan.model_dump())
+            _current_semantic_plan.update(normalized_plan)
             _current_semantic_plan_question = (question or "").strip()
             _current_question = _current_semantic_plan_question
             _current_expected_answer_kind = (
@@ -7816,14 +7889,19 @@ if BENCHMARK_MODE:
             # Auto-populate TODO list from plan atoms so the agent gets
             # status reminders even if it doesn't call todo_write itself.
             _todos.clear()
-            for atom in plan.atoms:
-                status = "in_progress" if atom.atom_id == plan.atoms[0].atom_id else "pending"
+            normalized_atoms = _current_semantic_plan.get("atoms") or []
+            first_atom_id = str(normalized_atoms[0].get("atom_id") or "").strip() if normalized_atoms else ""
+            for atom in normalized_atoms:
+                if not isinstance(atom, dict):
+                    continue
+                atom_id = str(atom.get("atom_id") or "").strip()
+                status = "in_progress" if atom_id and atom_id == first_atom_id else "pending"
                 _todos.append({
-                    "id": atom.atom_id,
-                    "content": atom.sub_question,
+                    "id": atom_id,
+                    "content": str(atom.get("sub_question") or ""),
                     "status": status,
                 })
-            return json.dumps(plan.model_dump(), indent=2)
+            return json.dumps(normalized_plan, indent=2)
         except Exception as e:
             # Deterministic fallback keeps behavior safe if planner LLM is unavailable.
             fallback_kind = _infer_answer_kind(question)
