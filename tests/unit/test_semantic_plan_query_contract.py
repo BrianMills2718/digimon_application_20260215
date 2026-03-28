@@ -306,6 +306,79 @@ def test_internal_probe_query_bypass_preserves_downstream_query() -> None:
     assert contract["rewrite_reason"] == ["internal_bypass:bridge_probe"]
 
 
+def test_bridge_candidate_names_filters_to_expected_person_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bridge candidates should honor the current atom's expected coarse type when matches exist."""
+    dms._current_question = "What is the person after whom São José dos Campos was named?"
+    dms._current_semantic_plan.clear()
+    dms._current_semantic_plan.update(
+        {
+            "atoms": [
+                {
+                    "atom_id": "atom1",
+                    "sub_question": "What is the person after whom São José dos Campos was named?",
+                    "depends_on": [],
+                    "operation": "lookup",
+                    "answer_kind": "entity",
+                }
+            ]
+        }
+    )
+
+    coarse_types = {
+        "brazil": "place",
+        "arthur bernardes": "person",
+        "rio de janeiro": "place",
+    }
+    monkeypatch.setattr(
+        dms,
+        "_lookup_entity_coarse_type",
+        lambda candidate, dataset_name="": coarse_types.get(candidate, "unknown"),
+    )
+
+    candidates = dms._bridge_candidate_names(
+        {
+            "canonical_name": "são josé dos campos",
+            "resolved_dataset_name": "MuSiQue",
+            "connected_entities": ["brazil", "arthur bernardes", "rio de janeiro"],
+        },
+        current_atom=dms._semantic_plan_atom_by_id("atom1"),
+    )
+
+    assert candidates == ["arthur bernardes"]
+
+
+def test_bridge_candidate_names_preserves_candidates_when_no_type_match(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bridge filtering should fail open when graph typing cannot confirm any expected match."""
+    dms._current_question = "What is the person after whom São José dos Campos was named?"
+    dms._current_semantic_plan.clear()
+    dms._current_semantic_plan.update(
+        {
+            "atoms": [
+                {
+                    "atom_id": "atom1",
+                    "sub_question": "What is the person after whom São José dos Campos was named?",
+                    "depends_on": [],
+                    "operation": "lookup",
+                    "answer_kind": "entity",
+                }
+            ]
+        }
+    )
+
+    monkeypatch.setattr(dms, "_lookup_entity_coarse_type", lambda candidate, dataset_name="": "unknown")
+
+    candidates = dms._bridge_candidate_names(
+        {
+            "canonical_name": "são josé dos campos",
+            "resolved_dataset_name": "MuSiQue",
+            "connected_entities": ["brazil", "arthur bernardes"],
+        },
+        current_atom=dms._semantic_plan_atom_by_id("atom1"),
+    )
+
+    assert candidates == ["brazil", "arthur bernardes"]
+
+
 def test_apply_atom_completion_update_marks_atom_done_and_promotes_next() -> None:
     """Completing the active atom should advance the next dependency-ready atom."""
     _prime_lady_godiva_plan()
@@ -640,6 +713,98 @@ async def test_entity_search_string_prefers_relationship_bridge_over_profile_gue
 
     assert update is not None
     assert update["resolved_value"] == "Mercia"
+    assert dms._todo_item_by_id("a1")["answer"] == "Mercia"
+
+
+@pytest.mark.asyncio
+async def test_entity_search_string_prefers_bridge_update_over_direct_profile_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bridge-qualified winners should beat raw profile autocompletions in subject auto-profiling."""
+    _prime_lady_godiva_plan()
+
+    async def _fake_entity_profile(*, entity_name: str, graph_reference_id: str, dataset_name: str = ""):
+        return (
+            '{"entity_id":"godiva","canonical_name":"godiva",'
+            '"connected_entities":["england","mercia"],'
+            '"evidence_refs":["entity:godiva"]}'
+        )
+
+    async def _fake_relationship_onehop(*, entity_ids, graph_reference_id: str):
+        return (
+            '{"one_hop_relationships":['
+            '{"src_id":"godiva","tgt_id":"england","description":"countess lived in england"},'
+            '{"src_id":"godiva","tgt_id":"mercia","description":"wife of Leofric, Earl of Mercia"}'
+            ']}'
+        )
+
+    async def _fake_completion(atom, todo, payload, *, tool_name: str, method: str):
+        if tool_name == "entity_info":
+            return {
+                "event": "atom_autocomplete",
+                "atom_id": "a1",
+                "resolved_value": "England",
+                "confidence": 0.98,
+                "evidence_refs": ["chunk_82"],
+                "rationale": "Profile autocomplete guessed England.",
+                "tool_name": tool_name,
+                "method": method,
+            }
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": "a1",
+            "confidence": 0.25,
+            "rationale": "Relationship payload alone is unresolved without bridge disambiguation.",
+            "tool_name": tool_name,
+            "method": method,
+        }
+
+    async def _fake_bridge(atom, todo, payload, *, tool_name: str, method: str):
+        if tool_name == "entity_info":
+            return {
+                "event": "atom_autocomplete",
+                "atom_id": "a1",
+                "resolved_value": "Mercia",
+                "confidence": 0.81,
+                "evidence_refs": ["chunk_649"],
+                "rationale": "Bridge probe found the downstream abolition clue for Mercia.",
+                "tool_name": tool_name,
+                "method": method,
+                "resolution_mode": "bridge_probe",
+            }
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": "a1",
+            "confidence": 0.22,
+            "rationale": "No stronger bridge on the relationship payload.",
+            "tool_name": tool_name,
+            "method": method,
+        }
+
+    monkeypatch.setattr(dms, "entity_profile", _fake_entity_profile)
+    monkeypatch.setattr(dms, "relationship_onehop", _fake_relationship_onehop)
+    monkeypatch.setattr(dms, "_infer_atom_completion_with_llm", _fake_completion)
+    monkeypatch.setattr(dms, "_infer_bridge_candidate_with_llm", _fake_bridge)
+
+    update = await dms._maybe_complete_active_atom_from_payload(
+        {
+            "matches": [
+                {
+                    "entity_name": "godiva",
+                    "canonical_name": "godiva",
+                    "match_score": 99,
+                }
+            ],
+            "resolved_graph_reference_id": "MuSiQue_ERGraph",
+            "dataset_name": "MuSiQue",
+        },
+        tool_name="entity_search",
+        method="string",
+    )
+
+    assert update is not None
+    assert update["resolved_value"] == "Mercia"
+    assert update["resolution_mode"] == "bridge_probe"
     assert dms._todo_item_by_id("a1")["answer"] == "Mercia"
 
 

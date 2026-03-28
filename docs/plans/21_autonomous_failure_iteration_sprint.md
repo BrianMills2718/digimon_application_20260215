@@ -140,10 +140,24 @@ enforcement, better atom-state telemetry, and fast reruns on the same failures.
   - failed-submit observability override from tool calls
   - relationship/neighbor linearization repair
   - configurable bridge-probe score-gap threshold
+- The follow-up `atom_bridge_priority_r14` rerun kept Lady Godiva green on the
+  maintained direct lane (`EM/F1 = 1.0`) after making bridge-qualified updates
+  win over weaker direct profile completions in the subject auto-profile path.
+- The 3q smoke rerun `atom_bridge_priority_smoke_r14` is only partially valid:
+  one question failed before any tool use due OpenRouter DNS/timeout errors,
+  one timed out mid-run, and the remaining namesake question exposed a new
+  logic family (`person after whom...` drifting to place / saint-name
+  candidates).
+- A follow-up single-question rerun on `2hop__199513_801817`
+  (`atom_bridge_type_filter_r15`) confirmed that coarse-type filtering removes
+  the previous `brazil` bridge error, but the question still resolves to the
+  city-name gloss (`Saint Joseph of the Fields`) rather than the gold answer.
 - Next verification rung is no longer another 1q tweak. It is:
-  - 3q smoke rerun
-  - 16-question failure-slice rerun
-  - failure-family triage from those results
+  - preserve the verified Lady Godiva and bridge-priority slice
+  - repair the namesake / semantic-gloss failure family
+  - rerun the 3q smoke slice once provider conditions are stable enough to make
+    it decision-grade
+  - only then rerun the larger failure tranche
 
 ### Phase 6: Scale And Record
 

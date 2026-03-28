@@ -1222,6 +1222,23 @@ def _bridge_candidate_names(payload: dict[str, Any], *, current_atom: dict[str, 
                 if endpoint_norm and endpoint_norm not in {canonical_name, entity_id}:
                     _maybe_add(endpoint)
 
+    expected_types = _infer_expected_coarse_types(str(current_atom.get("sub_question") or ""))
+    if not expected_types:
+        return candidates[:_ATOM_BRIDGE_MAX_CANDIDATES]
+
+    dataset_name = str(payload.get("resolved_dataset_name") or "").strip()
+    matching_candidates: list[str] = []
+    unknown_candidates: list[str] = []
+    for candidate in candidates:
+        coarse_type = _lookup_entity_coarse_type(candidate, dataset_name=dataset_name)
+        if coarse_type == "unknown":
+            unknown_candidates.append(candidate)
+            continue
+        if _coarse_type_matches(coarse_type, expected_types):
+            matching_candidates.append(candidate)
+
+    if matching_candidates:
+        return (matching_candidates + unknown_candidates)[:_ATOM_BRIDGE_MAX_CANDIDATES]
     return candidates[:_ATOM_BRIDGE_MAX_CANDIDATES]
 
 
@@ -2281,7 +2298,8 @@ async def _maybe_complete_active_atom_from_payload(
             resolved_graph_id = str(payload.get("resolved_graph_reference_id") or "").strip()
             dataset_name = str(payload.get("dataset_name") or "").strip()
             if candidate_name and resolved_graph_id:
-                candidate_updates: list[dict[str, Any]] = []
+                bridge_candidate_updates: list[dict[str, Any]] = []
+                direct_candidate_updates: list[dict[str, Any]] = []
                 try:
                     profile_raw = await entity_profile(
                         entity_name=candidate_name,
@@ -2320,7 +2338,7 @@ async def _maybe_complete_active_atom_from_payload(
                         method=candidate_method,
                     )
                     if update and update.get("event") == "atom_autocomplete":
-                        candidate_updates.append(update)
+                        direct_candidate_updates.append(update)
                     bridge_update = await _infer_bridge_candidate_with_llm(
                         atom,
                         todo,
@@ -2329,9 +2347,9 @@ async def _maybe_complete_active_atom_from_payload(
                         method=candidate_method,
                     )
                     if bridge_update and bridge_update.get("event") == "atom_autocomplete":
-                        candidate_updates.append(bridge_update)
+                        bridge_candidate_updates.append(bridge_update)
                 best_update = _best_atom_autocomplete_update(
-                    candidate_updates,
+                    bridge_candidate_updates or direct_candidate_updates,
                     answer_kind=answer_kind,
                 )
                 if best_update:

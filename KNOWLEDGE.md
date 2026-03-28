@@ -78,3 +78,20 @@ auto-advance gate, not missing evidence. Making the probe margin configurable
 and lowering the default score-gap threshold from `+1.0` to `+0.5` allowed the
 harness to promote the bridge entity and made the frozen Lady Godiva case pass
 end-to-end (`EM/F1 = 1.0`, run tag `atom_bridge_gap_r9`).
+
+### 2026-03-27 — codex — integration-issue
+Multi-question MuSiQue smoke runs can be invalidated by provider instability
+even when the control logic is improving. In `atom_bridge_priority_smoke_r14`,
+`2hop__511454_120259` failed before any tool calls because the agent LLM could
+not reach OpenRouter, and `3hop1__305282_282081_73772` hit the 180s question
+timeout after a provider timeout plus partial progress. Use bounded single-ID
+reruns to validate logic changes before trusting larger slices.
+
+### 2026-03-27 — codex — bug-pattern
+The next post-Godiva failure family is namesake/person-vs-place resolution.
+`2hop__199513_801817` originally auto-completed atom1 to `brazil` from a
+relationship search even though the atom asked for a person. Filtering bridge
+candidates by the current atom's expected coarse type removed that place
+misclassification, but the run still drifted to `Saint Joseph of the Fields`,
+which means the remaining bug is semantic interpretation of the city's name and
+final answer gating, not the original place-vs-person bridge policy.
