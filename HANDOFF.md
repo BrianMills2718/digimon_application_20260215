@@ -1,3 +1,143 @@
+# GraphRAG Handoff — 2026-03-28
+
+## Session Focus
+
+Architecture review of the current DIGIMON failure family against:
+
+1. DIGIMON active docs and plans
+2. onto-canon6 export/canonicalization surfaces
+3. project-meta convergence/vision docs
+
+The main question was whether DIGIMON should rebuild around onto-canon6, and
+how to think about build vs projection vs retrieval vs analysis.
+
+## Bottom-Line Conclusions
+
+### 1. The long-term split is right, but the current seam is thinner than it sounds
+
+The strategic direction is sound:
+
+1. `onto-canon6` as governed semantic/canonicalization producer
+2. DIGIMON as projection + retrieval system
+3. analysis as a distinct concern conceptually
+
+But the current cross-project seam is still too thin and lossy to carry that
+architecture cleanly today.
+
+### 2. DIGIMON already has the right projection idea in docs
+
+This was an important correction.
+
+`docs/GRAPH_ATTRIBUTE_MODEL.md` already says:
+
+1. build one truthful maximal entity-graph representation
+2. derive narrower projections from it
+3. treat passage/tree graphs as separate topologies
+
+So the missing concept is not "discover projection." The missing work is to
+actually implement the manifest/projection/tool-gating model DIGIMON already
+describes.
+
+### 3. Do not rebuild DIGIMON inside onto-canon6
+
+Recommended boundary:
+
+1. `onto-canon6` owns:
+   - governed assertions
+   - canonical entities
+   - alias memberships / stable identity
+   - evidence refs / provenance
+   - durable semantic state
+2. DIGIMON owns:
+   - projection recipes / projection compiler
+   - passage graph
+   - entity-passage graph
+   - retrieval-oriented alias/gloss/co-occurrence projections
+   - retrieval operators and routing
+3. analysis should be a separate concern conceptually, but should not be split
+   into a new repo yet
+
+## Critical Current Seam Limitations
+
+### DIGIMON Import Bridge
+
+`Core/Interop/onto_canon_import.py` is currently much losier than the
+architecture discussion assumed:
+
+1. entities are merged by `entity_name` only
+2. relationships are merged by **sorted endpoint pair**, so direction is lost
+3. merged edges sum weights
+4. missing-endpoint relationships are skipped
+5. blank fallback nodes may be created during import
+
+This is a retrieval bridge, not a truth-preserving semantic import layer.
+
+### onto-canon6 Digimon Export
+
+`onto-canon6/src/onto_canon6/adapters/digimon_export.py` is also still thin:
+
+1. flat `entities.jsonl` / `relationships.jsonl`
+2. no alias membership export
+3. no passage artifacts
+4. no evidence refs
+5. no assertion-to-passage links
+6. no full role structure
+
+So the seam is currently not rich enough to justify a wholesale architecture
+shift.
+
+### Foundation Export Is Closer To The Desired Interchange
+
+`onto-canon6/src/onto_canon6/adapters/foundation_assertion_export.py` is
+closer to the likely long-term interchange direction because it preserves:
+
+1. typed role fillers
+2. alias ids
+3. qualifiers
+4. assertion identity
+
+If a richer DIGIMON/onto-canon6 interchange is built, Foundation-style
+assertion artifacts are a stronger starting point than the current flat DIGIMON
+JSONL.
+
+## Advice For The Current Failure Family
+
+The São José / Saint Joseph / Nazareth failure family does **not** require an
+immediate onto-canon6 rebuild to justify work.
+
+DIGIMON already has local design gaps that directly target this family:
+
+1. `canonical_name` vs `search_keys` split
+2. unicode-preserving identity and normalized aliases
+3. explicit gloss/name-meaning edges
+4. first-class passage nodes
+5. entity-passage projections
+
+Those should be treated as legitimate DIGIMON-side fixes, not as proof that
+DIGIMON must be replaced.
+
+## Recommended Next Actions
+
+1. Treat any onto-canon6-backed rebuild as an **experimental lane**, not the
+   new default path.
+2. Write one architecture memo that reconciles:
+   - `docs/GRAPH_ATTRIBUTE_MODEL.md`
+   - `project-meta/vision/ONTO_CANON6_DIGIMON_CONVERGENCE.md`
+   - `project-meta/vision/FRAMEWORK.md`
+   - `project-meta/vision/FOUNDATION.md`
+3. Define a richer interchange contract before more import/export churn.
+4. Run a bounded comparison on a canonicalization-heavy MuSiQue slice:
+   - current DIGIMON-native build
+   - onto-canon6 semantic bundle + DIGIMON projection build
+5. Continue to treat current benchmark-thesis work as core, and architecture
+   convergence as experimental until it proves retrieval value.
+
+## Important Constraint
+
+`docs/plans/03_prove_adaptive_routing.md` and `docs/REPO_SURFACE.md` still make
+the core maintained path the benchmark/thesis lane. Do not let architecture
+convergence silently become the default maintained lane without explicit proof.
+
 # GraphRAG Handoff — 2026-03-26
 
 ## Session Results
