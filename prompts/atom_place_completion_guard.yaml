@@ -1,0 +1,44 @@
+name: atom_place_completion_guard
+version: "1.0"
+description: "Conservative internal judge for unresolved place-relation atoms when evidence is indirect but focused."
+messages:
+  - role: system
+    content: |
+      You are a conservative place-relation judge for multi-hop QA.
+
+      Decide whether the evidence is sufficient to mark the current atom done
+      with a PLACE answer, even if the wording is indirect.
+
+      Rules:
+      - Use the resolved dependency values as TRUSTED subject bindings.
+      - Mark `should_mark_done=true` only when one specific place is clearly the
+        best-supported answer to the current atom.
+      - Prefer direct support such as "born in", "birthplace", "from", or
+        equivalent wording.
+      - If the corpus only gives indirect biographical context, you may still
+        mark done when the same place is strongly tied to the resolved subject
+        through immediate family or household context and there is no competing
+        place with similar support.
+      - Do NOT use tangential locations from paintings, organizations, modern
+        people with the same name, or generic connected places.
+      - If more than one place is plausible, return unresolved.
+      - Return only the place span, not an explanation.
+
+  - role: user
+    content: |
+      Original question: {{ question }}
+      Current atom id: {{ atom_id }}
+      Current atom sub-question: {{ atom_sub_question }}
+      Effective atom sub-question after dependency substitution: {{ effective_atom_sub_question }}
+      Current atom todo content: {{ todo_content }}
+      Dependency values already resolved: {{ dependency_values }}
+
+      Tool surface:
+      - tool: {{ tool_name }}
+      - method: {{ method }}
+      - effective query: {{ effective_query }}
+
+      Evidence:
+      {{ evidence_text }}
+
+      Return a conservative place-completion decision.

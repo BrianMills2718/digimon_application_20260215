@@ -182,6 +182,9 @@ _ATOM_BRIDGE_MAX_CANDIDATES = max(
 _ENTITY_SUBJECT_AUTO_PROFILE_MIN_SCORE = float(
     os.environ.get("DIGIMON_ENTITY_SUBJECT_AUTO_PROFILE_MIN_SCORE", "90")
 )
+_ATOM_CONTEXTUAL_PLACE_MIN_CONFIDENCE = float(
+    os.environ.get("DIGIMON_ATOM_CONTEXTUAL_PLACE_MIN_CONFIDENCE", "0.78")
+)
 _QUERY_CONTRACT_BYPASS_REASON: ContextVar[str] = ContextVar(
     "digimon_query_contract_bypass_reason",
     default="",
@@ -1810,6 +1813,184 @@ async def _infer_atom_completion_with_llm(
     }
 
 
+async def _infer_contextual_place_completion_with_llm(
+    atom: dict[str, Any],
+    todo: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    tool_name: str,
+    method: str,
+) -> dict[str, Any] | None:
+    """Judge whether indirect but focused text evidence is enough to resolve a place relation atom."""
+    from pydantic import BaseModel, Field
+    from llm_client import acall_llm_structured, render_prompt
+
+    class PlaceCompletionDecision(BaseModel):
+        should_mark_done: bool = Field(
+            description="True only if one place is clearly the best-supported answer to the current atom."
+        )
+        resolved_value: str = Field(
+            description="Shortest place span answering the atom. Empty if unresolved."
+        )
+        confidence: float = Field(
+            description="Confidence from 0 to 1 that the place answer is sufficiently supported."
+        )
+        evidence_refs: list[str] = Field(
+            description="Chunk IDs or entity IDs that best support the selected place."
+        )
+        rationale: str = Field(
+            description="Short explanation of why the place is or is not sufficiently supported."
+        )
+
+    dependency_values = _resolved_dependency_values(atom)
+    if not dependency_values:
+        return None
+    evidence_text = _build_atom_completion_evidence(
+        payload,
+        tool_name=tool_name,
+        method=method,
+        atom=atom,
+        dependency_values=dependency_values,
+    )
+    if not evidence_text.strip():
+        return None
+
+    effective_atom_sub_question = str(atom.get("sub_question") or "")
+    query_contract = payload.get("query_contract") or {}
+    effective_query = str(query_contract.get("effective_query") or "").strip()
+    if effective_query:
+        effective_atom_sub_question = effective_query
+
+    prompt_path = str(Path(__file__).parent / "prompts" / "atom_place_completion_guard.yaml")
+    messages = render_prompt(
+        prompt_path,
+        question=_current_question or _current_semantic_plan_question or "",
+        atom_id=str(atom.get("atom_id") or ""),
+        atom_sub_question=str(atom.get("sub_question") or ""),
+        effective_atom_sub_question=effective_atom_sub_question,
+        todo_content=str(todo.get("content") or ""),
+        dependency_values=", ".join(dependency_values),
+        tool_name=tool_name,
+        method=method,
+        effective_query=effective_query,
+        evidence_text=evidence_text,
+    )
+
+    llm = _state.get("agentic_llm")
+    model = llm.model if llm else _state["config"].llm.model
+    trace_id = f"digimon.atom_place_completion.{tool_name}.{uuid.uuid4().hex[:8]}"
+    try:
+        decision, _meta = await acall_llm_structured(
+            model,
+            messages,
+            response_model=PlaceCompletionDecision,
+            task="digimon.atom_place_completion",
+            trace_id=trace_id,
+            max_budget=0,
+        )
+    except Exception as exc:
+        logger.warning("contextual place completion judge failed: %s", exc)
+        return None
+
+    resolved_value = str(decision.resolved_value or "").strip()
+    confidence = float(decision.confidence or 0.0)
+    if not decision.should_mark_done or not resolved_value or confidence < _ATOM_CONTEXTUAL_PLACE_MIN_CONFIDENCE:
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": str(atom.get("atom_id") or ""),
+            "tool_name": tool_name,
+            "method": method,
+            "confidence": confidence,
+            "rationale": str(decision.rationale or "").strip()
+            or "Place evidence is still too indirect to mark the atom done.",
+        }
+
+    return {
+        "event": "atom_autocomplete",
+        "atom_id": str(atom.get("atom_id") or ""),
+        "resolved_value": resolved_value,
+        "confidence": confidence,
+        "evidence_refs": [str(ref).strip() for ref in (decision.evidence_refs or []) if str(ref).strip()],
+        "rationale": str(decision.rationale or "").strip(),
+        "tool_name": tool_name,
+        "method": method,
+        "resolution_mode": "contextual_place_inference",
+    }
+
+
+async def _probe_subject_entity_chunks_for_atom(
+    atom: dict[str, Any],
+    todo: dict[str, Any],
+    *,
+    candidate_entity_id: str,
+    candidate_name: str,
+    resolved_graph_id: str,
+    dataset_name: str,
+) -> dict[str, Any] | None:
+    """Fetch subject-linked chunks after a clean entity hit and re-run atom completion on them."""
+    probe_entity_id = candidate_entity_id or candidate_name
+    if not probe_entity_id or not resolved_graph_id:
+        return None
+    seen_chunks_snapshot = dict(_seen_chunks)
+    seen_chunk_text_snapshot = dict(_seen_chunk_text)
+    try:
+        with _query_contract_bypass("subject_chunk_probe"):
+            raw = await chunk_get_text(
+                mode=_CHUNK_GET_TEXT_MODE_BY_ENTITY_IDS,
+                entity_ids=[probe_entity_id],
+                dataset_name=dataset_name,
+                graph_reference_id=resolved_graph_id,
+                max_chunks_per_entity=6,
+            )
+        probe_payload = json.loads(raw)
+    except Exception:
+        _seen_chunks.clear()
+        _seen_chunks.update(seen_chunks_snapshot)
+        _seen_chunk_text.clear()
+        _seen_chunk_text.update(seen_chunk_text_snapshot)
+        return None
+    _seen_chunks.clear()
+    _seen_chunks.update(seen_chunks_snapshot)
+    _seen_chunk_text.clear()
+    _seen_chunk_text.update(seen_chunk_text_snapshot)
+    if not isinstance(probe_payload, dict):
+        return None
+
+    retrieved_chunks = probe_payload.get("retrieved_chunks")
+    if not isinstance(retrieved_chunks, list) or not retrieved_chunks:
+        return None
+    chunks: list[dict[str, Any]] = []
+    evidence_refs: list[str] = []
+    for item in retrieved_chunks:
+        if not isinstance(item, dict):
+            continue
+        chunk_id = str(item.get("chunk_id") or item.get("evidence_ref") or "").strip()
+        text = str(item.get("text_content") or item.get("text") or item.get("content") or "").strip()
+        if not text:
+            continue
+        chunks.append({"chunk_id": chunk_id, "text": text})
+        if chunk_id:
+            evidence_refs.append(chunk_id)
+    if not chunks:
+        return None
+
+    normalized_payload = {
+        "chunks": chunks,
+        "evidence_refs": evidence_refs,
+        "resolved_graph_reference_id": resolved_graph_id,
+        "resolved_dataset_name": dataset_name or None,
+        "canonical_name": candidate_name or probe_entity_id,
+        "entity_id": candidate_entity_id or probe_entity_id,
+    }
+    return await _infer_atom_completion_with_llm(
+        atom,
+        todo,
+        normalized_payload,
+        tool_name="chunk_retrieve",
+        method="by_entities",
+    )
+
+
 async def _validate_manual_todo_completion(
     atom: dict[str, Any],
     todo_item: dict[str, Any],
@@ -2408,6 +2589,17 @@ async def _maybe_complete_active_atom_from_payload(
                 )
                 if best_update:
                     return _apply_atom_completion_update(atom, todo, best_update)
+                if _atom_requires_subject_chunk_probe(atom):
+                    chunk_probe_update = await _probe_subject_entity_chunks_for_atom(
+                        atom,
+                        todo,
+                        candidate_entity_id=candidate_entity_id,
+                        candidate_name=candidate_name,
+                        resolved_graph_id=resolved_graph_id,
+                        dataset_name=dataset_name,
+                    )
+                    if chunk_probe_update and chunk_probe_update.get("event") == "atom_autocomplete":
+                        return _apply_atom_completion_update(atom, todo, chunk_probe_update)
         return None
 
     if tool_name not in {"chunk_retrieve", "relationship_search", "entity_info"}:
@@ -2423,6 +2615,18 @@ async def _maybe_complete_active_atom_from_payload(
     if not update:
         return None
     if update.get("event") != "atom_autocomplete":
+        if tool_name == "chunk_retrieve" and _atom_expects_place_answer(atom):
+            place_update = await _infer_contextual_place_completion_with_llm(
+                atom,
+                todo,
+                payload,
+                tool_name=tool_name,
+                method=method,
+            )
+            if place_update and place_update.get("event") == "atom_autocomplete":
+                return _apply_atom_completion_update(atom, todo, place_update)
+            if place_update and place_update.get("event") == "atom_judged_unresolved":
+                update = place_update
         bridge_update: dict[str, Any] | None = None
         if answer_kind == "entity" and tool_name in {"entity_info", "relationship_search"}:
             bridge_update = await _infer_bridge_candidate_with_llm(
@@ -2522,6 +2726,28 @@ def _atom_is_trivial_return(atom: dict[str, Any] | None) -> bool:
     if not probe:
         return False
     return bool(re.match(r"^(return|provide|give)\b", probe))
+
+
+def _atom_expects_place_answer(atom: dict[str, Any] | None) -> bool:
+    """Return True when the current atom expects a place/location entity answer."""
+    if not isinstance(atom, dict):
+        return False
+    if _normalize_answer_kind(str(atom.get("answer_kind") or "")) != "entity":
+        return False
+    expected_types = _infer_expected_coarse_types(str(atom.get("sub_question") or ""))
+    return "place" in expected_types
+
+
+def _atom_requires_subject_chunk_probe(atom: dict[str, Any] | None) -> bool:
+    """Return True when a clean subject entity should trigger an internal chunk probe."""
+    if not isinstance(atom, dict):
+        return False
+    if _normalize_answer_kind(str(atom.get("answer_kind") or "")) != "entity":
+        return False
+    probe = str(atom.get("sub_question") or "").strip().lower()
+    if not probe:
+        return False
+    return bool(re.search(r"\b(named after|namesake|meaning)\b", probe))
 
 
 _ENTITY_HINT_RE = re.compile(

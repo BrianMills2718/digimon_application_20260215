@@ -174,11 +174,21 @@ enforcement, better atom-state telemetry, and fast reruns on the same failures.
   retrieves `Nazareth` only indirectly through Holy Family evidence, and
   `submit_answer("Nazareth")` is correctly rejected because the atom lifecycle
   still lacks a defensible completion update for the birthplace relation.
+- `namesake_contextual_place_r21` did not clear the final hop; it shifted the
+  control path but also showed that the benchmark can still fail earlier if the
+  model never re-enters the right `by_entities` retrieval lane for the namesake
+  atom.
+- `namesake_subject_probe_r22` fixed that earlier instability. Internal
+  subject-chunk probing after a clean `entity_search(string)` hit restores
+  deterministic `a1 -> Saint Joseph` closure on the maintained lane, reduces
+  the run to 9 tool calls, and leaves a single concentrated gap: `a2` still
+  needs a stronger retrieval/completion path from `Saint Joseph` to indirect
+  `Nazareth` evidence.
 - Next verification rung is no longer another 1q tweak. It is:
   - preserve the verified Lady Godiva and bridge-priority slice
-  - repair the namesake / semantic-gloss failure family by adding a stronger
-    evidence-ranked completion path for unresolved place relations instead of
-    further answer gating
+  - repair the namesake / semantic-gloss failure family by improving the final
+    birthplace retrieval path (`Saint Joseph` → indirect `Nazareth` evidence)
+    instead of further answer gating
   - rerun the 3q smoke slice once provider conditions are stable enough to make
     it decision-grade
   - only then rerun the larger failure tranche

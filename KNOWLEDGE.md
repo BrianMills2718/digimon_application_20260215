@@ -122,3 +122,13 @@ places. The next bottleneck is softer than the earlier bug: the corpus reaches
 `Nazareth` only indirectly (for example via Mary / Holy Family chunks), so the
 control loop can retrieve the right place but still lacks a defensible
 atom-completion update for the birthplace relation.
+
+### 2026-03-28 — codex — best-practice
+For the São José namesake family, harness-level subject-chunk probing is worth
+keeping even before the final birthplace hop is solved. After a clean
+`entity_search(string)` hit, internally fetching chunks linked to the resolved
+subject entity restores deterministic `a1 -> Saint Joseph` closure on the
+maintained direct lane without relying on the model to discover the
+`by_entities` follow-up tool on its own. The remaining miss is now concentrated
+in `a2`: retrieving indirect `Nazareth` evidence for Saint Joseph and turning
+it into a defensible place completion.

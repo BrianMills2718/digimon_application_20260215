@@ -792,6 +792,204 @@ async def test_entity_search_string_birthplace_atom_requires_birth_evidence(
 
 
 @pytest.mark.asyncio
+async def test_chunk_retrieve_birthplace_atom_can_use_contextual_place_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Chunk evidence can close a place atom through the contextual place judge."""
+    dms._current_question = "What is the birthplace of the person after whom São José dos Campos was named?"
+    dms._current_semantic_plan.clear()
+    dms._current_semantic_plan.update(
+        {
+            "atoms": [
+                {
+                    "atom_id": "A1",
+                    "sub_question": "Identify the person after whom São José dos Campos was named",
+                    "depends_on": [],
+                    "operation": "lookup",
+                    "answer_kind": "entity",
+                },
+                {
+                    "atom_id": "A2",
+                    "sub_question": "Find birthplace of the identified person",
+                    "depends_on": ["A1"],
+                    "operation": "relation",
+                    "answer_kind": "entity",
+                },
+            ]
+        }
+    )
+    dms._todos.clear()
+    dms._todos.extend(
+        [
+            {"id": "A1", "content": "Identify the person after whom São José dos Campos was named", "status": "done", "answer": "Saint Joseph"},
+            {"id": "A2", "content": "Find birthplace of the identified person", "status": "in_progress"},
+        ]
+    )
+
+    async def _fake_completion(atom, todo, payload, *, tool_name: str, method: str):
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": "A2",
+            "confidence": 0.35,
+            "rationale": "No direct birthplace wording.",
+            "tool_name": tool_name,
+            "method": method,
+        }
+
+    async def _fake_contextual_place(atom, todo, payload, *, tool_name: str, method: str):
+        assert tool_name == "chunk_retrieve"
+        return {
+            "event": "atom_autocomplete",
+            "atom_id": "A2",
+            "resolved_value": "Nazareth",
+            "confidence": 0.86,
+            "evidence_refs": ["chunk_11367"],
+            "rationale": "Nazareth is the only place strongly tied to Saint Joseph in the retrieved biographical context.",
+            "tool_name": tool_name,
+            "method": method,
+            "resolution_mode": "contextual_place_inference",
+        }
+
+    monkeypatch.setattr(dms, "_infer_atom_completion_with_llm", _fake_completion)
+    monkeypatch.setattr(dms, "_infer_contextual_place_completion_with_llm", _fake_contextual_place)
+
+    update = await dms._maybe_complete_active_atom_from_payload(
+        {
+            "chunks": [
+                {
+                    "chunk_id": "chunk_11367",
+                    "text": (
+                        'Mary resided in "her own house" in Nazareth in Galilee, and after a number of months, '
+                        "when Joseph was told of her conception in a dream by an angel of the Lord, "
+                        "he took her as his wife."
+                    ),
+                }
+            ],
+            "evidence_refs": ["chunk_11367"],
+            "query_contract": {"effective_query": "Saint Joseph birthplace"},
+        },
+        tool_name="chunk_retrieve",
+        method="semantic",
+    )
+
+    assert update is not None
+    assert update["resolved_value"] == "Nazareth"
+    assert update["resolution_mode"] == "contextual_place_inference"
+    assert dms._todo_item_by_id("A2")["status"] == "done"
+    assert dms._todo_item_by_id("A2")["answer"] == "Nazareth"
+
+
+@pytest.mark.asyncio
+async def test_entity_search_string_namesake_atom_probes_subject_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Namesake atoms should internally probe subject-linked chunks after a clean entity hit."""
+    dms._current_question = "What is the birthplace of the person after whom São José dos Campos was named?"
+    dms._current_semantic_plan.clear()
+    dms._current_semantic_plan.update(
+        {
+            "atoms": [
+                {
+                    "atom_id": "A1",
+                    "sub_question": "Who is the person after whom São José dos Campos was named?",
+                    "depends_on": [],
+                    "operation": "lookup",
+                    "answer_kind": "entity",
+                },
+                {
+                    "atom_id": "A2",
+                    "sub_question": "What is the birthplace of the person identified in a1?",
+                    "depends_on": ["A1"],
+                    "operation": "relation",
+                    "answer_kind": "entity",
+                },
+            ]
+        }
+    )
+    dms._todos.clear()
+    dms._todos.extend(
+        [
+            {"id": "A1", "content": "Who is the person after whom São José dos Campos was named?", "status": "in_progress"},
+            {"id": "A2", "content": "What is the birthplace of the person identified in a1?", "status": "pending"},
+        ]
+    )
+
+    async def _fake_entity_profile(*, entity_name: str, graph_reference_id: str, dataset_name: str = ""):
+        return (
+            '{"entity_id":"s o jos  dos campos","canonical_name":"s o jos  dos campos",'
+            '"connected_entities":["são paulo"],'
+            '"evidence_refs":["chunk_239"]}'
+        )
+
+    async def _fake_relationship_onehop(*, entity_ids, graph_reference_id: str):
+        return '{"one_hop_relationships": [], "evidence_refs":["chunk_239"]}'
+
+    async def _fake_completion(atom, todo, payload, *, tool_name: str, method: str):
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": "A1",
+            "confidence": 0.22,
+            "rationale": "Need chunk-level naming evidence.",
+            "tool_name": tool_name,
+            "method": method,
+        }
+
+    async def _fake_bridge(atom, todo, payload, *, tool_name: str, method: str):
+        return None
+
+    async def _fake_chunk_probe(
+        atom,
+        todo,
+        *,
+        candidate_entity_id: str,
+        candidate_name: str,
+        resolved_graph_id: str,
+        dataset_name: str,
+    ):
+        assert candidate_entity_id == "s o jos  dos campos"
+        return {
+            "event": "atom_autocomplete",
+            "atom_id": "A1",
+            "resolved_value": "Saint Joseph",
+            "confidence": 0.84,
+            "evidence_refs": ["chunk_239"],
+            "rationale": "The subject-linked chunk states the city means Saint Joseph of the Fields.",
+            "tool_name": "chunk_retrieve",
+            "method": "by_entities",
+            "resolution_mode": "subject_chunk_probe",
+        }
+
+    monkeypatch.setattr(dms, "entity_profile", _fake_entity_profile)
+    monkeypatch.setattr(dms, "relationship_onehop", _fake_relationship_onehop)
+    monkeypatch.setattr(dms, "_infer_atom_completion_with_llm", _fake_completion)
+    monkeypatch.setattr(dms, "_infer_bridge_candidate_with_llm", _fake_bridge)
+    monkeypatch.setattr(dms, "_atom_requires_subject_chunk_probe", lambda atom: True)
+    monkeypatch.setattr(dms, "_probe_subject_entity_chunks_for_atom", _fake_chunk_probe)
+
+    update = await dms._maybe_complete_active_atom_from_payload(
+        {
+            "matches": [
+                {
+                    "entity_name": "s o jos  dos campos",
+                    "canonical_name": "s o jos  dos campos",
+                    "match_score": 96,
+                }
+            ],
+            "resolved_graph_reference_id": "MuSiQue_ERGraph",
+            "dataset_name": "MuSiQue",
+        },
+        tool_name="entity_search",
+        method="string",
+    )
+
+    assert update is not None
+    assert update["resolved_value"] == "Saint Joseph"
+    assert update["resolution_mode"] == "subject_chunk_probe"
+    assert dms._todo_item_by_id("A1")["status"] == "done"
+    assert dms._todo_item_by_id("A2")["status"] == "in_progress"
+
+
+@pytest.mark.asyncio
 async def test_entity_search_string_prefers_relationship_bridge_over_profile_guess(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
