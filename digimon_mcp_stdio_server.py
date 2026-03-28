@@ -2140,6 +2140,28 @@ def _apply_atom_completion_update(atom: dict[str, Any], todo: dict[str, Any], up
     return atom_update
 
 
+def _best_atom_autocomplete_update(
+    updates: list[dict[str, Any]],
+    *,
+    answer_kind: str,
+) -> dict[str, Any] | None:
+    """Choose the best autocomplete update when multiple payloads compete."""
+    if not updates:
+        return None
+
+    def _rank(update: dict[str, Any]) -> tuple[float, int, int]:
+        confidence = float(update.get("confidence") or 0.0)
+        tool_name = str(update.get("tool_name") or "")
+        resolution_mode = str(update.get("resolution_mode") or "")
+        bridge_priority = 1 if resolution_mode in {"bridge_probe", "bridge_inference"} else 0
+        relationship_priority = 1 if tool_name == "relationship_search" else 0
+        if answer_kind == "entity":
+            return (confidence, bridge_priority + relationship_priority, len(update.get("evidence_refs") or []))
+        return (confidence, relationship_priority, len(update.get("evidence_refs") or []))
+
+    return max(updates, key=_rank)
+
+
 async def _maybe_complete_active_atom_from_payload(
     payload: dict[str, Any],
     *,
@@ -2173,6 +2195,7 @@ async def _maybe_complete_active_atom_from_payload(
             resolved_graph_id = str(payload.get("resolved_graph_reference_id") or "").strip()
             dataset_name = str(payload.get("dataset_name") or "").strip()
             if candidate_name and resolved_graph_id:
+                candidate_updates: list[dict[str, Any]] = []
                 try:
                     profile_raw = await entity_profile(
                         entity_name=candidate_name,
@@ -2211,7 +2234,7 @@ async def _maybe_complete_active_atom_from_payload(
                         method=candidate_method,
                     )
                     if update and update.get("event") == "atom_autocomplete":
-                        return _apply_atom_completion_update(atom, todo, update)
+                        candidate_updates.append(update)
                     bridge_update = await _infer_bridge_candidate_with_llm(
                         atom,
                         todo,
@@ -2220,7 +2243,13 @@ async def _maybe_complete_active_atom_from_payload(
                         method=candidate_method,
                     )
                     if bridge_update and bridge_update.get("event") == "atom_autocomplete":
-                        return _apply_atom_completion_update(atom, todo, bridge_update)
+                        candidate_updates.append(bridge_update)
+                best_update = _best_atom_autocomplete_update(
+                    candidate_updates,
+                    answer_kind=answer_kind,
+                )
+                if best_update:
+                    return _apply_atom_completion_update(atom, todo, best_update)
         return None
 
     if tool_name not in {"chunk_retrieve", "relationship_search", "entity_info"}:

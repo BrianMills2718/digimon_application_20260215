@@ -416,7 +416,7 @@ async def test_entity_search_string_auto_profiles_subject(monkeypatch: pytest.Mo
         )
 
     async def _fake_completion(atom, todo, payload, *, tool_name: str, method: str):
-        assert tool_name == "entity_info"
+        assert tool_name in {"entity_info", "relationship_search"}
         return {
             "event": "atom_judged_unresolved",
             "atom_id": "a1",
@@ -427,7 +427,16 @@ async def test_entity_search_string_auto_profiles_subject(monkeypatch: pytest.Mo
         }
 
     async def _fake_bridge(atom, todo, payload, *, tool_name: str, method: str):
-        assert payload["connected_entities"][-1] == "mercia"
+        connected_entities = payload.get("connected_entities")
+        if isinstance(connected_entities, list):
+            assert connected_entities[-1] == "mercia"
+        else:
+            relationship_targets = [
+                rel.get("tgt_id")
+                for rel in payload.get("one_hop_relationships", [])
+                if isinstance(rel, dict)
+            ]
+            assert "mercia" in relationship_targets
         return {
             "event": "atom_autocomplete",
             "atom_id": "a1",
@@ -468,6 +477,89 @@ async def test_entity_search_string_auto_profiles_subject(monkeypatch: pytest.Mo
     assert dms._todo_item_by_id("a2")["status"] == "in_progress"
     assert captured_events[0]["event"] == "atom_completed"
     assert call_order == ["profile", "relationship"]
+
+
+@pytest.mark.asyncio
+async def test_entity_search_string_prefers_relationship_bridge_over_profile_guess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Subject auto-profiling should compare profile and relationship bridge candidates before advancing."""
+    _prime_lady_godiva_plan()
+
+    async def _fake_entity_profile(*, entity_name: str, graph_reference_id: str, dataset_name: str = ""):
+        return (
+            '{"entity_id":"godiva","canonical_name":"godiva",'
+            '"connected_entities":["england","leicester"],'
+            '"evidence_refs":["chunk_82"]}'
+        )
+
+    async def _fake_relationship_onehop(*, entity_ids, graph_reference_id: str):
+        return (
+            '{"one_hop_relationships":['
+            '{"src_id":"godiva","tgt_id":"england","description":"countess lived in england"},'
+            '{"src_id":"godiva","tgt_id":"mercia","description":"wife of Leofric, Earl of Mercia"}'
+            ']}'
+        )
+
+    async def _fake_completion(atom, todo, payload, *, tool_name: str, method: str):
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": "a1",
+            "confidence": 0.10,
+            "rationale": "Need bridge disambiguation.",
+            "tool_name": tool_name,
+            "method": method,
+        }
+
+    async def _fake_bridge(atom, todo, payload, *, tool_name: str, method: str):
+        if tool_name == "entity_info":
+            return {
+                "event": "atom_autocomplete",
+                "atom_id": "a1",
+                "resolved_value": "England",
+                "confidence": 0.80,
+                "evidence_refs": ["chunk_82"],
+                "rationale": "Profile connected England to Godiva.",
+                "tool_name": tool_name,
+                "method": method,
+                "resolution_mode": "bridge_probe",
+            }
+        return {
+            "event": "atom_autocomplete",
+            "atom_id": "a1",
+            "resolved_value": "Mercia",
+            "confidence": 0.80,
+            "evidence_refs": ["chunk_84"],
+            "rationale": "Relationship graph provides the stronger bridge.",
+            "tool_name": tool_name,
+            "method": method,
+            "resolution_mode": "bridge_probe",
+        }
+
+    monkeypatch.setattr(dms, "entity_profile", _fake_entity_profile)
+    monkeypatch.setattr(dms, "relationship_onehop", _fake_relationship_onehop)
+    monkeypatch.setattr(dms, "_infer_atom_completion_with_llm", _fake_completion)
+    monkeypatch.setattr(dms, "_infer_bridge_candidate_with_llm", _fake_bridge)
+
+    update = await dms._maybe_complete_active_atom_from_payload(
+        {
+            "matches": [
+                {
+                    "entity_name": "godiva",
+                    "canonical_name": "godiva",
+                    "match_score": 95,
+                }
+            ],
+            "resolved_graph_reference_id": "MuSiQue_ERGraph",
+            "dataset_name": "MuSiQue",
+        },
+        tool_name="entity_search",
+        method="string",
+    )
+
+    assert update is not None
+    assert update["resolved_value"] == "Mercia"
+    assert dms._todo_item_by_id("a1")["answer"] == "Mercia"
 
 
 @pytest.mark.asyncio
