@@ -41,6 +41,27 @@ small slice, run the targeted MuSiQue batch, diagnose the remaining misses, and
 immediately start the next systemic repair until the active plan is exhausted or
 an explicit escalation criterion is hit.
 
+## Generalization Mandate
+
+DIGIMON fixes must be **general improvements to representation, retrieval,
+tool contracts, or control flow**, not patches that only teach the system a
+single benchmark answer path.
+
+- Do not hardcode a specific question, answer, entity pair, or dataset row.
+- Do not add special-case logic for one failure ID or one named entity unless
+  the rule is framed at the level of a general failure family.
+- Every repair must be expressible as one of:
+  - better graph/entity canonicalization,
+  - better passage/edge representation,
+  - better retrieval query construction,
+  - better tool linearization or contracts,
+  - better atom lifecycle / answer gating,
+  - or better generic ranking/disambiguation.
+- Before landing a fix, state the failure family it addresses and why it should
+  improve more than the currently failing question.
+- If a candidate fix would only make one benchmark case pass without improving
+  the underlying retrieval system, reject it and keep investigating.
+
 ## Core Architecture
 
 **Uniform operator signature** (all 28 operators):
