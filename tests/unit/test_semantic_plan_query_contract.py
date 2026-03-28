@@ -368,6 +368,12 @@ def test_internal_probe_query_bypass_preserves_downstream_query() -> None:
     assert contract["rewrite_reason"] == ["internal_bypass:bridge_probe"]
 
 
+def test_atom_is_trivial_return_detects_final_echo_atom() -> None:
+    """Bridge inference should ignore downstream atoms that only restate the final return."""
+    assert dms._atom_is_trivial_return({"sub_question": "Return the birthplace"})
+    assert not dms._atom_is_trivial_return({"sub_question": "When was that birthplace abolished?"})
+
+
 def test_bridge_candidate_names_filters_to_expected_person_type(monkeypatch: pytest.MonkeyPatch) -> None:
     """Bridge candidates should honor the current atom's expected coarse type when matches exist."""
     dms._current_question = "What is the person after whom São José dos Campos was named?"
@@ -693,6 +699,96 @@ async def test_entity_search_string_auto_profiles_subject(monkeypatch: pytest.Mo
     assert dms._todo_item_by_id("a2")["status"] == "in_progress"
     assert captured_events[0]["event"] == "atom_completed"
     assert call_order == ["profile", "relationship"]
+
+
+@pytest.mark.asyncio
+async def test_entity_search_string_birthplace_atom_requires_birth_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Birthplace atoms should not autocomplete from unrelated connected places."""
+    dms._current_question = "What is the birthplace of the person after whom São José dos Campos was named?"
+    dms._current_semantic_plan.clear()
+    dms._current_semantic_plan.update(
+        {
+            "atoms": [
+                {
+                    "atom_id": "A1",
+                    "sub_question": "Identify the person after whom São José dos Campos was named",
+                    "depends_on": [],
+                    "operation": "lookup",
+                    "answer_kind": "entity",
+                },
+                {
+                    "atom_id": "A2",
+                    "sub_question": "Find birthplace of the identified person",
+                    "depends_on": ["A1"],
+                    "operation": "relation",
+                    "answer_kind": "entity",
+                },
+            ]
+        }
+    )
+    dms._todos.clear()
+    dms._todos.extend(
+        [
+            {"id": "A1", "content": "Identify the person after whom São José dos Campos was named", "status": "done", "answer": "Saint Joseph"},
+            {"id": "A2", "content": "Find birthplace of the identified person", "status": "in_progress"},
+        ]
+    )
+
+    async def _fake_entity_profile(*, entity_name: str, graph_reference_id: str, dataset_name: str = ""):
+        return (
+            '{"entity_id":"saint joseph","canonical_name":"Saint Joseph",'
+            '"connected_entities":["california"],'
+            '"description":"The earthly father of Jesus whose workshop is the setting for a painting.",'
+            '"evidence_refs":["chunk_3346"]}'
+        )
+
+    async def _fake_relationship_onehop(*, entity_ids, graph_reference_id: str):
+        return (
+            '{"one_hop_relationships":['
+            '{"src_id":"saint joseph","tgt_id":"california","description":"painting set in california"}'
+            '], "evidence_refs":["chunk_3346"]}'
+        )
+
+    async def _fake_completion(atom, todo, payload, *, tool_name: str, method: str):
+        return {
+            "event": "atom_autocomplete",
+            "atom_id": "A2",
+            "resolved_value": "california",
+            "confidence": 0.91,
+            "evidence_refs": ["chunk_3346"],
+            "rationale": "Connected place candidate.",
+            "tool_name": tool_name,
+            "method": method,
+        }
+
+    async def _fake_bridge(atom, todo, payload, *, tool_name: str, method: str):
+        return None
+
+    monkeypatch.setattr(dms, "entity_profile", _fake_entity_profile)
+    monkeypatch.setattr(dms, "relationship_onehop", _fake_relationship_onehop)
+    monkeypatch.setattr(dms, "_infer_atom_completion_with_llm", _fake_completion)
+    monkeypatch.setattr(dms, "_infer_bridge_candidate_with_llm", _fake_bridge)
+
+    update = await dms._maybe_complete_active_atom_from_payload(
+        {
+            "matches": [
+                {
+                    "entity_name": "Saint Joseph",
+                    "canonical_name": "Saint Joseph",
+                    "match_score": 100,
+                }
+            ],
+            "resolved_graph_reference_id": "MuSiQue_ERGraph",
+            "dataset_name": "MuSiQue",
+        },
+        tool_name="entity_search",
+        method="string",
+    )
+
+    assert update is None
+    assert dms._todo_item_by_id("A2")["status"] == "in_progress"
 
 
 @pytest.mark.asyncio

@@ -113,3 +113,12 @@ cached evidence (`Saint Joseph ...`) changed the search trajectory, but the
 agent still does not canonically bridge the city-name gloss to the gold path
 (`Nazareth`). The next repair target is saint-title / alias canonicalization
 and higher-signal retrieval construction, not more answer gating.
+
+### 2026-03-28 — codex — bug-pattern
+The birthplace-evidence guard removed the previous `california` false
+completion for `2hop__199513_801817`: `a1` now closes to `Saint Joseph`, and
+`a2` stays unresolved instead of auto-completing from unrelated connected
+places. The next bottleneck is softer than the earlier bug: the corpus reaches
+`Nazareth` only indirectly (for example via Mary / Holy Family chunks), so the
+control loop can retrieve the right place but still lacks a defensible
+atom-completion update for the birthplace relation.

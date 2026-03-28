@@ -2138,6 +2138,8 @@ async def _infer_bridge_candidate_with_llm(
     downstream_atom = _next_dependent_atom(atom)
     if downstream_atom is None:
         return None
+    if _atom_is_trivial_return(downstream_atom):
+        return None
 
     candidates = _bridge_candidate_names(payload, current_atom=atom)
     if len(candidates) < 2:
@@ -2343,6 +2345,7 @@ async def _maybe_complete_active_atom_from_payload(
             if candidate_name and resolved_graph_id:
                 bridge_candidate_updates: list[dict[str, Any]] = []
                 direct_candidate_updates: list[dict[str, Any]] = []
+                requires_birth_evidence = _atom_requires_birth_evidence(atom)
                 try:
                     profile_raw = await entity_profile(
                         entity_name=candidate_name,
@@ -2373,6 +2376,10 @@ async def _maybe_complete_active_atom_from_payload(
                     candidate_payload.setdefault("canonical_name", candidate_name)
                     if candidate_entity_id:
                         candidate_payload.setdefault("entity_id", candidate_entity_id)
+                    payload_supports_current_relation = (
+                        not requires_birth_evidence
+                        or _payload_contains_birth_evidence(candidate_payload)
+                    )
                     update = await _infer_atom_completion_with_llm(
                         atom,
                         todo,
@@ -2380,7 +2387,11 @@ async def _maybe_complete_active_atom_from_payload(
                         tool_name=candidate_tool,
                         method=candidate_method,
                     )
-                    if update and update.get("event") == "atom_autocomplete":
+                    if (
+                        payload_supports_current_relation
+                        and update
+                        and update.get("event") == "atom_autocomplete"
+                    ):
                         direct_candidate_updates.append(update)
                     bridge_update = await _infer_bridge_candidate_with_llm(
                         atom,
@@ -2466,6 +2477,51 @@ def _normalize_answer_kind(answer_kind: str) -> str:
         "text": "entity",
     }
     return aliases.get(kind, "")
+
+
+def _atom_requires_birth_evidence(atom: dict[str, Any] | None) -> bool:
+    """Return True when an atom asks for birthplace-style evidence."""
+    if not isinstance(atom, dict):
+        return False
+    probe = str(atom.get("sub_question") or "")
+    return bool(re.search(r"\b(birthplace|born|birth place)\b", probe, flags=re.IGNORECASE))
+
+
+def _payload_contains_birth_evidence(payload: dict[str, Any]) -> bool:
+    """Return True when payload text explicitly mentions birth-related evidence."""
+    text_parts: list[str] = []
+    for key in ("description", "short_description", "summary", "text"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            text_parts.append(value)
+    for chunk in payload.get("chunks") or []:
+        if isinstance(chunk, dict):
+            text = str(chunk.get("text") or chunk.get("text_content") or "").strip()
+            if text:
+                text_parts.append(text)
+    relationships = payload.get("relationships")
+    if not isinstance(relationships, list):
+        relationships = payload.get("one_hop_relationships")
+    if isinstance(relationships, list):
+        for rel in relationships:
+            if not isinstance(rel, dict):
+                continue
+            for key in ("description", "relation", "predicate"):
+                value = rel.get(key)
+                if isinstance(value, str) and value.strip():
+                    text_parts.append(value)
+    probe = " ".join(text_parts)
+    return bool(re.search(r"\b(birthplace|born|birth place|native of)\b", probe, flags=re.IGNORECASE))
+
+
+def _atom_is_trivial_return(atom: dict[str, Any] | None) -> bool:
+    """Return True when an atom is only echoing the final answer span."""
+    if not isinstance(atom, dict):
+        return False
+    probe = str(atom.get("sub_question") or "").strip().lower()
+    if not probe:
+        return False
+    return bool(re.match(r"^(return|provide|give)\b", probe))
 
 
 _ENTITY_HINT_RE = re.compile(

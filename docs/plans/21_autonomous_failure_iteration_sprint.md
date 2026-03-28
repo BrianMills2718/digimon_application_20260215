@@ -167,10 +167,18 @@ enforcement, better atom-state telemetry, and fast reruns on the same failures.
   shows pending TODO atoms. The same question again ends as
   `missing_required_submit` with an empty prediction, but it now spends longer
   exploring alias-related retrieval paths before failing.
+- `namesake_birthcue_guard_r20` removed the next false-positive control path.
+  Birthplace atoms no longer auto-complete from unrelated connected places like
+  `california` after `Saint Joseph` is resolved. The same question now reaches
+  a cleaner state: `a1` closes to `Saint Joseph`, `a2` stays pending, the run
+  retrieves `Nazareth` only indirectly through Holy Family evidence, and
+  `submit_answer("Nazareth")` is correctly rejected because the atom lifecycle
+  still lacks a defensible completion update for the birthplace relation.
 - Next verification rung is no longer another 1q tweak. It is:
   - preserve the verified Lady Godiva and bridge-priority slice
-  - repair the namesake / semantic-gloss failure family by improving
-    saint-title / alias canonicalization instead of further answer gating
+  - repair the namesake / semantic-gloss failure family by adding a stronger
+    evidence-ranked completion path for unresolved place relations instead of
+    further answer gating
   - rerun the 3q smoke slice once provider conditions are stable enough to make
     it decision-grade
   - only then rerun the larger failure tranche
