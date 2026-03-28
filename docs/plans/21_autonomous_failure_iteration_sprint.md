@@ -152,9 +152,25 @@ enforcement, better atom-state telemetry, and fast reruns on the same failures.
   (`atom_bridge_type_filter_r15`) confirmed that coarse-type filtering removes
   the previous `brazil` bridge error, but the question still resolves to the
   city-name gloss (`Saint Joseph of the Fields`) rather than the gold answer.
+- `namesake_submit_gate_r16` changed the benchmark contract so failed
+  `submit_answer` calls no longer leak a free-form or metadata fallback into
+  the scored prediction. The same question now fails as an honest
+  `missing_required_submit` with an empty prediction instead of scoring
+  `Saint Joseph of the Fields`.
+- `namesake_alias_probe_r17` preserved alias-like entity queries grounded in
+  cached evidence instead of always collapsing them back to the generic active
+  atom. That changed the search path, but also exposed a second benchmark leak:
+  retrieval-stagnation forced-final answers could still score `Saint Joseph`
+  while all semantic-plan atoms remained pending.
+- `namesake_forced_final_guard_r18` closed that second leak. Forced-terminal
+  freeform answers are now suppressed when the final conversation trace still
+  shows pending TODO atoms. The same question again ends as
+  `missing_required_submit` with an empty prediction, but it now spends longer
+  exploring alias-related retrieval paths before failing.
 - Next verification rung is no longer another 1q tweak. It is:
   - preserve the verified Lady Godiva and bridge-priority slice
-  - repair the namesake / semantic-gloss failure family
+  - repair the namesake / semantic-gloss failure family by improving
+    saint-title / alias canonicalization instead of further answer gating
   - rerun the 3q smoke slice once provider conditions are stable enough to make
     it decision-grade
   - only then rerun the larger failure tranche

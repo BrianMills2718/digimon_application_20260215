@@ -1414,6 +1414,53 @@ def _derive_submit_observability(tool_calls: list[dict[str, Any]]) -> dict[str, 
     }
 
 
+def _preserve_terminal_answer_after_submit_validation(
+    answer: str,
+    *,
+    answer_source: str | None,
+    derived_submit: dict[str, Any],
+    submit_forced_accept_on_budget_exhaustion: bool | None,
+    finalization_fallback_succeeded: bool | None,
+) -> str:
+    """Drop terminal answers that were not accepted through the submit contract.
+
+    When the model calls ``submit_answer`` and the validator rejects it, the run
+    should not silently keep a free-form or metadata fallback as the scored
+    prediction unless the benchmark explicitly forced final acceptance.
+    """
+    if not answer:
+        return ""
+    if answer_source == "accepted_submit":
+        return answer
+    if not bool(derived_submit.get("submit_events")):
+        return answer
+    if bool(derived_submit.get("submit_answer_succeeded")):
+        return answer
+    if submit_forced_accept_on_budget_exhaustion or finalization_fallback_succeeded:
+        return answer
+    return ""
+
+
+def _conversation_trace_has_pending_todos(conversation_trace: Any) -> bool:
+    """Return True when the latest TODO state in the trace still has pending atoms."""
+    if not isinstance(conversation_trace, list):
+        return False
+    todo_pattern = re.compile(r"\[TODO:\s*(?P<done>\d+)/(?P<total>\d+)\s+done\]")
+    for message in reversed(conversation_trace):
+        if not isinstance(message, dict):
+            continue
+        content = str(message.get("content") or "")
+        if "[TODO_STATE]" not in content:
+            continue
+        match = todo_pattern.search(content)
+        if not match:
+            continue
+        done = int(match.group("done"))
+        total = int(match.group("total"))
+        return done < total
+    return False
+
+
 _WARNING_EVIDENCE_METRIC_RE = re.compile(
     r"METRIC:\s+evidence_turns=(?P<total>\d+),\s+new_evidence_turns=(?P<new>\d+),\s+"
     r"stagnant_evidence_turns=(?P<stagnant>\d+),\s+retrieval_stagnation_streak_max=(?P<streak>\d+),\s+"
@@ -1912,6 +1959,7 @@ async def run_agent(
         # Ignore rejected/errored submits so the agent can keep searching.
         answer = None
         reasoning = None
+        answer_source: str | None = None
         for tc in reversed(tool_calls):
             tool_name = tc.get("tool", "")
             if tool_name.endswith("submit_answer"):
@@ -1932,6 +1980,7 @@ async def run_agent(
                 if isinstance(args, dict):
                     answer = args.get("answer", "").strip()
                     reasoning = args.get("reasoning", "")
+                    answer_source = "accepted_submit"
                 break
 
         # Fallback: check submitted_answer_value from agent metadata (set by
@@ -1941,12 +1990,14 @@ async def run_agent(
             meta_answer = raw_metadata.get("submitted_answer_value")
             if isinstance(meta_answer, str) and meta_answer.strip():
                 answer = meta_answer.strip()
+                answer_source = "metadata"
 
         # Fallback: extract from text if no submit_answer call and no metadata
         if not answer:
             raw_fallback = result.content.strip()
             extracted = _extract_answer_from_freeform_content(raw_fallback)
             answer = extracted or raw_fallback
+            answer_source = "freeform"
             if _is_agent_sdk_model(model) and "\n" in answer:
                 lines = [l.strip() for l in answer.split("\n") if l.strip()]
                 answer = lines[-1] if lines else answer
@@ -1972,6 +2023,23 @@ async def run_agent(
             submit_validator_accepted = False
             required_submit_missing = True
             submit_completion_mode = "missing_required_submit"
+
+        answer = _preserve_terminal_answer_after_submit_validation(
+            answer or "",
+            answer_source=answer_source,
+            derived_submit=derived_submit,
+            submit_forced_accept_on_budget_exhaustion=submit_forced_accept_on_budget_exhaustion,
+            finalization_fallback_succeeded=finalization_fallback_succeeded,
+        )
+        if (
+            answer
+            and answer_source != "accepted_submit"
+            and submit_completion_mode == "forced_terminal_accept"
+            and _conversation_trace_has_pending_todos(conversation_trace)
+        ):
+            answer = ""
+        if not answer and answer_source in {"metadata", "freeform"}:
+            reasoning = None
 
         if required_submit_missing:
             result_error = getattr(result, "error", None)

@@ -737,8 +737,8 @@ def _dedup_chunk(chunk_id: str, text: str) -> tuple[bool, str]:
         return False, (
             f"[DUPLICATE — you already have this chunk. "
             f"Content: {preview!r}... "
-            f"DO NOT search again. Try entity_onehop or entity_vdb_search instead, "
-            f"or submit your answer.]"
+            f"DO NOT search again. Try entity_onehop or entity_vdb_search instead. "
+            f"Do not submit while atoms are still pending.]"
         )
     _seen_chunks[chunk_id] = text[:80]
     _seen_chunk_text[chunk_id] = text or ""
@@ -1353,6 +1353,46 @@ def _looks_like_chunk_derived_entity_query(text: str) -> bool:
     return False
 
 
+def _cached_atom_alias_mentions(atom_id: str) -> set[str]:
+    """Collect capitalized alias mentions from cached evidence for the current atom."""
+    if not atom_id:
+        return set()
+    mentions: set[str] = set()
+    for payload in _atom_validation_payloads.get(atom_id, []):
+        if not isinstance(payload, dict):
+            continue
+        for chunk in payload.get("chunks") or []:
+            if not isinstance(chunk, dict):
+                continue
+            text = str(chunk.get("text") or chunk.get("text_content") or "")
+            for mention in _extract_context_entity_mentions(text, limit=12):
+                normalized = _normalize_query_compare_text(mention)
+                if normalized:
+                    mentions.add(normalized)
+        canonical_name = str(payload.get("canonical_name") or "").strip()
+        if canonical_name:
+            normalized = _normalize_query_compare_text(canonical_name)
+            if normalized:
+                mentions.add(normalized)
+    return mentions
+
+
+def _query_targets_cached_alias(requested_query: str, *, atom_id: str) -> bool:
+    """Return True when an entity query is grounded in alias text already seen for the atom."""
+    requested_norm = _normalize_query_compare_text(requested_query)
+    if not requested_norm:
+        return False
+    for mention in _cached_atom_alias_mentions(atom_id):
+        if not mention:
+            continue
+        mention_tokens = mention.split()
+        if len(mention_tokens) < 2:
+            continue
+        if mention in requested_norm:
+            return True
+    return False
+
+
 def _build_retrieval_query_contract(
     requested_query: str,
     *,
@@ -1399,7 +1439,10 @@ def _build_retrieval_query_contract(
         (tool_name == "entity_search" or tool_name.startswith("entity_"))
         and bool(requested)
         and _query_token_overlap(requested, _current_question) < 0.75
-        and not _looks_like_chunk_derived_entity_query(requested)
+        and (
+            not _looks_like_chunk_derived_entity_query(requested)
+            or _query_targets_cached_alias(requested, atom_id=atom_id)
+        )
     )
     if atom_query and (not effective or _query_token_overlap(effective, _current_question) >= 0.75):
         effective = atom_query

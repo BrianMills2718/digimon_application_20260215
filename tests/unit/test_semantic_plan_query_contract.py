@@ -292,6 +292,68 @@ def test_entity_search_rewrites_chunk_like_resolution_query_back_to_subject() ->
     assert "Leofric" not in effective
 
 
+def test_entity_search_preserves_cached_alias_query_for_namesake_probe() -> None:
+    """Alias probes grounded in cached evidence should survive entity-query rewriting."""
+    dms._current_question = "What is the birthplace of the person after whom São José dos Campos was named?"
+    dms._current_semantic_plan.clear()
+    dms._current_semantic_plan.update(
+        {
+            "atoms": [
+                {
+                    "atom_id": "a1",
+                    "sub_question": "Who is the person after whom São José dos Campos was named?",
+                    "depends_on": [],
+                    "operation": "lookup",
+                    "answer_kind": "entity",
+                },
+                {
+                    "atom_id": "a2",
+                    "sub_question": "What is the birthplace of that person?",
+                    "depends_on": ["a1"],
+                    "operation": "lookup",
+                    "answer_kind": "entity",
+                },
+            ]
+        }
+    )
+    dms._todos.clear()
+    dms._todos.extend(
+        [
+            {
+                "id": "a1",
+                "content": "Who is the person after whom São José dos Campos was named?",
+                "status": "in_progress",
+            },
+            {
+                "id": "a2",
+                "content": "What is the birthplace of that person?",
+                "status": "pending",
+            },
+        ]
+    )
+    dms._atom_validation_payloads["a1"] = [
+        {
+            "tool_name": "chunk_retrieve",
+            "method": "text",
+            "chunks": [
+                {
+                    "chunk_id": "chunk_239",
+                    "text": "São José dos Campos, meaning Saint Joseph of the Fields, is a major city in São Paulo, Brazil.",
+                }
+            ],
+        }
+    ]
+
+    effective, contract = dms._build_retrieval_query_contract(
+        "Saint Joseph of the Fields named after person",
+        tool_name="entity_search",
+    )
+
+    assert contract["active_atom_id"] == "a1"
+    assert "off_atom_query_rewritten_to_active_atom" not in contract["rewrite_reason"]
+    assert "Saint Joseph" in effective
+
+
 def test_internal_probe_query_bypass_preserves_downstream_query() -> None:
     """Internal bridge probes must not be rewritten back to the active atom."""
     _prime_lady_godiva_plan()

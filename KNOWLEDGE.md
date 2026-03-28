@@ -95,3 +95,21 @@ candidates by the current atom's expected coarse type removed that place
 misclassification, but the run still drifted to `Saint Joseph of the Fields`,
 which means the remaining bug is semantic interpretation of the city's name and
 final answer gating, not the original place-vs-person bridge policy.
+
+### 2026-03-28 — codex — best-practice
+Direct benchmark scoring now drops unsupported terminal answers in two cases:
+when `submit_answer` is explicitly rejected while atoms are still pending, and
+when a forced-terminal freeform answer appears after tool disablement but the
+last `[TODO_STATE]` still shows unfinished atoms. This prevents namesake/gloss
+failures like `2hop__199513_801817` from being recorded as grounded answers
+(`Saint Joseph of the Fields` / `Saint Joseph`) when the semantic-plan
+contract never actually closed `a1` or `a2`.
+
+### 2026-03-28 — codex — bug-pattern
+The current namesake bottleneck is no longer false answer acceptance. After the
+submit/finalization guards, `2hop__199513_801817` fails honestly as
+`missing_required_submit`. Preserving alias-like entity queries grounded in
+cached evidence (`Saint Joseph ...`) changed the search trajectory, but the
+agent still does not canonically bridge the city-name gloss to the gold path
+(`Nazareth`). The next repair target is saint-title / alias canonicalization
+and higher-signal retrieval construction, not more answer gating.
