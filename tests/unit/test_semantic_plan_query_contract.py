@@ -275,6 +275,23 @@ def test_preserves_explicit_entity_resolution_query() -> None:
     assert "off_atom_query_rewritten_to_active_atom" not in contract["rewrite_reason"]
 
 
+def test_entity_search_rewrites_chunk_like_resolution_query_back_to_subject() -> None:
+    """Chunk-sized string-resolution queries should collapse back to the active atom subject."""
+    _prime_lady_godiva_plan()
+
+    effective, contract = dms._build_retrieval_query_contract(
+        "Leofric Earl of Mercia Godiva Countess of Leicester abbey founded as a cell of Croyland Abbey 1052",
+        tool_name="entity_search",
+    )
+
+    assert contract["active_atom_id"] == "a1"
+    assert "full_question_rewritten_to_active_atom" not in contract["rewrite_reason"]
+    assert "off_atom_query_rewritten_to_active_atom" in contract["rewrite_reason"]
+    assert "Lady Godiva" in effective
+    assert "1052" not in effective
+    assert "Leofric" not in effective
+
+
 def test_internal_probe_query_bypass_preserves_downstream_query() -> None:
     """Internal bridge probes must not be rewritten back to the active atom."""
     _prime_lady_godiva_plan()

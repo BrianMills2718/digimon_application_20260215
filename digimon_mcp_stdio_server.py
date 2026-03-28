@@ -1323,6 +1323,19 @@ def _dataset_name_from_graph_reference(graph_reference_id: str) -> str:
     return dataset_name
 
 
+def _looks_like_chunk_derived_entity_query(text: str) -> bool:
+    """Detect entity-search queries that look like pasted evidence instead of a clean entity mention."""
+    probe = str(text or "").strip()
+    if not probe:
+        return False
+    tokens = re.findall(r"[A-Za-z0-9']+", probe)
+    if len(tokens) >= 8:
+        return True
+    if len(tokens) >= 5 and re.search(r"\b\d{3,4}\b", probe):
+        return True
+    return False
+
+
 def _build_retrieval_query_contract(
     requested_query: str,
     *,
@@ -1369,6 +1382,7 @@ def _build_retrieval_query_contract(
         (tool_name == "entity_search" or tool_name.startswith("entity_"))
         and bool(requested)
         and _query_token_overlap(requested, _current_question) < 0.75
+        and not _looks_like_chunk_derived_entity_query(requested)
     )
     if atom_query and (not effective or _query_token_overlap(effective, _current_question) >= 0.75):
         effective = atom_query
