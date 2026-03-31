@@ -40,7 +40,7 @@ integration.
 | 18 | [PTC Validation (conditional)](18_ptc_validation.md) | Medium | 📋 Planned | - |
 | 20 | [Tool Linearization + Restore Planning Tools](20_tool_linearization_and_planning_restore.md) | High | ✅ Complete | - |
 | 21 | [Autonomous Failure-Iteration Sprint](21_autonomous_failure_iteration_sprint.md) | High | 🚧 In Progress | Decision-grade Plan #17 rerun |
-| 22 | [Benchmark-First Canonicalization And Projection Hardening](22_benchmark_first_canonicalization_projection_hardening.md) | High | 📋 Planned | Next decision-grade MuSiQue rerun |
+| 22 | [Benchmark-First Canonicalization And Projection Hardening](22_benchmark_first_canonicalization_projection_hardening.md) | High | 🚧 In Progress | Next decision-grade MuSiQue rerun |
 | 23 | [Semantic Build Boundary And onto-canon6 Experiment](23_semantic_build_boundary_and_onto_canon_experiment.md) | High | 📋 Planned | Any default-path convergence decision |
 
 ## Status Key

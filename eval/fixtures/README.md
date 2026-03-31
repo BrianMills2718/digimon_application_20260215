@@ -9,6 +9,8 @@ Question ID sets for targeted benchmark iteration. Use with `--questions-file`.
 | `musique_19q_diagnostic_ids.txt` | Original 19q diagnostic set from March 23 | 19 |
 | `musique_50q_both_fail_ids.txt` | Questions where both baseline AND GraphRAG fail (50q run) | 25 |
 | `musique_both_fail_frozen.json` | Frozen both-fail with gold/predicted/tools (19q, older) | 8 |
+| `musique_canonicalization_tranche.txt` | Frozen Plan #22 benchmark slice for canonicalization / namesake / descriptive-anchor failures plus green sentinels | 6 |
+| `musique_canonicalization_tranche.json` | Structured rationale and uncertainty record for the same Plan #22 tranche | 6 + overflow notes |
 
 ## Iteration Subsets
 
@@ -32,3 +34,7 @@ make bench-musique  # uses musique_19q_diagnostic_ids.txt
 # Or specify directly
 python eval/run_agent_benchmark.py --questions-file eval/fixtures/musique_2hop_both_fail.txt ...
 ```
+
+Plan #22 uses `musique_canonicalization_tranche.txt` as the default frozen
+question-ID slice and `musique_canonicalization_tranche.json` as the
+authoritative per-question rationale/classification record.

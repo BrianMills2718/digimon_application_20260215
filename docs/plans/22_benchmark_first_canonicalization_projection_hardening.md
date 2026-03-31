@@ -1,6 +1,6 @@
 # Plan #22: Benchmark-First Canonicalization And Projection Hardening
 
-**Status:** Planned
+**Status:** In Progress
 **Type:** implementation
 **Priority:** High
 **Blocked By:** None — grounded by the current results of Plan #17 and Plan #21
@@ -82,6 +82,9 @@ benchmark-first until proven otherwise.
 
 - `docs/plans/22_benchmark_first_canonicalization_projection_hardening.md` (create)
 - `docs/plans/CLAUDE.md` (modify)
+- `eval/fixtures/musique_canonicalization_tranche.txt` (create)
+- `eval/fixtures/musique_canonicalization_tranche.json` (create)
+- `eval/fixtures/README.md` (modify)
 - `Config/GraphConfig.py` (modify)
 - `Core/Schema/GraphBuildManifest.py` (modify)
 - `Core/Graph/BaseGraph.py` (modify)
@@ -96,6 +99,25 @@ benchmark-first until proven otherwise.
 ---
 
 ## Plan
+
+## Progress
+
+- 2026-03-31: Phase 0 is frozen in checked-in fixtures:
+  - `eval/fixtures/musique_canonicalization_tranche.txt`
+  - `eval/fixtures/musique_canonicalization_tranche.json`
+- The tranche includes four primary failure targets:
+  - `2hop__199513_801817` — namesake/gloss + subject alias
+  - `3hop1__136129_87694_124169` — saint-name canonicalization
+  - `2hop__159215_779396` — descriptive person anchor resolution
+  - `2hop__77233_33207` — title/epithet anchor resolution
+- Two green sentinels are frozen beside it:
+  - `2hop__511454_120259`
+  - `2hop__766973_770570`
+- One overflow case is explicitly deferred rather than silently mixed into the
+  tranche:
+  - `3hop1__305282_282081_73772` — conceptually related, but the current 50q
+    artifact is contaminated by a runtime error rather than a clean
+    canonicalization miss.
 
 ### Phase 0: Freeze The Failure Family
 
@@ -190,7 +212,7 @@ benchmark-first until proven otherwise.
 
 ## Acceptance Criteria
 
-- [ ] A frozen canonicalization-heavy MuSiQue tranche is defined with exact question IDs.
+- [x] A frozen canonicalization-heavy MuSiQue tranche is defined with exact question IDs.
 - [ ] The build manifest truthfully records the identity strategy used by the rebuilt graph.
 - [ ] DIGIMON graph/build surfaces preserve canonical display names separately from normalized lookup keys.
 - [ ] At least one general representation repair for namesake/gloss retrieval lands or is explicitly rejected with trace-backed evidence.

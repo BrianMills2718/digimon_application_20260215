@@ -1,0 +1,93 @@
+{
+  "name": "musique_canonicalization_tranche_v1",
+  "purpose": "Frozen benchmark slice for DIGIMON Plan #22. Focuses on canonicalization, namesake/gloss resolution, saint-title matching, and descriptive-anchor identity failures while preserving two green sentinels.",
+  "frozen_from_results": [
+    "results/MuSiQue_gpt-5-4-mini_consolidated_20260326T080737Z.json",
+    "results/MuSiQue_gpt-5-4-mini_baseline_20260326T074316Z.json"
+  ],
+  "frozen_on": "2026-03-31",
+  "question_ids_file": "eval/fixtures/musique_canonicalization_tranche.txt",
+  "target_failures": [
+    {
+      "id": "2hop__199513_801817",
+      "question": "What is the birthplace of the person after whom São José dos Campos was named?",
+      "gold": "Nazareth",
+      "current_graph_prediction": "São José dos Campos",
+      "failure_family": "namesake_gloss_plus_subject_alias",
+      "dominant_loss_pattern": "City-name gloss is retrieved, but the run does not stably bridge from the city to the named person and then to the person's birthplace.",
+      "evidence_basis": [
+        "docs/plans/21_autonomous_failure_iteration_sprint.md",
+        "KNOWLEDGE.md",
+        "investigations/digimon/2026-03-23-both-fail-pre-analysis.md"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "3hop1__136129_87694_124169",
+      "question": "What year did the Governor of the city where the basilica named after the same saint as the one that Mantua Cathedral is dedicated to die?",
+      "gold": "1952",
+      "current_graph_prediction": "1963",
+      "failure_family": "saint_name_canonicalization",
+      "dominant_loss_pattern": "The question depends on matching two saint-dedication descriptions to the same canonical saint before the city/governor hop can complete.",
+      "evidence_basis": [
+        "results/MuSiQue_gpt-5-4-mini_consolidated_20260326T080737Z.json"
+      ],
+      "confidence": "high"
+    },
+    {
+      "id": "2hop__159215_779396",
+      "question": "Where was the person who wrote about the rioting being a dividing factor in Birmingham educated?",
+      "gold": "University of Glasgow",
+      "current_graph_prediction": "King Edward's School, Birmingham",
+      "failure_family": "descriptive_person_anchor_resolution",
+      "dominant_loss_pattern": "The run resolves the quoted/attributed person weakly enough that it answers with a more local education mention instead of the intended canonical person path.",
+      "evidence_basis": [
+        "results/MuSiQue_gpt-5-4-mini_consolidated_20260326T080737Z.json"
+      ],
+      "confidence": "medium"
+    },
+    {
+      "id": "2hop__77233_33207",
+      "question": "How did did the people fare during the reign of the abolisher of sati partha in India?",
+      "gold": "a long period of prosperity for the British people",
+      "current_graph_prediction": "badly",
+      "failure_family": "title_or_epithet_anchor_resolution",
+      "dominant_loss_pattern": "The key anchor is a descriptive role ('the abolisher of sati...') rather than a direct name, and the run stagnates before it reaches the governing person or reign context cleanly.",
+      "evidence_basis": [
+        "results/MuSiQue_gpt-5-4-mini_consolidated_20260326T080737Z.json"
+      ],
+      "confidence": "medium"
+    }
+  ],
+  "green_sentinels": [
+    {
+      "id": "2hop__511454_120259",
+      "question": "When was Lady Godiva's birthplace abolished?",
+      "expected": "918",
+      "sentinel_role": "bridge_subject_to_place",
+      "why_included": "This is the maintained green bridge case from Plan #21 and must not regress while canonicalization/gloss work lands.",
+      "evidence_basis": [
+        "docs/plans/21_autonomous_failure_iteration_sprint.md",
+        "KNOWLEDGE.md"
+      ]
+    },
+    {
+      "id": "2hop__766973_770570",
+      "question": "What county is Erik Hort's birthplace a part of?",
+      "expected": "Rockland County",
+      "sentinel_role": "clean_birthplace_chain",
+      "why_included": "This is a clean birthplace-chain success in the 50q run and should remain green while identity/projection work changes nearby retrieval logic.",
+      "evidence_basis": [
+        "docs/plans/12_musique_representation_audit.md",
+        "results/MuSiQue_gpt-5-4-mini_consolidated_20260326T080737Z.json"
+      ]
+    }
+  ],
+  "deferred_overflow_cases": [
+    {
+      "id": "3hop1__305282_282081_73772",
+      "question": "When was the start of the battle of the birthplace of the performer of III?",
+      "reason_deferred": "The question smells like title/performer canonicalization, but the March 26 50q artifact records a tool-execution runtime error rather than a clean identity-only miss. Keep it out of the core tranche until runtime-error contamination is removed."
+    }
+  ]
+}
