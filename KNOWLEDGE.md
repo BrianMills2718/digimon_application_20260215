@@ -142,3 +142,12 @@ entity search, entity profiles, and onto-canon imports preserve human-readable
 names immediately. This makes lossy nodes like `s o jos dos campos` resolvable
 from `São José dos Campos` without changing graph topology or importer
 compatibility.
+
+### 2026-03-31 — codex — integration-issue
+A bounded 5-chunk MuSiQue rebuild with `--enable-chunk-cooccurrence` and
+`--enable-passage-nodes` proved that the live projection path can materialize
+`passage_chunk_*` nodes and `chunk_cooccurrence` edges under the maintained
+DIGIMON build. The resulting `graph_build_manifest.json` still left
+`config_flags.graph_profile` and `config_flags.enable_passage_nodes` null,
+though, so artifact consumers should trust the built graph itself over those
+two manifest fields until manifest truthfulness is repaired.

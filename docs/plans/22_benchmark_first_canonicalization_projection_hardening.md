@@ -153,6 +153,24 @@ benchmark-first until proven otherwise.
   - verified with:
     - `.venv/bin/pytest -q tests/unit/test_prebuild_graph_cli.py`
     - `ruff check eval/prebuild_graph.py tests/unit/test_prebuild_graph_cli.py`
+- 2026-03-31: Phase 2 smoke rebuild passed on a bounded 5-chunk artifact:
+  - command:
+    - `/home/brian/miniconda3/envs/digimon/bin/python eval/prebuild_graph.py MuSiQue --artifact-dataset-name MuSiQue_plan22_proj_smoke5 --force-rebuild --graph-profile tkg --enable-chunk-cooccurrence --enable-passage-nodes --chunk-limit 5 --skip-entity-vdb --skip-relationship-vdb`
+  - resulting artifact:
+    - `results/MuSiQue_plan22_proj_smoke5/er_graph/graph_build_manifest.json`
+    - `results/MuSiQue_plan22_proj_smoke5/er_graph/nx_data.graphml`
+  - verified outcomes:
+    - `manifest_version=6`
+    - `identity_contract` persisted
+    - `canonical_name` / `search_keys` / `aliases` advertised in `node_fields`
+    - GraphML contains `passage_chunk_*` nodes
+    - GraphML contains `chunk_cooccurrence` edges
+  - new uncertainty surfaced by the smoke artifact:
+    - `graph_build_manifest.json` still leaves `config_flags.graph_profile=null`
+      and `config_flags.enable_passage_nodes=null` even though the GraphML
+      proves the projected structures exist.
+    - treat that as a manifest-truthfulness follow-on, not a reason to block
+      the tranche rerun.
 
 ### Phase 0: Freeze The Failure Family
 
@@ -277,6 +295,11 @@ benchmark-first until proven otherwise.
 **Status:** Open
 **Why it matters:** Some identity work may later move upstream to onto-canon6.
 **Plan handling:** Treat this plan as benchmark-first. Ownership cleanup is handled separately in Plan #23.
+
+### Q5: Must manifest truthfulness be repaired before wider projection promotion?
+**Status:** Open
+**Why it matters:** The 5-chunk smoke artifact proves passage nodes and chunk-cooccurrence edges can be built, but the manifest still does not serialize all effective projection flags truthfully.
+**Plan handling:** Do not block the tranche rerun on this if the benchmark path only needs the built graph. Promote it immediately if later build gating or artifact consumers depend on those flags.
 
 ---
 
