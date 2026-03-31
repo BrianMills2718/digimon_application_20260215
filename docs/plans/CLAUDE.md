@@ -8,7 +8,12 @@ Historical planning artifacts outside `docs/plans/` are not authoritative unless
 
 See [ROADMAP.md](ROADMAP.md) for phase sequence, gates, budget, and escalation criteria.
 
-**Active workstream** (Plans #14-#18): Strategic pivot to fix the agent drowning problem before re-testing the adaptive routing thesis. Literature review confirmed graph value is real but DIGIMON is missing key SOTA innovations and the 50-tool surface overwhelms the routing agent.
+**Active workstream** (Plans #17, #21-#23): Benchmark-first continuation on the
+maintained core lane. The repo already cleared the earlier "agent drowning"
+surface enough to prove graph value. The current frontier is narrower:
+canonicalization, namesake/gloss representation, and the boundary between local
+DIGIMON projection work and experimental onto-canon6 semantic-build
+integration.
 
 **Paused workstream** (Plans #3-#6, #12-#13): Extraction quality and representation audit work. Will resume based on Plan #17 gate results — if graph value is confirmed but extraction is identified as the bottleneck.
 
@@ -35,6 +40,8 @@ See [ROADMAP.md](ROADMAP.md) for phase sequence, gates, budget, and escalation c
 | 18 | [PTC Validation (conditional)](18_ptc_validation.md) | Medium | 📋 Planned | - |
 | 20 | [Tool Linearization + Restore Planning Tools](20_tool_linearization_and_planning_restore.md) | High | ✅ Complete | - |
 | 21 | [Autonomous Failure-Iteration Sprint](21_autonomous_failure_iteration_sprint.md) | High | 🚧 In Progress | Decision-grade Plan #17 rerun |
+| 22 | [Benchmark-First Canonicalization And Projection Hardening](22_benchmark_first_canonicalization_projection_hardening.md) | High | 📋 Planned | Next decision-grade MuSiQue rerun |
+| 23 | [Semantic Build Boundary And onto-canon6 Experiment](23_semantic_build_boundary_and_onto_canon_experiment.md) | High | 📋 Planned | Any default-path convergence decision |
 
 ## Status Key
 
