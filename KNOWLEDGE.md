@@ -165,3 +165,12 @@ DIGIMON build. The resulting `graph_build_manifest.json` still left
 `config_flags.graph_profile` and `config_flags.enable_passage_nodes` null,
 though, so artifact consumers should trust the built graph itself over those
 two manifest fields until manifest truthfulness is repaired.
+
+### 2026-03-31 — codex — integration-issue
+In the direct benchmark lane, `--disable-embedding-tools` is not yet a full
+semantic-search disable switch. It removes the embedding tools from the
+exposed tool surface and skips VDB preload, but `entity_search(method='semantic')`
+can still try to resolve `MuSiQue_entities` internally and then degrade into
+empty-linearized VDB errors. Hold that runtime condition constant across
+before/after graph comparisons, but treat it as the next benchmark-runtime
+repair slice if projection changes alone do not move the frozen tranche.

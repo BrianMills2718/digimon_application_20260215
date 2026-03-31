@@ -171,6 +171,34 @@ benchmark-first until proven otherwise.
       proves the projected structures exist.
     - treat that as a manifest-truthfulness follow-on, not a reason to block
       the tranche rerun.
+- 2026-03-31: Pre-projection baseline tranche rerun recorded against the
+  maintained `results/MuSiQue/er_graph` artifact:
+  - command:
+    - `/home/brian/miniconda3/envs/digimon/bin/python eval/run_agent_benchmark.py --dataset MuSiQue --questions-file eval/fixtures/musique_canonicalization_tranche.txt --model gemini/gemini-2.5-flash --backend direct --mode hybrid --disable-embedding-tools --question-delay 0 --timeout 180 --agent-spec none --allow-missing-agent-spec --missing-agent-spec-reason "Plan22 frozen tranche rerun" --post-det-checks none --post-gate-policy none --tag plan22_preprojection_baseline_t180`
+  - result artifact:
+    - `results/MuSiQue_gemini-2-5-flash_consolidated_20260331T225837Z.json`
+  - measured outcome:
+    - `EM=0/6`
+    - `LLM_EM=0/6`
+    - `F1=0/6`
+    - `Completion=2/6`
+    - `Provider failures=2/6`
+    - `Retrieval stagnation=3/6`
+  - per-question dominant failure shapes:
+    - `2hop__766973_770570` — question timeout
+    - `2hop__511454_120259` — provider empty response before grounded submit
+    - `2hop__199513_801817` — semantic `entity_search` still tries the entity
+      VDB internally and then falls into stagnation/missing submit
+    - `3hop1__136129_87694_124169` — question timeout
+    - `2hop__159215_779396` — retrieval stagnation then forced terminal accept
+    - `2hop__77233_33207` — retrieval stagnation then forced terminal accept
+  - benchmark-runtime uncertainty exposed by this run:
+    - `--disable-embedding-tools` removes embedding tools from the tool
+      surface and skips VDB preload, but `entity_search(method='semantic')`
+      can still attempt the entity VDB internally.
+    - treat that as a benchmark-runtime confound to keep fixed across the
+      before/after comparison unless Phase 2 fails outright and runtime repair
+      becomes the next highest-yield slice.
 
 ### Phase 0: Freeze The Failure Family
 
@@ -300,6 +328,11 @@ benchmark-first until proven otherwise.
 **Status:** Open
 **Why it matters:** The 5-chunk smoke artifact proves passage nodes and chunk-cooccurrence edges can be built, but the manifest still does not serialize all effective projection flags truthfully.
 **Plan handling:** Do not block the tranche rerun on this if the benchmark path only needs the built graph. Promote it immediately if later build gating or artifact consumers depend on those flags.
+
+### Q6: Is the next benchmark lever projection itself, or the semantic-search/VDB runtime confound?
+**Status:** Open
+**Why it matters:** The frozen-tranche baseline was contaminated by `entity_search(method='semantic')` still attempting VDB access after `--disable-embedding-tools`, which can hide or distort the incremental effect of the new graph projection.
+**Plan handling:** Hold this runtime condition constant for the post-projection rerun first. If the tranche still does not move, promote the semantic-search/VDB mismatch as the next bounded repair slice.
 
 ---
 
