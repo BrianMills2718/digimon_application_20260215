@@ -1,6 +1,6 @@
 # Plan #23: Semantic Build Boundary And onto-canon6 Experiment
 
-**Status:** Planned
+**Status:** In Progress
 **Type:** design
 **Priority:** High
 **Blocked By:** None
@@ -32,6 +32,25 @@ maintained DIGIMON benchmark lane.
 clear long-term ownership model so temporary DIGIMON-native build repairs do
 not silently become the permanent semantic-build architecture.
 
+**Decision update (2026-03-31):** DIGIMON is now the chosen first downstream
+consumer for onto-canon6 Plan 0024 Lane 2. The current supported consumer path
+is the thin v1 seam:
+
+- export from the `onto-canon6` repo root via `.venv/bin/onto-canon6 export-digimon`
+- import from the DIGIMON repo root via `.venv/bin/python scripts/import_onto_canon_jsonl.py`
+
+Verified against the real Shield AI promoted graph on 2026-03-31:
+
+- `110` entities and `99` relationships exported from onto-canon6
+- imported into DIGIMON as a GraphML artifact with `110` nodes and `78` edges
+- `16` single-endpoint relationships skipped by the importer
+- remaining relationship delta explained by DIGIMON's duplicate-endpoint merge
+  semantics
+
+This does **not** change the default benchmark lane. Plan 22 remains the
+maintained DIGIMON-native path; this plan governs the richer boundary and
+interchange experiment around that verified v1 consumer seam.
+
 ---
 
 ## References Reviewed
@@ -58,6 +77,7 @@ not silently become the permanent semantic-build architecture.
 | DIGIMON role | Retrieval projection / materialization / runtime consumer | Matches the current benchmark thesis |
 | Analysis role | Keep conceptually separate; do not spin out a new repo now | Avoid extra architectural churn |
 | Interchange v1 | Current flat `entities.jsonl` / `relationships.jsonl` stays as proof-of-life only | It is already useful but too lossy to be the long-term seam |
+| First Lane 2 consumer | DIGIMON | Highest strategic value; keep proof narrow and truthful |
 | Interchange v2 candidate | Foundation-style assertion/artifact envelope plus DIGIMON-side projection compiler | Best current candidate for richer semantic interchange |
 | Promotion gate | No default-path switch without benchmark evidence | Keeps architecture work subordinate to benchmark proof |
 

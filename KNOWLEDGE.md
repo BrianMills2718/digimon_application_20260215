@@ -174,3 +174,19 @@ can still try to resolve `MuSiQue_entities` internally and then degrade into
 empty-linearized VDB errors. Hold that runtime condition constant across
 before/after graph comparisons, but treat it as the next benchmark-runtime
 repair slice if projection changes alone do not move the frozen tranche.
+
+### 2026-03-31 — codex — integration-issue
+The current onto-canon6 import CLI path is repo-root-sensitive. Running
+`scripts/import_onto_canon_jsonl.py` from outside the DIGIMON repo can fail
+before JSONL loading because `Option/Config2.default()` looks for
+`Option/Config2.yaml` via a relative path. The supported v1 consumer workflow
+is therefore:
+
+- run `onto-canon6` export from the `onto-canon6` repo root
+- run `scripts/import_onto_canon_jsonl.py` from the DIGIMON repo root
+
+Verified against the real Shield AI review DB on 2026-03-31: `110` exported
+entities and `99` exported relationships imported as a DIGIMON GraphML artifact
+with `110` nodes and `78` edges; `16` single-endpoint relationships were
+skipped and the remaining relationship delta came from DIGIMON's duplicate
+endpoint merge semantics.

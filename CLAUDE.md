@@ -170,6 +170,14 @@ native GraphML artifact layout. Current policy is to merge duplicate entity
 names and skip relationships with a missing endpoint because the persisted
 graph is binary-edge-only.
 
+**Lane 2 consumer boundary**: DIGIMON is the first chosen downstream consumer
+for onto-canon6's post-cutover program. The currently supported workflow is the
+thin v1 seam: from the `onto-canon6` repo root, export via the installed
+`onto-canon6` console script; from the DIGIMON repo root, import via
+`scripts/import_onto_canon_jsonl.py`. This proves governed graph
+materialization into DIGIMON, but it does not yet promote onto-canon6-backed
+semantic build outputs onto DIGIMON's default benchmark lane.
+
 **Cross-project integration**: `scripts/import_onto_canon_jsonl.py` imports onto-canon6 entity/relationship exports into DIGIMON's GraphML format. See CLAUDE.md Vision section for the full pipeline (research_v3 → onto-canon → DIGIMON → grounded-research).
 
 **Representation policy**:
