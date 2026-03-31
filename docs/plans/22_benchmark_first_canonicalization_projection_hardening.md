@@ -199,6 +199,20 @@ benchmark-first until proven otherwise.
     - treat that as a benchmark-runtime confound to keep fixed across the
       before/after comparison unless Phase 2 fails outright and runtime repair
       becomes the next highest-yield slice.
+- 2026-03-31: Overnight Phase 2 follow-through is now running:
+  - full artifact rebuild command in progress:
+    - `/home/brian/miniconda3/envs/digimon/bin/python eval/prebuild_graph.py MuSiQue --artifact-dataset-name MuSiQue_plan22_projection --force-rebuild --graph-profile tkg --enable-chunk-cooccurrence --enable-passage-nodes --skip-entity-vdb --skip-relationship-vdb`
+  - checkpointed artifact path:
+    - `results/MuSiQue_plan22_projection/er_graph/_checkpoint_processed.json`
+  - restart-safe follow-through harness launched:
+    - `scripts/plan22_projection_followthrough.sh`
+  - current role of the harness:
+    - wait for or resume the checkpointed projection build,
+    - swap the completed projected graph into `results/MuSiQue/er_graph`
+      non-destructively,
+    - rerun the same frozen tranche under the same runtime flags,
+    - restore the original graph,
+    - write a machine-readable before/after comparison artifact.
 
 ### Phase 0: Freeze The Failure Family
 
