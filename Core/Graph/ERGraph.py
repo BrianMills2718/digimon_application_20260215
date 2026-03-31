@@ -16,7 +16,7 @@ from Core.Graph.BaseGraph import BaseGraph
 from Core.Graph.DelimiterExtraction import DelimiterExtractionMixin
 from Core.Schema.GraphBuildTypes import GraphSchemaMode
 from Core.Common.graph_schema_guidance import resolve_entity_type_names, resolve_relation_type_names
-from Core.Common.entity_name_hygiene import classify_entity_name
+from Core.Common.entity_name_hygiene import build_identity_payload, classify_entity_name
 from Core.Common.Logger import logger
 from Core.Common.Utils import (
     clean_str,
@@ -399,6 +399,8 @@ class ERGraph(DelimiterExtractionMixin, BaseGraph):
         # Collect literal properties keyed by subject entity name.
         # These will be merged onto subject nodes after the main loop.
         literal_props: dict[str, dict[str, str]] = defaultdict(dict)
+        literal_subject_raw_names: dict[str, list[str]] = defaultdict(list)
+        graph_cfg = self.graph_config
 
         for _entity in entities:
             entity_name = clean_str(_entity)
@@ -413,10 +415,16 @@ class ERGraph(DelimiterExtractionMixin, BaseGraph):
                 )
                 continue
 
+            identity_attributes = build_identity_payload(
+                [str(_entity)],
+                fallback_entity_name=entity_name,
+                include_aliases=getattr(graph_cfg, "enable_entity_alias_metadata", True),
+            )
             entity = Entity(
                 entity_name=entity_name,
                 entity_type='',
                 source_id=chunk_key,
+                attributes=identity_attributes,
             )
             maybe_nodes[entity_name].append(entity)
 
@@ -431,6 +439,7 @@ class ERGraph(DelimiterExtractionMixin, BaseGraph):
             src_entity = clean_str(src_raw)
             tgt_entity = clean_str(obj_raw)
             relation_name = clean_str(predicate_raw)
+            literal_subject_raw_names[src_entity].append(str(src_raw))
 
             valid_src_entity, src_reason = classify_entity_name(src_entity)
             if not valid_src_entity or relation_name == '':
@@ -491,7 +500,14 @@ class ERGraph(DelimiterExtractionMixin, BaseGraph):
                     entity_name=subj_name,
                     entity_type='',
                     source_id=chunk_key,
-                    attributes=dict(props),
+                    attributes={
+                        **build_identity_payload(
+                            literal_subject_raw_names.get(subj_name, [subj_name]),
+                            fallback_entity_name=subj_name,
+                            include_aliases=getattr(graph_cfg, "enable_entity_alias_metadata", True),
+                        ),
+                        **dict(props),
+                    },
                 )
                 maybe_nodes[subj_name].append(entity)
 

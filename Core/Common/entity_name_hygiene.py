@@ -5,17 +5,25 @@ it can be tested without importing the full DIGIMON runtime. The current graph
 data contains low-signal entities such as empty strings or single letters,
 which can dominate naive prefix matching. These helpers enforce a small amount
 of hygiene and provide a Unicode-aware search key strategy for name lookup.
+
+Plan #22 extends that contract: graph builders can now preserve a canonical
+display name and normalized lookup metadata separately instead of collapsing
+both concerns into the same storage field.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 import re
 import unicodedata
+from typing import Any
 
 from rapidfuzz import fuzz
 from unidecode import unidecode
+
+from Core.Common.Constants import GRAPH_FIELD_SEP
+from Core.Common.Utils import split_string_by_multi_markers
 
 _NON_WORD_RE = re.compile(r"[^\w\s]", flags=re.UNICODE)
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -38,6 +46,18 @@ def _collapse_whitespace(value: str) -> str:
     """Collapse repeated whitespace and trim outer spaces."""
 
     return _WHITESPACE_RE.sub(" ", value).strip()
+
+
+def normalize_display_name(raw_name: str) -> str:
+    """Return a canonical display-form candidate without ASCII-stripping it.
+
+    Graph node IDs may stay normalized for legacy compatibility, but canonical
+    display names should preserve Unicode letters and case whenever the source
+    text contained them. This helper only normalizes Unicode form and
+    whitespace; it does not lowercase or strip punctuation beyond trimming.
+    """
+
+    return _collapse_whitespace(unicodedata.normalize("NFKC", str(raw_name or "")))
 
 
 def _normalize_for_matching(raw_name: str, *, ascii_only: bool) -> str:
@@ -69,6 +89,132 @@ def build_search_keys(raw_name: str) -> tuple[str, ...]:
         if key and key not in keys:
             keys.append(key)
     return tuple(keys)
+
+
+def split_identity_values(raw_value: Any) -> tuple[str, ...]:
+    """Parse GraphML-safe identity metadata into de-duplicated text values.
+
+    DIGIMON persists multi-valued graph attributes as ``GRAPH_FIELD_SEP``-
+    joined strings so GraphML storage stays stable. Retrieval code should not
+    have to guess whether an identity field arrived as one string, a list, or
+    an already-split tuple.
+    """
+
+    if raw_value is None:
+        return ()
+
+    values: list[str]
+    if isinstance(raw_value, str):
+        values = split_string_by_multi_markers(raw_value, [GRAPH_FIELD_SEP])
+    elif isinstance(raw_value, (list, tuple, set)):
+        values = []
+        for item in raw_value:
+            values.extend(split_identity_values(item))
+    else:
+        values = [str(raw_value)]
+
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        candidate = normalize_display_name(value)
+        if not candidate:
+            continue
+        key = candidate.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(candidate)
+    return tuple(cleaned)
+
+
+def join_identity_values(values: Iterable[str]) -> str:
+    """Serialize de-duplicated identity values into GraphML-safe storage."""
+
+    return GRAPH_FIELD_SEP.join(split_identity_values(list(values)))
+
+
+def select_canonical_display_name(
+    values: Sequence[str],
+    *,
+    fallback: str,
+) -> str:
+    """Choose the most human-readable display name from observed candidates.
+
+    When the same entity is seen under both raw source text and normalized node
+    IDs, prefer the form that preserves more human-facing signal. This remains
+    heuristic, but it is deterministic and intentionally favors Unicode,
+    mixed-case, and non-lossy spacing over storage-oriented identifiers.
+    """
+
+    candidates = list(split_identity_values(values))
+    if not candidates:
+        fallback_name = normalize_display_name(fallback)
+        return fallback_name or str(fallback)
+
+    def _score(name: str) -> tuple[int, int, int, int, int]:
+        compact = name.replace(" ", "")
+        has_non_ascii = int(any(ord(char) > 127 for char in name))
+        has_upper = int(any(char.isupper() for char in name))
+        has_punctuation = int(bool(re.search(r"[^\w\s]", name, flags=re.UNICODE)))
+        token_count = len(name.split())
+        return (
+            has_non_ascii,
+            has_upper,
+            has_punctuation,
+            token_count,
+            len(compact),
+        )
+
+    return max(candidates, key=_score)
+
+
+def build_identity_payload(
+    raw_names: Sequence[str],
+    *,
+    fallback_entity_name: str,
+    extra_aliases: Sequence[str] = (),
+    include_aliases: bool = True,
+) -> dict[str, str]:
+    """Build canonical display and lookup metadata for one graph entity.
+
+    The payload is GraphML-safe: multi-valued fields are stored as
+    ``GRAPH_FIELD_SEP``-joined strings. ``fallback_entity_name`` is still
+    included in the lookup-key pool so retrieval can bridge from legacy node IDs
+    to canonical display names while the graph ID strategy remains unchanged.
+    """
+
+    observed_names = split_identity_values(raw_names)
+    observed_aliases = split_identity_values(extra_aliases)
+    canonical_name = select_canonical_display_name(
+        observed_names,
+        fallback=fallback_entity_name,
+    )
+
+    search_key_values: list[str] = []
+    for value in (
+        canonical_name,
+        fallback_entity_name,
+        *observed_names,
+        *observed_aliases,
+    ):
+        search_key_values.extend(build_search_keys(value))
+
+    payload = {
+        "canonical_name": canonical_name,
+        "search_keys": join_identity_values(search_key_values),
+    }
+
+    if include_aliases:
+        alias_values = [
+            alias
+            for alias in (*observed_names, *observed_aliases)
+            if alias.casefold() != canonical_name.casefold()
+        ]
+        alias_string = join_identity_values(alias_values)
+        if alias_string:
+            payload["aliases"] = alias_string
+
+    return payload
 
 
 def classify_entity_name(raw_name: str) -> tuple[bool, str]:

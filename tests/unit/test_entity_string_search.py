@@ -9,6 +9,7 @@ from pathlib import Path
 import sys
 import types
 
+import networkx as nx
 import pytest
 
 
@@ -77,6 +78,7 @@ class _FakeStorage:
 
     def __init__(self, graph: _FakeGraph) -> None:
         self._graph = graph
+        self.graph = graph
 
 
 class _FakeGraphInstance:
@@ -196,3 +198,61 @@ def test_entity_string_search_matches_unicode_names_from_ascii_query(server_modu
 
     assert first_result["entity_name"] == "São José dos Campos"
     assert first_result["canonical_name"] == "São José dos Campos"
+
+
+def test_entity_string_search_uses_canonical_metadata_when_node_id_is_lossy(server_module) -> None:
+    """Search ranking should prefer stored canonical display names over lossy node IDs."""
+
+    graph = _FakeGraph(
+        {
+            "s o jos dos campos": {
+                "canonical_name": "São José dos Campos",
+                "search_keys": "são josé dos campos<SEP>sao jose dos campos",
+                "entity_type": "geo",
+                "description": "A city in the state of São Paulo, Brazil.",
+            },
+            "sao jose dos quatros marcos": {
+                "canonical_name": "São José dos Quatro Marcos",
+                "search_keys": "são josé dos quatro marcos<SEP>sao jose dos quatro marcos",
+                "entity_type": "geo",
+                "description": "A municipality in Mato Grosso, Brazil.",
+            },
+        }
+    )
+    server_module._state = {"context": _FakeContext("MuSiQue_ERGraph", graph)}
+
+    payload = asyncio.run(
+        server_module.entity_string_search(query="sao jose dos campos", dataset_name="MuSiQue")
+    )
+    first_result = json.loads(payload)["matches"][0]
+
+    assert first_result["entity_name"] == "s o jos dos campos"
+    assert first_result["canonical_name"] == "São José dos Campos"
+
+
+def test_entity_profile_resolves_canonical_name_via_lookup_metadata(server_module) -> None:
+    """Entity profiles should resolve via search keys when direct node-ID lookup would fail."""
+
+    graph = nx.Graph()
+    graph.add_node(
+        "s o jos dos campos",
+        entity_name="s o jos dos campos",
+        canonical_name="São José dos Campos",
+        search_keys="são josé dos campos<SEP>sao jose dos campos",
+        aliases="S Jose dos Campos",
+        entity_type="geo",
+        description="A city in the state of São Paulo, Brazil.",
+        source_id="chunk_239",
+    )
+    server_module._state = {"context": _FakeContext("MuSiQue_ERGraph", graph)}
+
+    payload = asyncio.run(
+        server_module.entity_profile(entity_name="São José dos Campos", dataset_name="MuSiQue")
+    )
+    result = json.loads(payload)
+
+    assert result["entity_id"] == "s o jos dos campos"
+    assert result["canonical_name"] == "São José dos Campos"
+    assert "S Jose dos Campos" in result["aliases"]
+    assert result["lookup_refs"]["node_id"] == "s o jos dos campos"
+    assert "sao jose dos campos" in result["lookup_refs"]["search_keys"]

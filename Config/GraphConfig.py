@@ -127,6 +127,36 @@ class GraphConfig(YamlModel):
     enable_passage_nodes: bool = False  # Add passage/chunk nodes alongside entity nodes (HippoRAG v2 bipartite graph)
     skip_relationship_extraction: bool = False  # Entity+cooccurrence only, no OpenIE (EcphoryRAG hypothesis)
 
+    # Identity-contract attributes (Plan #22)
+    entity_node_id_strategy: str = Field(
+        default="clean_str_normalized",
+        description=(
+            "How entity node IDs are chosen for persisted graph storage. "
+            "The current maintained strategy keeps legacy clean_str-normalized IDs."
+        ),
+    )
+    preserve_canonical_display_names: bool = Field(
+        default=True,
+        description=(
+            "Whether graph nodes should preserve a human-readable canonical display "
+            "name separately from the normalized node ID."
+        ),
+    )
+    enable_entity_lookup_search_keys: bool = Field(
+        default=True,
+        description=(
+            "Whether graph nodes should persist normalized Unicode-aware lookup keys "
+            "for retrieval-time matching."
+        ),
+    )
+    enable_entity_alias_metadata: bool = Field(
+        default=True,
+        description=(
+            "Whether graph nodes should persist alias-like display variants when "
+            "multiple raw names are observed for the same normalized entity."
+        ),
+    )
+
     # For graph augmentation
     similarity_threshold: float = 0.8
     similarity_top_k: int = 10
@@ -193,5 +223,10 @@ class GraphConfig(YamlModel):
                 raise ValueError(
                     "two_pass_extraction is not supported when extract_two_step=True"
                 )
+
+        if self.entity_node_id_strategy != "clean_str_normalized":
+            raise ValueError(
+                "entity_node_id_strategy currently supports only 'clean_str_normalized'"
+            )
 
         return self

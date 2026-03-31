@@ -132,3 +132,13 @@ maintained direct lane without relying on the model to discover the
 `by_entities` follow-up tool on its own. The remaining miss is now concentrated
 in `a2`: retrieving indirect `Nazareth` evidence for Saint Joseph and turning
 it into a defensible place completion.
+
+### 2026-03-31 — codex — best-practice
+The first safe repair for DIGIMON's current canonicalization failure family is
+additive identity metadata, not a node-ID rewrite. Keeping legacy
+`clean_str`-normalized node IDs while persisting `canonical_name`,
+Unicode-aware `search_keys`, and optional `aliases` lets graph build, MCP
+entity search, entity profiles, and onto-canon imports preserve human-readable
+names immediately. This makes lossy nodes like `s o jos dos campos` resolvable
+from `São José dos Campos` without changing graph topology or importer
+compatibility.

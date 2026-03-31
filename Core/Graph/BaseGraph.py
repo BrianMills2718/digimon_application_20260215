@@ -7,11 +7,15 @@ from typing import Any, TYPE_CHECKING, List, cast
 
 import igraph as ig
 import numpy as np
-from lazy_object_proxy.utils import await_
 from scipy.sparse import csr_matrix
 
 from Core.Common.Logger import logger
-from Core.Common.entity_name_hygiene import classify_entity_name
+from Core.Common.entity_name_hygiene import (
+    build_identity_payload,
+    classify_entity_name,
+    join_identity_values,
+    split_identity_values,
+)
 from Core.Common.Constants import GRAPH_FIELD_SEP
 from Core.Common.Memory import Memory
 from Core.Prompt import GraphPrompt
@@ -169,7 +173,6 @@ class BaseGraph(ABC):
         return "entity_name"
 
     async def _merge_nodes_then_upsert(self, entity_name: str, nodes_data: List[Entity]):
-        import asyncio
         from Core.Common.Logger import logger
         valid_entity_name, invalid_reason = classify_entity_name(entity_name)
         if not valid_entity_name:
@@ -207,6 +210,13 @@ class BaseGraph(ABC):
 
         node_data = dict(source_id=source_id, entity_name=entity_name, entity_type=new_entity_type,
                          description=description)
+        node_data.update(
+            self._merge_identity_metadata(
+                entity_name=entity_name,
+                existing_data=existing_data,
+                upsert_nodes_data=upsert_nodes_data,
+            )
+        )
 
         # Merge literal attributes from extraction (e.g. object_entity=false triples).
         # Existing node attributes are preserved; new ones are added/overwritten.
@@ -214,10 +224,10 @@ class BaseGraph(ABC):
         if existing_data.get("attributes"):
             for attr_val in existing_data["attributes"]:
                 if isinstance(attr_val, dict):
-                    merged_attributes.update(attr_val)
+                    merged_attributes.update(self._filter_identity_attributes(attr_val))
         for attr_val in upsert_nodes_data.get("attributes", []):
             if isinstance(attr_val, dict):
-                merged_attributes.update(attr_val)
+                merged_attributes.update(self._filter_identity_attributes(attr_val))
         if merged_attributes:
             node_data["attributes"] = merged_attributes
 
@@ -225,8 +235,6 @@ class BaseGraph(ABC):
         await self._graph.upsert_node(entity_name, node_data=node_data)
 
     async def _merge_edges_then_upsert(self, src_id: str, tgt_id: str, edges_data: List[Relationship]) -> None:
-        import asyncio
-        from Core.Common.Logger import logger
         # Check if the edge exists and fetch existing data
         existing_edge = await self._graph.get_edge(src_id, tgt_id) if await self._graph.has_edge(src_id,
                                                                                                  tgt_id) else None
@@ -265,9 +273,11 @@ class BaseGraph(ABC):
         for node_id in (src_id, tgt_id):
             if not await self._graph.has_node(node_id):
                 # Upsert node with source_id and entity_name
+                node_data = dict(source_id=source_id, entity_name=node_id, entity_type="", description="")
+                node_data.update(self._default_identity_node_data(node_id))
                 await self._graph.upsert_node(
                     node_id,
-                    node_data=dict(source_id=source_id, entity_name=node_id, entity_type="", description="")
+                    node_data=node_data,
                 )
 
         # Create edge_data with merged data
@@ -815,6 +825,88 @@ class BaseGraph(ABC):
     async def get_edge(self, src, tgt):
         return await self._graph.get_edge(src, tgt)
 
+    @staticmethod
+    def _filter_identity_attributes(attributes: dict[str, Any]) -> dict[str, Any]:
+        """Remove top-level identity metadata from generic attribute payloads."""
+
+        identity_keys = {"canonical_name", "search_keys", "aliases"}
+        return {key: value for key, value in attributes.items() if key not in identity_keys}
+
+    def _default_identity_node_data(self, entity_name: str) -> dict[str, str]:
+        """Build identity metadata for minimal fallback nodes created from edges."""
+
+        payload = build_identity_payload(
+            [entity_name],
+            fallback_entity_name=entity_name,
+            include_aliases=getattr(self.graph_config, "enable_entity_alias_metadata", True),
+        )
+        return self._apply_identity_config(payload)
+
+    def _merge_identity_metadata(
+        self,
+        *,
+        entity_name: str,
+        existing_data: dict[str, list[Any]],
+        upsert_nodes_data: dict[str, list[Any]],
+    ) -> dict[str, str]:
+        """Merge canonical display and lookup metadata for one persisted node."""
+
+        observed_names: list[str] = []
+        observed_aliases: list[str] = []
+        observed_search_keys: list[str] = []
+
+        def _extend(values: list[str], raw_value: Any) -> None:
+            values.extend(split_identity_values(raw_value))
+
+        for raw_value in existing_data.get("canonical_name", []):
+            _extend(observed_names, raw_value)
+        for raw_value in upsert_nodes_data.get("canonical_name", []):
+            _extend(observed_names, raw_value)
+        for raw_value in existing_data.get("aliases", []):
+            _extend(observed_aliases, raw_value)
+        for raw_value in upsert_nodes_data.get("aliases", []):
+            _extend(observed_aliases, raw_value)
+        for raw_value in existing_data.get("search_keys", []):
+            _extend(observed_search_keys, raw_value)
+        for raw_value in upsert_nodes_data.get("search_keys", []):
+            _extend(observed_search_keys, raw_value)
+
+        for attr_value in existing_data.get("attributes", []):
+            if not isinstance(attr_value, dict):
+                continue
+            _extend(observed_names, attr_value.get("canonical_name"))
+            _extend(observed_aliases, attr_value.get("aliases"))
+            _extend(observed_search_keys, attr_value.get("search_keys"))
+        for attr_value in upsert_nodes_data.get("attributes", []):
+            if not isinstance(attr_value, dict):
+                continue
+            _extend(observed_names, attr_value.get("canonical_name"))
+            _extend(observed_aliases, attr_value.get("aliases"))
+            _extend(observed_search_keys, attr_value.get("search_keys"))
+
+        payload = build_identity_payload(
+            observed_names,
+            fallback_entity_name=entity_name,
+            extra_aliases=observed_aliases,
+            include_aliases=getattr(self.graph_config, "enable_entity_alias_metadata", True),
+        )
+        payload["search_keys"] = join_identity_values(
+            [*split_identity_values(payload.get("search_keys")), *observed_search_keys]
+        )
+        return self._apply_identity_config(payload)
+
+    def _apply_identity_config(self, payload: dict[str, str]) -> dict[str, str]:
+        """Apply the configured identity-contract toggles to merged metadata."""
+
+        filtered = dict(payload)
+        if not getattr(self.graph_config, "preserve_canonical_display_names", True):
+            filtered.pop("canonical_name", None)
+        if not getattr(self.graph_config, "enable_entity_lookup_search_keys", True):
+            filtered.pop("search_keys", None)
+        if not getattr(self.graph_config, "enable_entity_alias_metadata", True):
+            filtered.pop("aliases", None)
+        return filtered
+
     async def nodes(self):
         return await self._graph.nodes()
 
@@ -853,7 +945,8 @@ class BaseGraph(ABC):
             for neighbor in neighbors:
                 # Get the edge index (assuming edge indices are unique)
                 edge_index = self._graph.get_edge_index(node, neighbor)
-                if edge_index == -1: continue
+                if edge_index == -1:
+                    continue
                 node_index = await self._graph.get_node_index(node)
                 data.append([node_index, edge_index])
                 if not is_directed:

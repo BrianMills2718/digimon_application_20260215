@@ -16,7 +16,7 @@ from Core.Schema.GraphBuildTypes import GraphProfile, GraphSchemaMode, GraphTopo
 
 
 def test_entity_graph_manifest_infers_legacy_minimal_fields_for_default_config() -> None:
-    """Default config should preserve the current minimal legacy field surface."""
+    """Default config should advertise additive identity metadata on entity nodes."""
 
     manifest = GraphBuildManifest.from_graph_config(
         dataset_name="MuSiQue",
@@ -26,8 +26,18 @@ def test_entity_graph_manifest_infers_legacy_minimal_fields_for_default_config()
 
     assert manifest.topology_kind is GraphTopologyKind.ENTITY
     assert manifest.graph_profile is GraphProfile.KG
-    assert manifest.node_fields == ["entity_name", "source_id"]
+    assert manifest.node_fields == [
+        "entity_name",
+        "source_id",
+        "canonical_name",
+        "search_keys",
+        "aliases",
+    ]
     assert manifest.edge_fields == ["src_id", "tgt_id", "weight", "source_id"]
+    assert manifest.identity_contract.node_id_strategy == "clean_str_normalized"
+    assert manifest.identity_contract.canonical_name_field == "canonical_name"
+    assert manifest.identity_contract.lookup_search_key_field == "search_keys"
+    assert manifest.identity_contract.alias_field == "aliases"
     assert manifest.artifacts.entity_chunk_provenance is True
     assert manifest.artifacts.relationship_chunk_provenance is True
     assert manifest.schema_contract.mode is GraphSchemaMode.OPEN
@@ -70,7 +80,15 @@ def test_entity_graph_manifest_infers_rkg_profile_when_keywords_enabled() -> Non
     )
 
     assert manifest.graph_profile is GraphProfile.RKG
-    assert manifest.node_fields == ["entity_name", "source_id", "entity_type", "description"]
+    assert manifest.node_fields == [
+        "entity_name",
+        "source_id",
+        "canonical_name",
+        "search_keys",
+        "aliases",
+        "entity_type",
+        "description",
+    ]
     assert manifest.edge_fields == [
         "src_id",
         "tgt_id",
@@ -147,6 +165,25 @@ def test_entity_graph_manifest_persists_grounded_entity_preference_flag() -> Non
     )
 
     assert manifest.config_flags.prefer_grounded_named_entities is True
+
+
+def test_entity_graph_manifest_can_disable_lookup_and_alias_identity_fields() -> None:
+    """Identity-contract metadata should stay truthful when config disables parts of it."""
+
+    manifest = GraphBuildManifest.from_graph_config(
+        dataset_name="MuSiQue",
+        graph_type="er_graph",
+        graph_config=GraphConfig(
+            preserve_canonical_display_names=False,
+            enable_entity_lookup_search_keys=False,
+            enable_entity_alias_metadata=False,
+        ),
+    )
+
+    assert manifest.node_fields == ["entity_name", "source_id"]
+    assert manifest.identity_contract.canonical_name_field is None
+    assert manifest.identity_contract.lookup_search_key_field is None
+    assert manifest.identity_contract.alias_field is None
 
 
 def test_non_entity_graph_manifest_uses_topology_specific_profile() -> None:

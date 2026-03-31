@@ -66,10 +66,25 @@ class GraphBuildRuntimeSnapshot(BaseModel):
     lane_policy: str = "pure"
 
 
+class GraphIdentityContract(BaseModel):
+    """Identity strategy used when persisting graph nodes.
+
+    DIGIMON currently keeps legacy normalized node IDs for compatibility, but
+    Plan #22 requires the manifest to record whether canonical display names
+    and lookup metadata were persisted alongside those IDs.
+    """
+
+    node_id_strategy: str = "clean_str_normalized"
+    preserve_canonical_display_names: bool = True
+    lookup_search_key_field: str | None = "search_keys"
+    canonical_name_field: str | None = "canonical_name"
+    alias_field: str | None = "aliases"
+
+
 class GraphBuildManifest(BaseModel):
     """Persisted description of one graph build and its available capabilities."""
 
-    manifest_version: int = 5
+    manifest_version: int = 6
     dataset_name: str
     source_dataset_name: str | None = None
     graph_type: str
@@ -79,6 +94,7 @@ class GraphBuildManifest(BaseModel):
     edge_fields: list[str] = Field(default_factory=list)
     artifacts: GraphArtifactFlags = Field(default_factory=GraphArtifactFlags)
     schema_contract: GraphSchemaContract = Field(default_factory=GraphSchemaContract)
+    identity_contract: GraphIdentityContract = Field(default_factory=GraphIdentityContract)
     config_flags: GraphConfigSnapshot
     build_runtime: GraphBuildRuntimeSnapshot | None = None
     available_input_chunk_count: int | None = None
@@ -119,6 +135,17 @@ class GraphBuildManifest(BaseModel):
             node_fields=node_fields,
             edge_fields=edge_fields,
             artifacts=artifacts,
+            identity_contract=GraphIdentityContract(
+                node_id_strategy=graph_config.entity_node_id_strategy,
+                preserve_canonical_display_names=graph_config.preserve_canonical_display_names,
+                lookup_search_key_field=(
+                    "search_keys" if graph_config.enable_entity_lookup_search_keys else None
+                ),
+                canonical_name_field=(
+                    "canonical_name" if graph_config.preserve_canonical_display_names else None
+                ),
+                alias_field="aliases" if graph_config.enable_entity_alias_metadata else None,
+            ),
             schema_contract=GraphSchemaContract(
                 mode=graph_config.schema_mode,
                 entity_types=list(graph_config.schema_entity_types),
@@ -248,6 +275,12 @@ def _infer_node_fields(
 
     if topology_kind is GraphTopologyKind.ENTITY:
         fields = ["entity_name", "source_id"]
+        if graph_config.preserve_canonical_display_names:
+            fields.append("canonical_name")
+        if graph_config.enable_entity_lookup_search_keys:
+            fields.append("search_keys")
+        if graph_config.enable_entity_alias_metadata:
+            fields.append("aliases")
         if graph_config.enable_entity_type:
             fields.append("entity_type")
         if graph_config.enable_entity_description:

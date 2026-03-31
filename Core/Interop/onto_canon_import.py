@@ -18,6 +18,7 @@ from typing import Any
 
 import networkx as nx
 
+from Core.Common.entity_name_hygiene import build_identity_payload
 from Core.Schema.SlotTypes import EntityRecord, RelationshipRecord
 
 GRAPH_FIELD_SEP = "<SEP>"
@@ -181,11 +182,17 @@ def _merge_entities(entities: list[EntityRecord]) -> dict[str, dict[str, Any]]:
     merged: dict[str, dict[str, Any]] = {}
     for entity_name, records in grouped.items():
         entity_type = _most_common_non_empty(record.entity_type for record in records)
+        identity_payload = build_identity_payload(
+            [entity_name],
+            fallback_entity_name=entity_name,
+            include_aliases=False,
+        )
         merged[entity_name] = {
             "entity_name": entity_name,
             "source_id": _join_unique(record.source_id for record in records),
             "entity_type": entity_type,
             "description": _join_unique(record.description for record in records),
+            **identity_payload,
         }
     return merged
 

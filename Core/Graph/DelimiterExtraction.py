@@ -9,7 +9,7 @@ and parses the delimiter-separated records into Entity and Relationship objects.
 import json
 import re
 from collections import defaultdict
-from typing import Any, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from Config.GraphConfig import GraphConfig
 from Core.Common.Logger import logger
@@ -23,7 +23,7 @@ from Core.Common.graph_schema_guidance import (
     resolve_entity_type_names,
     resolve_relation_type_names,
 )
-from Core.Common.entity_name_hygiene import classify_entity_name
+from Core.Common.entity_name_hygiene import build_identity_payload, classify_entity_name
 from Core.Common.Utils import clean_str, split_string_by_multi_markers, is_float_regex
 from Core.Common.Constants import (
     DEFAULT_RECORD_DELIMITER,
@@ -405,7 +405,11 @@ class DelimiterExtractionMixin:
 
         graph_cfg = self._graph_config()
         custom_ontology = graph_cfg.loaded_custom_ontology
-        entity_attributes: dict = {}
+        entity_attributes: dict = build_identity_payload(
+            [record_attributes[1]],
+            fallback_entity_name=entity_name,
+            include_aliases=getattr(graph_cfg, "enable_entity_alias_metadata", True),
+        )
         final_entity_type = clean_str(record_attributes[2])
 
         if custom_ontology and custom_ontology.get("entities"):

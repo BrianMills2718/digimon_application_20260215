@@ -102,6 +102,8 @@ def test_import_onto_canon_jsonl_merges_duplicates_and_skips_single_endpoint(tmp
     assert "ent:1" in ussocom["source_id"]
     assert "ent:1b" in ussocom["source_id"]
     assert "Special operations command" in ussocom["description"]
+    assert ussocom["canonical_name"] == "USSOCOM"
+    assert "ussocom" in ussocom["search_keys"]
 
     edge = graph.edges[("Gen. Charles R. Holland", "USSOCOM")]
     assert edge["weight"] == 1.4
@@ -109,3 +111,39 @@ def test_import_onto_canon_jsonl_merges_duplicates_and_skips_single_endpoint(tmp
     assert "oc:holds_leader" in edge["relation_name"]
     assert "gassert:1" in edge["source_id"]
     assert "gassert:2" in edge["source_id"]
+
+
+def test_import_onto_canon_jsonl_preserves_unicode_display_name_metadata(tmp_path: Path) -> None:
+    """Importer should keep Unicode display names separate from lookup metadata."""
+
+    entities_path = tmp_path / "entities.jsonl"
+    relationships_path = tmp_path / "relationships.jsonl"
+
+    _write_jsonl(
+        entities_path,
+        [
+            {
+                "entity_name": "São José dos Campos",
+                "source_id": "ent:1",
+                "entity_type": "oc:place",
+                "description": "Municipality in São Paulo state.",
+            },
+        ],
+    )
+    _write_jsonl(relationships_path, [])
+
+    result = import_onto_canon_jsonl(
+        entities_path=entities_path,
+        relationships_path=relationships_path,
+        working_dir=tmp_path / "results",
+        dataset_name="onto_canon_fixture",
+        force=True,
+    )
+
+    graph = nx.read_graphml(result.graph_path)
+    node = graph.nodes["São José dos Campos"]
+
+    assert node["entity_name"] == "São José dos Campos"
+    assert node["canonical_name"] == "São José dos Campos"
+    assert "são josé dos campos" in node["search_keys"]
+    assert "sao jose dos campos" in node["search_keys"]

@@ -58,7 +58,12 @@ except ImportError:
     pass
 
 from mcp.server.fastmcp import FastMCP
-from Core.Common.entity_name_hygiene import classify_entity_name, score_entity_candidate
+from Core.Common.entity_name_hygiene import (
+    build_search_keys,
+    classify_entity_name,
+    score_entity_candidate,
+    split_identity_values,
+)
 from Core.MCP.progressive_disclosure import (
     ALWAYS_LOADED_TOOLS,
     EXECUTE_CHAIN_TOOL_NAME,
@@ -4275,6 +4280,33 @@ async def entity_string_search(
                     continue
                 seen.add(alias_key)
                 aliases.append(alias)
+        for alias in split_identity_values(attrs.get("aliases")):
+            alias_key = alias.casefold()
+            if alias_key in seen:
+                continue
+            seen.add(alias_key)
+            aliases.append(alias)
+        return tuple(aliases)
+
+    def _canonical_name(node_id: str, attrs: Dict[str, Any]) -> str:
+        """Return the best available human-readable display name for a node."""
+
+        return (
+            str(attrs.get("canonical_name") or "").strip()
+            or str(attrs.get("entity_name") or "").strip()
+            or str(attrs.get("name") or "").strip()
+            or str(attrs.get("title") or "").strip()
+            or node_id
+        )
+
+    def _search_aliases(node_id: str, attrs: Dict[str, Any]) -> tuple[str, ...]:
+        """Collect alias-like lookup values without changing the returned canonical name."""
+
+        aliases = list(_entity_aliases(attrs))
+        canonical_name = _canonical_name(node_id, attrs)
+        if canonical_name.casefold() != node_id.casefold():
+            aliases.append(node_id)
+        aliases.extend(split_identity_values(attrs.get("search_keys")))
         return tuple(aliases)
 
     def _entity_type(attrs: Dict[str, Any]) -> str:
@@ -4304,8 +4336,13 @@ async def entity_string_search(
             continue
 
         attrs = dict(G.nodes[raw_node_id])
-        aliases = _entity_aliases(attrs)
-        match = score_entity_candidate(query_text=effective_query, candidate_name=node_id, aliases=aliases)
+        canonical_name = _canonical_name(node_id, attrs)
+        aliases = _search_aliases(node_id, attrs)
+        match = score_entity_candidate(
+            query_text=effective_query,
+            candidate_name=canonical_name,
+            aliases=aliases,
+        )
         if match.score <= 0:
             continue
         scored.append((match.score, node_id, match.match_type, attrs))
@@ -4313,10 +4350,10 @@ async def entity_string_search(
     scored.sort(key=lambda item: (-item[0], len(item[1]), item[1]))
     results = []
     for score, node_id, match_type, attrs in scored[:top_k]:
+        canonical_name = _canonical_name(node_id, attrs)
         results.append({
             "entity_name": node_id,
-            "canonical_name": str(attrs.get("entity_name") or attrs.get("name") or attrs.get("title") or node_id).strip()
-            or node_id,
+            "canonical_name": canonical_name,
             "entity_type": _entity_type(attrs),
             "description": _entity_description(attrs),
             "match_type": match_type,
@@ -4814,6 +4851,66 @@ async def entity_profile(
         )
 
     nx_graph = graph_instance._graph.graph
+
+    def _canonical_name(node_id: str, attrs: Dict[str, Any]) -> str:
+        """Return the best available display name for one node."""
+
+        return (
+            str(attrs.get("canonical_name") or "").strip()
+            or str(attrs.get("entity_name") or "").strip()
+            or str(attrs.get("name") or "").strip()
+            or str(attrs.get("title") or "").strip()
+            or node_id
+        )
+
+    def _aliases(node_id: str, attrs: Dict[str, Any]) -> list[str]:
+        """Extract alias-like values from stored node metadata."""
+
+        aliases: list[str] = []
+        seen_aliases: set[str] = set()
+        for key in ("aliases", "alias", "aka", "surface_forms", "names"):
+            raw_alias = attrs.get(key)
+            values: list[str]
+            if isinstance(raw_alias, str):
+                values = [raw_alias]
+            elif isinstance(raw_alias, (list, tuple, set)):
+                values = [str(v) for v in raw_alias if v is not None]
+            else:
+                values = []
+            for value in values:
+                cleaned = re.sub(r"\s+", " ", value.strip())
+                if len(cleaned) < 2:
+                    continue
+                alias_key = cleaned.casefold()
+                if alias_key in seen_aliases:
+                    continue
+                seen_aliases.add(alias_key)
+                aliases.append(cleaned)
+        for value in split_identity_values(attrs.get("aliases")):
+            alias_key = value.casefold()
+            if alias_key in seen_aliases:
+                continue
+            seen_aliases.add(alias_key)
+            aliases.append(value)
+        canonical_name = _canonical_name(node_id, attrs)
+        if canonical_name.casefold() != node_id.casefold():
+            alias_key = node_id.casefold()
+            if alias_key not in seen_aliases:
+                seen_aliases.add(alias_key)
+                aliases.append(node_id)
+        return aliases
+
+    def _lookup_refs(node_id: str, attrs: Dict[str, Any]) -> dict[str, Any]:
+        """Return stable lookup references for one entity node."""
+
+        search_keys = list(split_identity_values(attrs.get("search_keys")))
+        if not search_keys:
+            search_keys = list(build_search_keys(_canonical_name(node_id, attrs)))
+        return {
+            "node_id": node_id,
+            "search_keys": search_keys[:8],
+        }
+
     candidate_ids: list[str] = []
     for candidate in (query_value, clean_str(query_value)):
         value = (candidate or "").strip()
@@ -4825,6 +4922,25 @@ async def entity_profile(
         if candidate in nx_graph:
             resolved_entity_id = candidate
             break
+
+    if resolved_entity_id is None:
+        best_match: tuple[float, str] | None = None
+        for node_id in nx_graph.nodes():
+            attrs = dict(nx_graph.nodes[node_id])
+            canonical_name = _canonical_name(str(node_id), attrs)
+            match = score_entity_candidate(
+                query_text=query_value,
+                candidate_name=canonical_name,
+                aliases=[*_aliases(str(node_id), attrs), *split_identity_values(attrs.get("search_keys"))],
+            )
+            if match.score < 90.0:
+                continue
+            node_id_text = str(node_id)
+            candidate = (match.score, node_id_text)
+            if best_match is None or candidate > best_match:
+                best_match = candidate
+        if best_match is not None:
+            resolved_entity_id = best_match[1]
 
     vdb_candidates: list[dict[str, Any]] = []
     if resolved_entity_id is None and entity_name:
@@ -4875,33 +4991,8 @@ async def entity_profile(
         )
 
     node_attrs = dict(nx_graph.nodes[resolved_entity_id]) if resolved_entity_id in nx_graph else {}
-    canonical_name = (
-        str(node_attrs.get("entity_name") or "").strip()
-        or str(node_attrs.get("name") or "").strip()
-        or str(node_attrs.get("title") or "").strip()
-        or resolved_entity_id
-    )
-
-    aliases: list[str] = []
-    seen_aliases: set[str] = set()
-    for key in ("aliases", "alias", "aka", "surface_forms", "names"):
-        raw_alias = node_attrs.get(key)
-        values: list[str]
-        if isinstance(raw_alias, str):
-            values = [raw_alias]
-        elif isinstance(raw_alias, (list, tuple, set)):
-            values = [str(v) for v in raw_alias if v is not None]
-        else:
-            values = []
-        for value in values:
-            cleaned = re.sub(r"\s+", " ", value.strip())
-            if len(cleaned) < 2:
-                continue
-            alias_key = cleaned.lower()
-            if alias_key in seen_aliases:
-                continue
-            seen_aliases.add(alias_key)
-            aliases.append(cleaned)
+    canonical_name = _canonical_name(resolved_entity_id, node_attrs)
+    aliases = _aliases(resolved_entity_id, node_attrs)
 
     coarse_type = (
         str(node_attrs.get("entity_type") or "").strip()
@@ -4962,6 +5053,7 @@ async def entity_profile(
             "entity_id": resolved_entity_id,
             "canonical_name": canonical_name,
             "aliases": aliases[:12],
+            "lookup_refs": _lookup_refs(resolved_entity_id, node_attrs),
             "coarse_type": coarse_type,
             "short_description": short_desc,
             "edge_count": edge_count,

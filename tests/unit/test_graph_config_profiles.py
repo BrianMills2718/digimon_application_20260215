@@ -85,3 +85,17 @@ def test_graph_schema_mode_parse_keeps_legacy_mode_terms() -> None:
     assert GraphSchemaMode.parse("closed") is GraphSchemaMode.SCHEMA_CONSTRAINED
     assert GraphSchemaMode.parse("schema_guided") is GraphSchemaMode.SCHEMA_GUIDED
     assert GraphSchemaMode.parse("schema_constrained") is GraphSchemaMode.SCHEMA_CONSTRAINED
+
+
+def test_entity_identity_contract_flags_are_assignable() -> None:
+    """Identity metadata should be first-class config, not hidden hardcoded behavior."""
+
+    config = GraphConfig()
+    config.enable_entity_lookup_search_keys = False
+    config.enable_entity_alias_metadata = False
+    config.preserve_canonical_display_names = False
+
+    assert config.entity_node_id_strategy == "clean_str_normalized"
+    assert config.enable_entity_lookup_search_keys is False
+    assert config.enable_entity_alias_metadata is False
+    assert config.preserve_canonical_display_names is False

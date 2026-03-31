@@ -118,6 +118,29 @@ benchmark-first until proven otherwise.
   - `3hop1__305282_282081_73772` — conceptually related, but the current 50q
     artifact is contaminated by a runtime error rather than a clean
     canonicalization miss.
+- 2026-03-31: Phase 1 additive identity-contract slice landed:
+  - `GraphConfig` now exposes explicit identity toggles:
+    - `entity_node_id_strategy`
+    - `preserve_canonical_display_names`
+    - `enable_entity_lookup_search_keys`
+    - `enable_entity_alias_metadata`
+  - `GraphBuildManifest` now persists an `identity_contract` and advertises the
+    canonical-name / search-key / alias node fields when enabled.
+  - Graph builders now attach canonical display and lookup metadata beside the
+    legacy normalized node IDs instead of overloading `entity_name`.
+  - `entity_string_search` and `entity_profile` now consume canonical-name and
+    `search_keys` metadata, so lossy stored node IDs can still resolve from
+    human-facing Unicode queries.
+  - The onto-canon importer now preserves the same identity metadata contract
+    for imported graphs.
+  - Verified with:
+    - `.venv/bin/pytest -q tests/unit/test_graph_build_manifest.py tests/unit/test_graph_config_profiles.py tests/unit/test_onto_canon_import.py tests/unit/test_entity_string_search.py`
+    - `ruff check Config/GraphConfig.py Core/Common/entity_name_hygiene.py Core/Schema/GraphBuildManifest.py Core/Graph/BaseGraph.py Core/Graph/ERGraph.py Core/Graph/DelimiterExtraction.py Core/Interop/onto_canon_import.py tests/unit/test_graph_build_manifest.py tests/unit/test_graph_config_profiles.py tests/unit/test_onto_canon_import.py tests/unit/test_entity_string_search.py`
+    - `git diff --check`
+- Phase 1 remains intentionally additive:
+  - node IDs are still `clean_str`-normalized for compatibility,
+  - no graph rebuild or benchmark rerun has happened yet,
+  - namesake/gloss projection repair is still Phase 2 work.
 
 ### Phase 0: Freeze The Failure Family
 
@@ -213,8 +236,8 @@ benchmark-first until proven otherwise.
 ## Acceptance Criteria
 
 - [x] A frozen canonicalization-heavy MuSiQue tranche is defined with exact question IDs.
-- [ ] The build manifest truthfully records the identity strategy used by the rebuilt graph.
-- [ ] DIGIMON graph/build surfaces preserve canonical display names separately from normalized lookup keys.
+- [x] The build manifest truthfully records the identity strategy used by the rebuilt graph.
+- [x] DIGIMON graph/build surfaces preserve canonical display names separately from normalized lookup keys.
 - [ ] At least one general representation repair for namesake/gloss retrieval lands or is explicitly rejected with trace-backed evidence.
 - [ ] The frozen tranche improves by at least 2 additional correct answers with no regressions on the maintained bridge/namesake sentinels.
 - [ ] Remaining misses are reclassified honestly after the rerun.
