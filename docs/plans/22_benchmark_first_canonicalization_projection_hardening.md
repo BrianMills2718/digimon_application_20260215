@@ -141,6 +141,18 @@ benchmark-first until proven otherwise.
   - node IDs are still `clean_str`-normalized for compatibility,
   - no graph rebuild or benchmark rerun has happened yet,
   - namesake/gloss projection repair is still Phase 2 work.
+- 2026-03-31: Phase 2 uncertainty narrowed:
+  - the persisted `results/MuSiQue/er_graph/graph_build_manifest.json` still
+    reports `enable_chunk_cooccurrence=false`, `cooccurrence_edges=false`, and
+    no passage-node surface in `node_fields`.
+  - so the maintained MuSiQue artifact has not yet exercised the existing
+    projection features Plan #17 expected.
+  - `eval/prebuild_graph.py` now exposes `--enable-chunk-cooccurrence` and
+    `--enable-passage-nodes`, making a bounded projection experiment runnable
+    without inventing a new build path.
+  - verified with:
+    - `.venv/bin/pytest -q tests/unit/test_prebuild_graph_cli.py`
+    - `ruff check eval/prebuild_graph.py tests/unit/test_prebuild_graph_cli.py`
 
 ### Phase 0: Freeze The Failure Family
 

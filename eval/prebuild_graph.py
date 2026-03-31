@@ -103,6 +103,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Prefer named or groundable entities over vague abstractions during extraction.",
     )
     parser.add_argument(
+        "--enable-chunk-cooccurrence",
+        action="store_true",
+        help="Add implicit edges between entities that co-occur in the same source chunk.",
+    )
+    parser.add_argument(
+        "--enable-passage-nodes",
+        action="store_true",
+        help="Add passage/chunk nodes alongside entity nodes for bipartite retrieval projections.",
+    )
+    parser.add_argument(
         "--lane-policy",
         default="reliability",
         choices=["pure", "reliability"],
@@ -151,6 +161,10 @@ def build_er_config_overrides(args: argparse.Namespace) -> dict[str, Any]:
         overrides["two_pass_extraction"] = True
     if args.prefer_grounded_named_entities:
         overrides["prefer_grounded_named_entities"] = True
+    if args.enable_chunk_cooccurrence:
+        overrides["enable_chunk_cooccurrence"] = True
+    if args.enable_passage_nodes:
+        overrides["enable_passage_nodes"] = True
     return overrides
 
 
@@ -166,6 +180,8 @@ def build_requires_fresh_graph(args: argparse.Namespace) -> bool:
             args.strict_extraction_slot_discipline,
             args.two_pass_extraction,
             args.prefer_grounded_named_entities,
+            args.enable_chunk_cooccurrence,
+            args.enable_passage_nodes,
             args.chunk_limit is not None,
             args.lane_policy != "reliability",
         ]
@@ -259,6 +275,8 @@ async def main(args: argparse.Namespace) -> None:
         f"strict_slot_discipline={args.strict_extraction_slot_discipline}, "
         f"two_pass_extraction={args.two_pass_extraction}, "
         f"grounded_entity_preference={args.prefer_grounded_named_entities}, "
+        f"chunk_cooccurrence={args.enable_chunk_cooccurrence}, "
+        f"passage_nodes={args.enable_passage_nodes}, "
         f"lane_policy={args.lane_policy}, "
         f"chunk_limit={args.chunk_limit or 'all'}..."
     )

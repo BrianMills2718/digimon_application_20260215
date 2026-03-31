@@ -37,6 +37,8 @@ def test_parse_args_accepts_profile_schema_and_chunk_limit() -> None:
             "--strict-extraction-slot-discipline",
             "--two-pass-extraction",
             "--prefer-grounded-named-entities",
+            "--enable-chunk-cooccurrence",
+            "--enable-passage-nodes",
             "--lane-policy",
             "pure",
             "--chunk-limit",
@@ -53,6 +55,8 @@ def test_parse_args_accepts_profile_schema_and_chunk_limit() -> None:
     assert args.strict_extraction_slot_discipline is True
     assert args.two_pass_extraction is True
     assert args.prefer_grounded_named_entities is True
+    assert args.enable_chunk_cooccurrence is True
+    assert args.enable_passage_nodes is True
     assert args.lane_policy == "pure"
     assert args.chunk_limit == 25
 
@@ -83,6 +87,8 @@ def test_build_er_config_overrides_converts_cli_strings_to_enums() -> None:
             "--strict-extraction-slot-discipline",
             "--two-pass-extraction",
             "--prefer-grounded-named-entities",
+            "--enable-chunk-cooccurrence",
+            "--enable-passage-nodes",
         ]
     )
 
@@ -95,6 +101,8 @@ def test_build_er_config_overrides_converts_cli_strings_to_enums() -> None:
     assert overrides["strict_extraction_slot_discipline"] is True
     assert overrides["two_pass_extraction"] is True
     assert overrides["prefer_grounded_named_entities"] is True
+    assert overrides["enable_chunk_cooccurrence"] is True
+    assert overrides["enable_passage_nodes"] is True
 
 
 def test_build_er_config_overrides_accepts_legacy_schema_aliases() -> None:
@@ -155,6 +163,16 @@ def test_build_requires_fresh_graph_for_pure_lane_policy() -> None:
     args = parse_args(["MuSiQue", "--lane-policy", "pure"])
 
     assert build_requires_fresh_graph(args) is True
+
+
+def test_build_requires_fresh_graph_for_projection_overrides() -> None:
+    """Projection toggles should force a fresh graph artifact."""
+
+    chunk_args = parse_args(["MuSiQue", "--enable-chunk-cooccurrence"])
+    passage_args = parse_args(["MuSiQue", "--enable-passage-nodes"])
+
+    assert build_requires_fresh_graph(chunk_args) is True
+    assert build_requires_fresh_graph(passage_args) is True
 
 
 def test_resolve_artifact_dataset_name_defaults_to_source_dataset() -> None:
