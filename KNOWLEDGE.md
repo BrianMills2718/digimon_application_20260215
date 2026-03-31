@@ -144,6 +144,20 @@ from `São José dos Campos` without changing graph topology or importer
 compatibility.
 
 ### 2026-03-31 — codex — integration-issue
+For the current Plan #22 canonicalization slice, the project-local `.venv`
+supports the targeted unit-test surface, but not the full test suite. Verified:
+
+- `.venv/bin/python -m pytest -q tests/unit/test_graph_build_manifest.py tests/unit/test_graph_config_profiles.py tests/unit/test_onto_canon_import.py tests/unit/test_entity_string_search.py tests/unit/test_prebuild_graph_cli.py`
+  passes (`42 passed`)
+- full `.venv/bin/python -m pytest -q` still fails at collection because
+  optional experimental-lane dependencies such as `faiss` and `websockets`
+  are not installed in that environment
+
+Treat the targeted Plan #22 unit suite as the truthful verification path for
+the maintained canonicalization slice until the broader env contract is
+reconciled.
+
+### 2026-03-31 — codex — integration-issue
 A bounded 5-chunk MuSiQue rebuild with `--enable-chunk-cooccurrence` and
 `--enable-passage-nodes` proved that the live projection path can materialize
 `passage_chunk_*` nodes and `chunk_cooccurrence` edges under the maintained

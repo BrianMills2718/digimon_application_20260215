@@ -1,6 +1,15 @@
 # GraphRAG Current Status — 2026-03-26
 
-**Single source of truth for benchmark results. Other docs link here, don't duplicate.**
+**Single source of truth for the latest full benchmark comparison.**
+
+Current implementation authority for the active frontier is in:
+
+- `docs/plans/21_autonomous_failure_iteration_sprint.md`
+- `docs/plans/22_benchmark_first_canonicalization_projection_hardening.md`
+- `docs/plans/23_semantic_build_boundary_and_onto_canon_experiment.md`
+
+Use this file for the last full MuSiQue result snapshot. Use the active plans
+for the current failure family, next gate, and open uncertainties.
 
 ## 50q MuSiQue Results (Latest, 2026-03-26)
 
