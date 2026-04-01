@@ -35,6 +35,16 @@ Model: gpt-5.4-mini (strong tool calling + code generation).
 Comparison: PTC mode vs sequential mode on same consolidated tool surface.
 Infrastructure: PTC implementation already exists on trip-backup branch.
 
+## Acceptance Criteria
+
+- [ ] PTC branch code (trip-backup, commit 0a4c2be) merged or cherry-picked onto a testable branch with current consolidated tool surface
+- [ ] Comparative benchmark run completed: PTC mode vs sequential mode on the same consolidated tool surface (8-10 tools), same dataset slice, same model (gpt-5.4-mini)
+- [ ] Results show whether PTC reduces context pollution from intermediate results compared to sequential calls
+- [ ] If PTC wins: quantified improvement (EM or LLM-judge delta) documented with statistical significance
+- [ ] If PTC loses or ties: documented conclusion that consolidated tools are sufficient, PTC deprioritized
+- [ ] Context analysis artifact produced showing intermediate-result token counts in PTC vs sequential mode
+- [ ] Results recorded in ROADMAP.md with gate decision (proceed with PTC adoption or close Plan #18)
+
 ## Budget
 
 ~$5-10 for comparative benchmark runs.
