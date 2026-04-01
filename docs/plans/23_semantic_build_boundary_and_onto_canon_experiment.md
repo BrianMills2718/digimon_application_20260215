@@ -62,6 +62,7 @@ interchange experiment around that verified v1 consumer seam.
 - `scripts/import_onto_canon_jsonl.py` - current CLI import wrapper
 - `/home/brian/projects/onto-canon6/src/onto_canon6/adapters/digimon_export.py` - current flat DIGIMON JSONL export
 - `/home/brian/projects/onto-canon6/src/onto_canon6/adapters/foundation_assertion_export.py` - richer assertion-oriented export surface
+- `/home/brian/projects/onto-canon6/docs/plans/0026_schema_stability_gate.md` - upstream contract-stability execution surface
 - `/home/brian/projects/project-meta/vision/ONTO_CANON6_DIGIMON_CONVERGENCE.md` - current documented convergence state
 - `docs/plans/17_retest_thesis.md` - benchmark-first default lane
 - `docs/plans/21_autonomous_failure_iteration_sprint.md` - latest evidence that representation/canonicalization is now the frontier
@@ -78,6 +79,7 @@ interchange experiment around that verified v1 consumer seam.
 | Analysis role | Keep conceptually separate; do not spin out a new repo now | Avoid extra architectural churn |
 | Interchange v1 | Current flat `entities.jsonl` / `relationships.jsonl` stays as proof-of-life only | It is already useful but too lossy to be the long-term seam |
 | First Lane 2 consumer | DIGIMON | Highest strategic value; keep proof narrow and truthful |
+| Upstream schema-stability owner | onto-canon6 Plan 0026 | DIGIMON should not invent a separate upstream contract policy |
 | Interchange v2 candidate | Foundation-style assertion/artifact envelope plus DIGIMON-side projection compiler | Best current candidate for richer semantic interchange |
 | Promotion gate | No default-path switch without benchmark evidence | Keeps architecture work subordinate to benchmark proof |
 
