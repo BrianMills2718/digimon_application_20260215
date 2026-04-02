@@ -99,11 +99,38 @@ For active DIGIMON implementation and benchmark iterations, the default is
   runtime findings in `KNOWLEDGE.md`, and a verified commit for each completed
   implementation slice. Never leave meaningful progress only in chat.
 
+**THIS IS NOT OPTIONAL.** The agent MUST run continuously through the planned
+phase sequence. Do not stop to ask "what next?" — the phase sequence below is
+the answer. Do not stop because a benchmark run is "only" partially improved —
+that is signal, not a stopping condition. Do not stop because it's been a long
+time — context compaction handles that. The ONLY reasons to stop are the three
+listed above. If you are unsure, write the uncertainty to KNOWLEDGE.md and
+keep going.
+
 For the current thesis work, this means the agent should keep running the
 failure-driven loop overnight: implement the next control-layer fix, verify on a
 small slice, run the targeted MuSiQue batch, diagnose the remaining misses, and
 immediately start the next systemic repair until the active plan is exhausted or
 an explicit escalation criterion is hit.
+
+### Overnight Phase Sequence (2026-04-02 → 2026-04-03)
+
+Execute these phases in order. Each phase has explicit acceptance criteria.
+Do not skip phases. Commit after each verified phase.
+
+| Phase | Task | Acceptance Criteria | Est. Time |
+|-------|------|-------------------|-----------|
+| 0 | Doc/plan hygiene + commit uncommitted work | CURRENT_STATUS.md updated, Codex changes committed, Plan #17 has completion findings | 1h |
+| 1 | Stagnation threshold configurable + diversification | `make bench-musique STAG_TURNS=6` works; stagnation rate drops vs baseline | 2h |
+| 2 | Close Plan #21 or document handoff | Frozen tranche rerun completed; plan status updated | 2h |
+| 3 | Check Plan #22 projection results | Post-projection benchmark compared with pre-projection baseline; findings recorded | 1h |
+| 4 | Entity search quality: top_k increase + fallback | entity_search default top_k=10; sentinel passes; bench-musique tested | 2h |
+| 5 | Full 50q decision-grade MuSiQue run | 50q benchmark completed; results in CURRENT_STATUS.md; comparison with 42% baseline | 3h |
+| 6 | Update all docs with overnight findings | CURRENT_STATUS.md, KNOWLEDGE.md, ROADMAP.md all current; all plans have correct status | 1h |
+
+**Budget guardrail**: Total overnight LLM spend ≤ $15. Check with `make cost DAYS=1` after each benchmark run. If approaching $12, skip Phase 5 (50q) and proceed to Phase 6.
+
+**Stochasticity policy**: Any benchmark improvement claim requires ≥2 runs showing the same result, OR the improvement is ≥3 questions (outside stochastic noise). Single-run single-question flips are noted as "stochastic" not "fixed."
 
 ## Generalization Mandate
 
