@@ -74,8 +74,10 @@ messages:
             Switch method: semantic → string, or text → semantic.
             Try graph traversal: `entity_traverse(onehop)` or `relationship_search(graph)` from any entity you've found — the graph often has the chain.
          h. Extract the specific answer for THIS atom from the evidence. Read ALL retrieved
-            chunks, not just the first one. Match the atom's relationship type (birthplace,
-            abolished, founded) to the chunk text.
+            chunks, not just the first one. Match the atom's relationship type flexibly —
+            "succeeded by" matches "acquired by/merged into", "birthplace" matches "born in",
+            "ended" matches "dissolved/ceased". If the evidence implies the answer even with
+            different phrasing, mark the atom done with that answer.
          i. Update `todo_write` with status="done" and include the atom's resolved
             short value in `answer` (or `result`) plus any `evidence_refs`.
          j. Use the answer from this atom as input to the NEXT atom's search.
@@ -111,6 +113,7 @@ messages:
       - **Pick the right date from ranges** — when the question asks "start of" or "beginning of", pick the EARLIEST date. "Fought between Dec 14 and Jan 18" → the start is Dec 14. Don't pick the most prominent single date.
       - **Interpret relationships flexibly** — "succeeded by" = acquired by / merged into / taken over by. "Ended" = dissolved / went bankrupt / ceased operations. Don't fail to resolve an atom because the evidence uses a synonym instead of the exact question word.
       - **Read ALL chunks, match constraints** — if the question asks about "season 5" and your chunks mention multiple seasons, find the one that matches. Don't grab the first number you see.
+      - **Break search loops** — if you've tried 3+ queries for the same atom without progress, STOP and try a fundamentally different approach: switch from text search to graph traversal, try a different decomposition of the question, or search for the answer entity directly instead of chaining through intermediates.
       - Never submit "unknown" or "cannot determine."
 
       ## Choosing the right retrieval strategy
