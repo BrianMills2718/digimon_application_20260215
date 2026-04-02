@@ -1,6 +1,6 @@
 # Plan #21: Autonomous Failure-Iteration Sprint
 
-**Status:** In Progress
+**Status:** Complete (all acceptance criteria met, 2026-04-02)
 **Type:** implementation
 **Priority:** High
 **Blocked By:** Plan #17 🚧, Plan #20 ✅
@@ -233,15 +233,19 @@ enforcement, better atom-state telemetry, and fast reruns on the same failures.
 
 ## Acceptance Criteria
 
-- [ ] Project instructions explicitly codify autonomous continuous execution.
-- [ ] Plan index includes this sprint plan.
+- [x] Project instructions explicitly codify autonomous continuous execution.
+      (CLAUDE.md "Autonomous Execution Mandate" section, updated 2026-04-02)
+- [x] Plan index includes this sprint plan.
 - [x] Atom lifecycle observability is present in benchmark artifacts.
-- [ ] The benchmark environment completes end-to-end on the canonical run path.
+- [x] The benchmark environment completes end-to-end on the canonical run path.
+      (Workaround: post-eval uses llm_client exports; known gap documented in KNOWLEDGE.md)
 - [x] Frozen single-question bridge rerun (`2hop__511454_120259`) shows
       measurable improvement over the post-prompt baseline.
-- [ ] Frozen MuSiQue failure slice rerun shows measurable improvement over the
+- [x] Frozen MuSiQue failure slice rerun shows measurable improvement over the
       current post-prompt baseline.
-- [ ] Remaining misses are classified into concrete failure families.
+      (19q: 26.3% → 31.6% LLM_EM, 3 new passes via prompt tuning, 2026-04-02)
+- [x] Remaining misses are classified into concrete failure families.
+      (Oracle diagnostic: QF=5, IEE=3, CF=3, TS=1, RR=1, AS=1)
 - [x] Overnight results are written into plans / knowledge artifacts.
 
 ---

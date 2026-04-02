@@ -13,6 +13,7 @@ LIMIT ?= 20
 DATASET ?= HotpotQAsmallest
 NUM ?= 3
 MODEL ?= openrouter/openai/gpt-5.4-mini
+STAG_TURNS ?= 4
 PYTHON ?= .venv/bin/python
 PYTEST ?= .venv/bin/pytest
 LLM_CLIENT_CLI := conda run -n digimon python -m llm_client
@@ -229,16 +230,15 @@ bench-baseline:  ## Run baseline (no graph) benchmark
 		--agent-spec none --allow-missing-agent-spec \
 		--missing-agent-spec-reason "agent_spec relocated"
 
-bench-musique:  ## Run MuSiQue 19q diagnostic set
+bench-musique:  ## Run MuSiQue 19q diagnostic set (STAG_TURNS=4 default)
 	conda run -n digimon python eval/run_agent_benchmark.py \
 		--agent-spec none --allow-missing-agent-spec \
 		--missing-agent-spec-reason "relocated" \
 		--dataset MuSiQue \
 		--questions-file eval/fixtures/musique_19q_diagnostic_ids.txt \
 		--model $(MODEL) --backend direct \
-		--agent-spec none --allow-missing-agent-spec --missing-agent-spec-reason "relocated" \
-		--agent-spec none --allow-missing-agent-spec \
-		--missing-agent-spec-reason "agent_spec relocated"
+		--retrieval-stagnation-turns $(STAG_TURNS) \
+		--agent-spec none --allow-missing-agent-spec --missing-agent-spec-reason "relocated"
 
 graph-stats:  ## Show graph node/edge counts for a dataset
 	@conda run -n digimon python -c "import networkx as nx; G=nx.read_graphml('results/$(DATASET)/er_graph/nx_data.graphml'); print(f'Nodes: {G.number_of_nodes()}, Edges: {G.number_of_edges()}')"
@@ -286,6 +286,7 @@ sentinel:  ## Run sentinel set — regression check on known-passing questions (
 		--dataset MuSiQue \
 		--questions-file eval/fixtures/sentinel_set.txt \
 		--model $(MODEL) --backend direct \
+		--retrieval-stagnation-turns $(STAG_TURNS) \
 		--agent-spec none --allow-missing-agent-spec --missing-agent-spec-reason "relocated"
 
 .PHONY: oracle
