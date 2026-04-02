@@ -104,7 +104,9 @@ per-tool `cost_tier` and `reliability_tier` metadata, plus explanatory `notes`.
 These are currently dummy planning hints for tool selection and budget
 attribution; they are not calibrated runtime telemetry yet. When progressive
 disclosure is enabled, `search_available_tools` returns the same metadata for
-deferred tools.
+deferred tools. The live FastMCP registry also stores the same values on each
+registered tool's `meta` field so discovery code can inspect them directly for
+tool selection and future distributed budget attribution.
 
 ### Two-Model Design
 

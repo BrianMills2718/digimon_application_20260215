@@ -72,7 +72,11 @@ from Core.MCP.progressive_disclosure import (
     search_available_tools_impl,
     should_defer_tool,
 )
-from Core.MCP.tool_metadata import get_tool_operational_metadata
+from Core.MCP.tool_metadata import (
+    ToolOperationalMetadata,
+    attach_tool_metadata_to_registry,
+    get_tool_operational_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -8705,9 +8709,13 @@ def _catalog_entry_for_tool(
     description: str,
     parameters: dict[str, Any],
     visibility: str,
+    operational: ToolOperationalMetadata | None = None,
 ) -> dict[str, Any]:
     """Build a JSON-safe tool-catalog entry with operational metadata."""
-    operational = get_tool_operational_metadata(name)
+    operational = operational or get_tool_operational_metadata(
+        name,
+        require_explicit=True,
+    )
     return {
         "name": name,
         "description": description,
@@ -8725,12 +8733,19 @@ def _collect_tool_catalog() -> list[dict[str, Any]]:
     visible_names = sorted(mcp._tool_manager._tools.keys())
     for tool_name in visible_names:
         tool_obj = mcp._tool_manager._tools[tool_name]
+        tool_meta = tool_obj.meta if isinstance(tool_obj.meta, dict) else {}
         catalog.append(
             _catalog_entry_for_tool(
                 name=tool_name,
                 description=tool_obj.description or "",
                 parameters=tool_obj.parameters if isinstance(tool_obj.parameters, dict) else {},
                 visibility="visible",
+                operational=ToolOperationalMetadata(
+                    cost_tier=tool_meta["cost_tier"],
+                    reliability_tier=tool_meta["reliability_tier"],
+                    notes=tool_meta["notes"],
+                ) if {"cost_tier", "reliability_tier", "notes"} <= tool_meta.keys()
+                else None,
             )
         )
 
@@ -8967,6 +8982,14 @@ def _build_operator_chain_namespace() -> dict[str, Any]:
             namespace[op_name] = _make_auto_parse_wrapper(fn)
 
     return namespace
+
+
+def _apply_registered_tool_operational_metadata() -> None:
+    """Attach explicit operational metadata to every live FastMCP tool."""
+    attach_tool_metadata_to_registry(mcp._tool_manager._tools)
+
+
+_apply_registered_tool_operational_metadata()
 
 
 # =============================================================================

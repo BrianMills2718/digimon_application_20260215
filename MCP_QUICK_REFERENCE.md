@@ -200,5 +200,8 @@ registered tool:
 
 The live `digimon-kgrag` server exposes this through `list_tool_catalog`, and
 `search_available_tools` includes the same fields for deferred tools when
-progressive disclosure is enabled. These values are placeholders for planner
-heuristics and future budget attribution, not measured observability data.
+progressive disclosure is enabled. The same fields are written onto each live
+FastMCP tool object's `meta` field during server initialization, and startup
+now fails loudly if any registered DIGIMON tool is missing explicit metadata
+coverage. These values are placeholders for planner heuristics and future
+distributed budget attribution, not measured observability data.

@@ -211,6 +211,14 @@ endpoint merge semantics.
   (4), RETRIEVAL_RANKING (2), GRAPH_REPRESENTATION (1), ANSWER_SYNTHESIS (1).
   Most need VDB/graph improvements, not prompt fixes.
 
+### 2026-04-02 — codex — best-practice
+The `digimon-kgrag` FastMCP tool objects support planner metadata directly via
+their `meta` field. Attaching `cost_tier`, `reliability_tier`, and `notes`
+onto the live tool registry at import time, and failing startup if any
+registered tool lacks explicit coverage, is the reliable way to keep
+`list_tool_catalog`, deferred-tool discovery, and future budget attribution in
+sync.
+
 ### 2026-04-02 — codex — integration-issue
 The sanctioned governed-repo installer from `project-meta` now assumes DIGIMON
 can generate `AGENTS.md` from `CLAUDE.md` using the shared renderer contract.
