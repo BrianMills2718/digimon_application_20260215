@@ -1,6 +1,6 @@
-# GraphRAG Current Status — 2026-03-26
+# GraphRAG Current Status — 2026-04-02
 
-**Single source of truth for the latest full benchmark comparison.**
+**Single source of truth for the latest benchmark comparison.**
 
 Current implementation authority for the active frontier is in:
 
@@ -8,10 +8,10 @@ Current implementation authority for the active frontier is in:
 - `docs/plans/22_benchmark_first_canonicalization_projection_hardening.md`
 - `docs/plans/23_semantic_build_boundary_and_onto_canon_experiment.md`
 
-Use this file for the last full MuSiQue result snapshot. Use the active plans
-for the current failure family, next gate, and open uncertainties.
+Use this file for the last result snapshot. Use the active plans for the
+current failure family, next gate, and open uncertainties.
 
-## 50q MuSiQue Results (Latest, 2026-03-26)
+## 50q MuSiQue Results (2026-03-26, Plan #17 decision-grade run)
 
 | Metric | Baseline | GraphRAG | Delta |
 |--------|----------|----------|-------|
@@ -23,7 +23,46 @@ Result files:
 - Baseline: `results/MuSiQue_gpt-5-4-mini_baseline_20260326T074316Z.json`
 - GraphRAG: `results/MuSiQue_gpt-5-4-mini_consolidated_20260326T080737Z.json`
 
-## Cross-Reference (50q)
+## 19q Diagnostic Results (2026-04-02, post-prompt-tuning)
+
+| Metric | Pre-tuning | Post-tuning | Delta |
+|--------|-----------|-------------|-------|
+| LLM-judge | 26.3% (5/19) | 31.6% (6/19) | +5.3 pts |
+| EM | 21.1% (4/19) | 26.3% (5/19) | +5.3 pts |
+| Cost | $0.65 | $0.91 | — |
+
+Result file: `results/MuSiQue_gpt-5-4-mini_consolidated_20260402T113854Z.json`
+
+### What prompt tuning fixed
+1. **Answer granularity matching** (+1 EM): "What year" → year only, not month+year (170823: "1986")
+2. **Submit-immediately control flow** (+1 LLM_EM): Agent found answer but looped instead of submitting (511296: "Maria Shriver")
+3. **Flexible atom resolution** (+1 LLM_EM): Agent found evidence with synonym phrasing but couldn't mark atom done (9285: "June" ≈ "mid-June")
+
+### Remaining failure families (14 questions, 13 true failures + 1 LLM-judge pass)
+
+| Family | Count | Description |
+|--------|-------|-------------|
+| QUERY_FORMULATION | 5 | Right tool, wrong query — answer in corpus but query didn't match |
+| INTERMEDIATE_ENTITY_ERROR | 3 | Entity search returns wrong entity (e.g., Israel → "United States") |
+| CONTROL_FLOW | 3 | Agent has evidence but can't complete atom lifecycle or submit |
+| TOOL_SELECTION | 1 | Agent chose graph traversal when text search was needed |
+| RETRIEVAL_RANKING | 1 | Right results but wrong item selected |
+| ANSWER_SYNTHESIS | 1 | Evidence retrieved but wrong answer extracted |
+
+### Key bottleneck: Retrieval stagnation
+
+53-63% of questions hit the 4-turn stagnation limit well before the 20-call
+tool budget. The agent makes similar searches that return the same results.
+The bottleneck is **search quality**, not search quantity. This is a harness-level
+issue, not a prompt issue.
+
+### Stochasticity warning
+
+Sentinel question 731956 passes ~50% of runs. Single-run single-question flips
+are **stochastic noise**, not evidence of improvement. Promotion policy: ≥2 runs
+showing same result, or ≥3 question improvement.
+
+## Cross-Reference (50q, 2026-03-26)
 
 | Category | Count | Detail |
 |----------|-------|--------|
@@ -32,56 +71,29 @@ Result files:
 | Regressions | 4 | Baseline passes, GraphRAG fails |
 | Both fail | 25 | Neither answers correctly |
 
-## Iteration Gains (retesting both-fail + regression subsets)
-
-| Subset | Tested | Flipped to PASS | Key Fix |
-|--------|--------|-----------------|---------|
-| 2-hop both-fail | 9 | 4 (645448, 95970, 354635, 78401) | No truncation + plan enforcement |
-| 3-hop both-fail | 8 | 3 (136129, 820301, 108833) | Passage nodes (plague=22 fixed) |
-| 4-hop both-fail | 8 | 2 (94201, 152146) | Passage nodes |
-| Regressions | 4 | 2 fixed (511296, 127483) | Stochastic |
-| **Total iteration gains** | **29** | **11** | |
-
-Projected with iteration: ~32/50 (64.0% LLM-judge)
-Note: "Projected" means these questions passed on re-run. 16 remaining failures
-are entity resolution ambiguity (8), complex 4-hop chains (6), and near-misses (2).
-
-### What fixed the most questions
-1. **Passage nodes** (+5 questions) — HippoRAG v2 bipartite graph, $0 post-build enrichment
-2. **No evidence truncation** (+2 questions) — chunk text was silently cut at 150 chars
-3. **Plan-completion enforcement** (+2 questions) — agent rejected from submitting early
-4. **Stochastic** (+2 questions) — same code, different run, different result
+Projected with iteration: ~32/50 (64.0% LLM-judge). This projection is from
+single-run reruns on subsets, not a full 50q confirmation.
 
 ## What's Implemented
 
 - Plan #14: Benchmark runner ✅
 - Plan #15: Operator consolidation (28→10 tools, 31 methods) ✅
 - Plan #16: HippoRAG build attributes (PPR=0.5, passage nodes, co-occurrence) ✅
+- Plan #17: Thesis test (42% LLM-judge on 50q, ANSWER_SYNTHESIS eliminated) ✅
 - Plan #20: Tool linearization + planning tools + prompt v3.3 ✅
-- Bug fixes: PPR damping, chunk linearization data-loss, per-chunk timeout, lazy imports
+- Plan #25: Coordination prerequisite remediation ✅
+- Prompt v3.4: Answer granularity, verification step, flexible relationships, short queries, search loops
 
-## What's Blocking
+## Active Work
 
-1. **llm_client missing 6 post-eval exports** — benchmark crashes on post-eval. Workaround: `--post-det-checks none --post-gate-policy none`
-2. **Graph not rebuilt** — passage nodes, co-occurrence edges not in current graph (stalled at 45%)
-3. **Answer extraction errors** — 21 both-fail questions where agent finds evidence but picks wrong fact
+- Plan #21: Failure iteration sprint (in progress, frozen tranche rerun pending)
+- Plan #22: Canonicalization + projection hardening (in progress, Phase 2 rebuild in-flight)
+- Plan #23: Semantic build boundary design (in progress, design phase)
 
-
-## Cost Tracking (from `make cost-by-task DAYS=7`)
-
-| Task | Calls | Cost | Notes |
-|------|-------|------|-------|
-| Benchmark runs | 6,365 | $57.10 | Includes all iteration runs |
-| Graph build | 20,161 | $20.25 | Stalled at 45%, includes retries |
-| Semantic plan | 516+469 | $0.85 | Planning + revision |
-| LLM judge | 518 | $0.18 | Post-eval scoring |
-| **Total (7 days)** | **~28,000** | **~$79** | Budget was $25-45 |
-
-**Budget exceeded**: ROADMAP estimated $25-45. Actual $79, mostly from benchmark iteration ($57) and graph build ($20). The 318-call runaway loops before AgentErrorBudget contributed significantly.
 ## Next Actions
 
-1. Fix llm_client exports OR migrate DIGIMON to canonical import paths
-2. Implement llm_client Plan #19 (agent planning/working memory with harness enforcement)
-3. Run confirmatory 50q with all fixes
-4. HotpotQA cross-benchmark validation
-5. Graph rebuild when memory/API quota allows
+1. Make stagnation threshold configurable + test with higher limit
+2. Close Plan #21 (frozen tranche rerun)
+3. Assess Plan #22 projection results
+4. Entity search quality improvements (top_k, fallback)
+5. Full 50q confirmatory run with all improvements

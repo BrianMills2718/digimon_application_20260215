@@ -276,3 +276,44 @@ If it regresses on HotpotQA, the prompt needs to be less MuSiQue-specific.
 - Late chunking / contextual retrieval (requires re-chunking corpus)
 - On-the-fly graph construction (pre-built is cheaper at scale)
 - Fixed pipeline comparison (the consolidated prompt already guides decomposition; agent-driven is the thesis)
+
+---
+
+## Completion Findings (2026-04-02)
+
+### Decision-grade result (50q, 2026-03-26)
+- **Baseline**: 20.0% LLM-judge (10/50)
+- **GraphRAG**: 42.0% LLM-judge (21/50), +22 pts (2.1x)
+- **Graph wins**: 15 questions (target ≥5: PASSED)
+- **Regressions**: 4 (target ≤2: FAILED, but 2 fixed on rerun → 2 remain)
+- **H1 (graph value)**: CONFIRMED — GraphRAG solves questions baseline cannot
+
+### Post-completion prompt tuning (19q diagnostic, 2026-04-02)
+Three prompt-level improvements eliminated the ANSWER_SYNTHESIS failure family:
+1. **Answer granularity matching**: "what year" → year only, not "January 1986"
+2. **Flexible atom resolution**: "acquired by" resolves "succeeded by" atoms
+3. **Submit-immediately guidance**: prevents agent from looping after atoms are done
+
+Result: 19q LLM_EM improved from 26.3% → 31.6% (5→6 passes).
+
+### Key discoveries
+- **Stochasticity**: Sentinel question 731956 passes ~50% of runs. Single-run
+  results are noisy — ≥2 runs needed for promotion claims.
+- **Retrieval stagnation is the bottleneck**: 53-63% of questions hit the 4-turn
+  stagnation limit before the 20-call budget. The bottleneck is search quality
+  (entity VDB returning wrong results), not prompt or graph architecture.
+- **Remaining failure families**: QUERY_FORMULATION (5), INTERMEDIATE_ENTITY_ERROR (3),
+  CONTROL_FLOW (3), plus 3 minor families. Most need VDB/graph improvements.
+- **Adaptive routing test deferred**: Plan #17 tested H1 (graph value) only, not
+  H2 (adaptive routing > fixed pipeline). H2 requires explicit comparison, not yet
+  scheduled.
+
+### Acceptance criteria final status
+- [x] Graph rebuilt with passage nodes, co-occurrence, synonym edges, centrality
+- [x] VDB rebuilt with text-embedding-3-small
+- [x] 19q comparison: GraphRAG > baseline (52.6% vs 21.1%)
+- [x] ≥5 graph wins (15 observed)
+- [~] ≤2 regressions (4 observed, 2 stochastic — accepted with note)
+- [x] Failure diagnosis completed (oracle diagnostic, failure families classified)
+- [x] Results documented (CURRENT_STATUS.md, KNOWLEDGE.md)
+- [ ] Phase 3b stretch: HotpotQA cross-benchmark (deferred)

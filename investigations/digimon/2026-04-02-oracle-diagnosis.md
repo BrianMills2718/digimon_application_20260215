@@ -1,16 +1,17 @@
 # Oracle Diagnostic Report
 
-**Date**: 2026-04-02 04:30
+**Date**: 2026-04-02 05:17
 **Questions analyzed**: 14
 
 ## Failure Family Summary
 
 | Family | Count | Fix Class | Description |
 |--------|-------|-----------|-------------|
-| **QUERY_FORMULATION** | 6 | harness, prompt, routing | Right tool, wrong query — answer in corpus but query didn't match |
-| **INTERMEDIATE_ENTITY_ERROR** | 4 | harness, routing | Unknown |
-| **RETRIEVAL_RANKING** | 2 | harness, retrieval_config | Right tool and query, answer in results but ranked too low or not selected |
-| **GRAPH_REPRESENTATION** | 1 | graph | Answer needs multi-hop graph path but graph lacks entity/edge |
+| **QUERY_FORMULATION** | 5 | routing, harness, retrieval_config | Right tool, wrong query — answer in corpus but query didn't match |
+| **CONTROL_FLOW** | 3 | routing, harness | Atom lifecycle issue — early stopping, stagnation, repeated queries |
+| **INTERMEDIATE_ENTITY_ERROR** | 3 | harness, retrieval_config, corpus | Unknown |
+| **TOOL_SELECTION** | 1 | retrieval_config | Answer findable by simpler tool, agent used complex one |
+| **RETRIEVAL_RANKING** | 1 | retrieval_config | Right tool and query, answer in results but ranked too low or not selected |
 | **ANSWER_SYNTHESIS** | 1 | routing | Agent retrieved correct evidence but extracted wrong answer |
 
 ## Optimal Strategy Summary
@@ -24,56 +25,60 @@
 
 **Question**: What month did the Tripartite discussions begin between Britain, France, and the country where, despite being headquartered in the nation called the nobilities commonwealth, the top-ranking Warsaw Pact operatives originated?
 **Gold**: mid-June
-**Predicted**: (empty)
-**Family**: `QUERY_FORMULATION` (high) — source: llm
+**Predicted**: June
+**Family**: `CONTROL_FLOW` (high) — source: llm
+**Heuristic said**: `ANSWER_SYNTHESIS` (LLM overrode)
 **Optimal strategy**: vdb_search
-**Optimal path**: 1. Decompose the question: Identify the country where top-ranking Warsaw Pact operatives originated despite being headquartered in the 'nobilities commonwealth'. Then identify the month the Tripartite discussions began between Britain, France, and that country. 2. Resolve 'nobilities commonwealth': Use chunk_retrieve(text, 'nation called the nobilities commonwealth') to find it's the Polish-Lithuanian Commonwealth. 3. Identify country for Warsaw Pact: Use entity_search(semantic, 'Warsaw Pact') and then entity_traverse(onehop, Warsaw Pact) or relationship_search(graph, Warsaw Pact) to find related entities. Combine this with the identified 'nobilities commonwealth' from step 2. If the graph doesn't directly link them, use chunk_retrieve(text, 'Warsaw Pact headquarters Polish-Lithuanian Commonwealth') to find the connection and confirm the country is Poland. 4. Find Tripartite discussion month: Once the country (Poland) is identified, use chunk_retrieve(text, 'Tripartite discussions Britain France Poland month') to find the start month. The provided chunk about the Molotov–Ribbentrop Pact mentions 'mid-June' for the main Tripartite negotiations.
-**Divergence**: Tool call [4]: chunk_retrieve({'method': 'text', 'query_text': 'nobilities commonwealth', 'top_k': '5'}) failed because the query term 'nobilities commonwealth' did not exactly match any mentions in the corpus. The agent then failed to resolve the 'nobilities commonwealth' entity. Subsequent steps were blocked.
-**Root cause**: The agent failed to identify the 'nobilities commonwealth' because its text retrieval query was too specific and did not account for variations in phrasing.
-**Fix**: [harness] Improve the chunk_retrieve tool's text matching by allowing for fuzzy matching or by generating multiple query variations (e.g., 'nobilities commonwealth', 'commonwealth of nobles', 'nation of nobles') when a direct match fails.
+**Optimal path**: 1. Decompose the question to identify the 'country where the top-ranking Warsaw Pact operatives originated' and the 'nation called the nobilities commonwealth'. 2. Use `chunk_retrieve(semantic, 'nation called the nobilities commonwealth')` to identify Poland. 3. Use `chunk_retrieve(semantic, 'country where top-ranking Warsaw Pact operatives originated')` to identify USSR. 4. Realize Poland and USSR are distinct and the question implies they refer to the same entity, which is a contradiction. Re-evaluate based on the phrase 'despite being headquartered in the nation called the nobilities commonwealth'. This suggests the country where operatives originated is *not* the nobilities commonwealth, but the latter is its headquarters nation. 5. Identify Poland as the 'nation called the nobilities commonwealth' using `chunk_retrieve(semantic, 'nobilities commonwealth')`. 6. Identify the country where Warsaw Pact operatives originated by searching for information related to Warsaw Pact and its origins, or by using entity search on Warsaw Pact and traversing relationships. A likely query would be `chunk_retrieve(semantic, 'Warsaw Pact operatives originated')`. This would ideally lead to information about countries associated with the Warsaw Pact, and potentially the *origin* of operatives. Given the context, and the provided gold answer's reference to 'Molotov–Ribbentrop Pact', the intent is likely to find a country strongly associated with the Warsaw Pact. If Poland is the headquarters, and the question asks about where *originates*, it might be a different country or a nuance of Poland. 7. The crucial piece is that Tripartite discussions are between Britain, France, and *that country*. The question is poorly phrased, implying the 'country where operatives originated' is the *same* country as the 'nation called the nobilities commonwealth'. The optimal path involves recognizing this ambiguity or contradiction and prioritizing the 'nation called the nobilities commonwealth' as the subject of the Tripartite talks. 8. Once Poland is identified as the target country for the Tripartite discussions, use `chunk_retrieve(semantic, 'Tripartite discussions Britain France Poland start month')` to find the answer. The gold answer chunk states: "In mid-June, the main Tripartite negotiations started."
+**Divergence**: Tool call [22] which resulted in a ValueError: 'TODO 'a3' cannot be marked done with 'Soviet Union'. Current evidence supports 'Poland' instead.'. This indicates a control flow issue where the agent incorrectly resolved 'a3' and then failed to correct it or submit the correct answer based on its findings.
+**Root cause**: The agent incorrectly processed the relationship between 'nobilities commonwealth' and the country of origin for Warsaw Pact operatives, leading to a control flow error in marking intermediate entities as resolved.
+**Fix**: [routing] Improve the agent's ability to handle ambiguous or contradictory information in the question, particularly when entities are described with conflicting attributes. Implement a more robust mechanism for the agent to re-evaluate intermediate entity resolutions when subsequent steps reveal inconsistencies.
 
 - **Chunk search**: FOUND in 1 chunks
   - Chunk: Molotov–Ribbentrop Pact (content)
 - **Graph**: answer IN graph, 10 question entities found, 9 paths
   - Shortest path (3 hops): commonwealth → united states → new jersey → j
-- **Agent**: 10 tool calls, answer NOT in results
-  - Tools: {'semantic_plan': 1, 'todo_write': 2, 'entity_search': 3, 'chunk_retrieve': 3, 'submit_answer': 1}
-  - Queries: ['What month did the Tripartite discussions begin be', 'nobilities commonwealth', 'Warsaw Pact operatives']
+- **Agent**: 10 tool calls, answer in results
+  - Tools: {'semantic_plan': 1, 'todo_write': 3, 'chunk_retrieve': 4, 'reason': 1, 'submit_answer': 1}
+  - Queries: ['What month did the Tripartite discussions begin be']
 
 ### 2hop__511454_120259
 
 **Question**: When was Lady Godiva's birthplace abolished?
 **Gold**: 918
 **Predicted**: (empty)
-**Family**: `INTERMEDIATE_ENTITY_ERROR` (high) — source: llm
-**Heuristic said**: `QUERY_FORMULATION` (LLM overrode)
+**Family**: `QUERY_FORMULATION` (high) — source: llm
+**Heuristic said**: `CONTROL_FLOW` (LLM overrode)
 **Optimal strategy**: text_search
-**Optimal path**: 1. Decompose the question: 'When was Lady Godiva's birthplace abolished?' into 'Who was Lady Godiva?' and 'Where was Lady Godiva's birthplace?' and 'When was this birthplace abolished?'. 2. Use entity_search(semantic, 'Lady Godiva') to find 'Lady Godiva'. 3. Use entity_info(profile, 'Lady Godiva') or relationship_search(graph, 'Lady Godiva') to find her birthplace. The corpus mentions 'Mercia' as where Lady Godiva was from. 4. Search for information on 'Mercia' and its abolition date. The corpus mentions 'When Æthelflæd died in 918', and Æthelflæd was the ruler of Mercia. The gold answer is 918.
-**Divergence**: Tool call [5]. The agent incorrectly resolved 'Lady Godiva's birthplace' to 'england' instead of finding a specific historical location. This led to a dead end in atom2, as 'england' is not a political entity that would be 'abolished' in the context of the question, and the agent couldn't find information about its abolition.
-**Root cause**: The agent failed to correctly identify Lady Godiva's specific birthplace and instead resolved it to a general country, leading to an unanswerable sub-question.
-**Fix**: [harness] Improve the agent's ability to resolve specific named entities from the corpus or knowledge graph, especially when a general term like 'england' might be returned. Enhance the entity resolution for historical figures to prioritize specific locations over broader geographical regions.
+**Optimal path**: 1. Decompose the question into 'Where was Lady Godiva born?' and 'When was that birthplace abolished?'. 2. To find Lady Godiva's birthplace, use `entity_search(semantic, 'Lady Godiva')` or `chunk_retrieve(text, 'Lady Godiva birthplace')` to find text or entities related to her birth. 3. Once Lady Godiva's birthplace is identified as Mercia, use `entity_search(semantic, 'Mercia abolished')` or `chunk_retrieve(text, 'Mercia abolition date')` to find when Mercia ceased to exist. 4. Alternatively, if Mercia is identified as an entity in the graph, use `entity_info(profile, 'Mercia')` to find its historical end date or use `entity_traverse(onehop, 'Mercia')` to find related entities that might lead to its abolition date. 5. Finally, use `reason(answer, context)` to synthesize the date from the retrieved information.
+**Divergence**: Tool call #7: `entity_search({'query': 'Mercia abolished', 'method': 'semantic', 'top_k': '10'})`. The agent correctly identified Mercia as the birthplace and then searched for its abolition. However, the search results were not directly relevant, and the agent did not have a fallback or strategy to use other tools like `chunk_retrieve` with the correct keywords or to explore graph connections related to Mercia's end.
+**Root cause**: The agent failed to effectively bridge the entity 'Mercia' to its abolition date, either by formulating a better query for `entity_search`/`chunk_retrieve` or by utilizing graph traversal tools to find the relevant historical information.
+**Fix**: [retrieval_config] Improve the query formulation for semantic searches targeting historical entities and events, possibly by adding temporal or event-related keywords (e.g., 'Mercia end date', 'fall of Mercia', 'Mercia dissolved') or by adding a step to re-query with different keyword combinations if initial semantic searches fail to yield direct results.
 
 - **Chunk search**: FOUND in 66 chunks
   - Chunk: The war to end war (content)
   - Chunk: Mercia (content)
 - **Graph**: answer IN graph, 9 question entities found, 9 paths
   - Shortest path (2 hops): birthplace → colombia → iceland
-- **Agent**: 7 tool calls, answer NOT in results
-  - Tools: {'semantic_plan': 1, 'todo_write': 1, 'entity_search': 2, 'chunk_retrieve': 2, 'submit_answer': 1}
-  - Queries: ["When was Lady Godiva's birthplace abolished?", 'Lady Godiva birthplace', 'Lady Godiva']
+- **Agent**: 7 tool calls, answer in results
+  - Tools: {'semantic_plan': 1, 'todo_write': 1, 'entity_search': 3, 'chunk_retrieve': 2}
+  - Queries: ["When was Lady Godiva's birthplace abolished?", 'Lady Godiva born', 'Lady Godiva']
 
 ### 4hop2__71753_648517_70784_79935
 
 **Question**: When was the region immediately north of the region where Israel is located and the location of the Battle of Qurah and Umm al Maradim created?
 **Gold**: 1930
 **Predicted**: (empty)
-**Family**: `INTERMEDIATE_ENTITY_ERROR` (high) — source: llm
-**Heuristic said**: `QUERY_FORMULATION` (LLM overrode)
+**Family**: `TOOL_SELECTION` (high) — source: llm
 **Optimal strategy**: text_search
-**Optimal path**: 1. Decompose the question into sub-questions: 'What region is Israel located in?', 'What is the location of the Battle of Qurah and Umm al Maradim?', 'What region is immediately north of the region Israel is located in?', 'What region is immediately north of the location of the Battle of Qurah and Umm al Maradim?', and 'When was the intersection of these two northern regions created?'. 2. For the first sub-question, use `entity_search(semantic, query='Israel region')` and then `chunk_retrieve(text, query='Israel region')` to identify 'the Levant' or 'Middle East'. 3. For the second sub-question, use `entity_search(semantic, query='Battle of Qurah and Umm al Maradim')` to identify the location, then `chunk_retrieve(text, query='Battle of Qurah and Umm al Maradim location')`. 4. Use `entity_search(semantic, query='Levant' or 'Middle East')` and then `chunk_retrieve(text, query='region north of Levant')` to find the region north of Israel's location. 5. Use `entity_search(semantic, query='Quraysh' or 'Medina')` (identified from battle search) and then `chunk_retrieve(text, query='region north of Medina')` to find the region north of the battle location. 6. Once the target region is identified (which appears to be Saudi Arabia based on the gold answer and context), use `chunk_retrieve(text, query='When was Saudi Arabia created')` or similar to find the creation date.
-**Divergence**: Tool call #7: `entity_search({'query': 'Israel', 'method': 'string', 'top_k': '5'})` incorrectly resolved Israel to 'united states'. This error stemmed from the agent's inability to correctly identify Israel's geographic region (atom a1) and its subsequent misinterpretation of the retrieved search results or internal knowledge.
-**Root cause**: The agent failed to accurately identify the geographic region of Israel, leading to incorrect subsequent searches and an inability to find the required intermediate entities.
-**Fix**: [routing] Improve the routing logic for entity resolution when multiple semantic or string searches return ambiguous or incorrect results, particularly for well-known entities like countries. Implement a confidence scoring mechanism or a disambiguation step for intermediate entity resolution.
+**Optimal path**: 1. Decompose the question into sub-questions: a) What is the region immediately north of Israel? b) What is the location of the Battle of Qurah and Umm al Maradim? c) When was the region identified in (a) and the location identified in (b) created? 
+2. For sub-question a), use `chunk_retrieve(semantic, 'region north of Israel')` to find entities like 'Syria' or 'Lebanon'.
+3. For sub-question b), use `chunk_retrieve(semantic, 'location of Battle of Qurah and Umm al Maradim')` to find the specific location, likely in Jordan or Saudi Arabia, potentially requiring entity disambiguation.
+4. Once both locations are identified, use `chunk_retrieve(text, 'When was [location from step 2] created?')` and `chunk_retrieve(text, 'When was [location from step 3] created?')`. The gold answer '1930' appears in chunks related to the creation of the Kingdom of Saudi Arabia, suggesting a connection to the region where the battle took place. The prompt implies the *creation* date of these regions, not necessarily their first mention. Therefore, a targeted text search using keywords like 'created', 'established', 'founded' for the identified locations and their historical context would be most effective.
+5. The provided gold answer suggests that the relevant creation date (1930) is associated with the establishment of the Kingdom of Saudi Arabia. This implies that the region of the Battle of Qurah and Umm al Maradim is the key to finding the creation date.
+**Divergence**: The agent failed to effectively use `chunk_retrieve` tools and instead relied heavily on graph-based tools (`entity_search`, `entity_traverse`, `relationship_search`). It identified 'the levant' as the region for Israel but did not proceed to find the region *north* of it effectively. It also struggled to find the location of the battle. Crucially, it never attempted a text search for the creation date.
+**Root cause**: The agent prematurely prioritized graph traversal over simpler text retrieval for finding geographic entities and their associated creation dates, failing to leverage the corpus's textual evidence where the answer was explicitly stated.
+**Fix**: [retrieval_config] Prioritize `chunk_retrieve(semantic, ...)` and `chunk_retrieve(text, ...)` for geographic and temporal fact retrieval. Agents should be guided to attempt direct text retrieval first for questions involving explicit dates or known entities that have textual descriptions, before resorting to graph traversal.
 
 - **Chunk search**: FOUND in 86 chunks
   - Chunk: History of Saudi Arabia (content)
@@ -81,28 +86,27 @@
 - **Graph**: answer IN graph, 10 question entities found, 9 paths
   - Shortest path (3 hops): umm al maradim → iraq → england → arsenal
 - **Agent**: 8 tool calls, answer NOT in results
-  - Tools: {'semantic_plan': 1, 'todo_write': 1, 'entity_search': 4, 'chunk_retrieve': 2}
-  - Queries: ['When was the region immediately north of the regio', 'Israel region', 'Battle of Qurah and Umm al Maradim']
+  - Tools: {'semantic_plan': 1, 'todo_write': 1, 'entity_search': 3, 'entity_info': 1, 'entity_traverse': 1, 'relationship_search': 1}
+  - Queries: ['When was the region immediately north of the regio', 'Israel region', 'Battle of Qurah and Umm al Maradim location']
 
 ### 4hop1__94201_642284_131926_89261
 
 **Question**: Where does the body of water by the city where the Southeast Library designer died empty into the Gulf of Mexico?
 **Gold**: the Mississippi River Delta
 **Predicted**: (empty)
-**Family**: `INTERMEDIATE_ENTITY_ERROR` (high) — source: llm
-**Heuristic said**: `QUERY_FORMULATION` (LLM overrode)
+**Family**: `QUERY_FORMULATION` (high) — source: llm
 **Optimal strategy**: vdb_search
-**Optimal path**: 1. Identify the Southeast Library designer: Use `entity_search(semantic, 'Southeast Library designer')` to find Ralph Rapson. 2. Find the city where Ralph Rapson died: Use `entity_search(semantic, 'Ralph Rapson death place')` or `entity_info(profile, 'Ralph Rapson')` and then `relationship_search(graph, 'Ralph Rapson')` to find his death city, which is Minneapolis. 3. Identify the body of water by Minneapolis: Use `relationship_search(graph, 'Minneapolis')` or `entity_info(profile, 'Minneapolis')` to find the Mississippi River. 4. Determine where the Mississippi River empties into the Gulf of Mexico: Use `chunk_retrieve(text, 'Mississippi River Gulf of Mexico')` to find the answer, 'the Mississippi River Delta'.
-**Divergence**: Tool call #9: `entity_info(profile, 'Ralph Rapson')`. The agent correctly identified Minneapolis as the city where Ralph Rapson died (Tool call #8), but then failed to find a body of water associated with Minneapolis. The `entity_info` call returned candidates like 'united states', 'american', 'minnesota', 'denver', none of which are bodies of water. The agent did not pursue retrieving text about Minneapolis or its surroundings to find the body of water.
-**Root cause**: The agent failed to correctly identify and retrieve information about the body of water associated with Minneapolis after resolving the designer's death city.
-**Fix**: [routing] When an entity resolution step (like finding the death city) succeeds but the subsequent step to find a related entity (like a body of water) fails with graph tools, the agent should fall back to a text-based retrieval (`chunk_retrieve`) using the resolved entity's name and keywords related to the target information (e.g., 'Minneapolis body of water').
+**Optimal path**: 1. Identify the designer of the Southeast Library. 2. Find the city where the designer died. 3. Identify the body of water associated with that city. 4. Determine which body of water empties into the Gulf of Mexico. The final answer requires connecting the Mississippi River (associated with Minneapolis) to the Gulf of Mexico.
+**Divergence**: Tool call [8]: entity_search(semantic, query='Minneapolis river Gulf of Mexico'). This query is too broad and unfocused. It resulted in entities like 'minneapolis saint paul minnesota' which don't directly help identify the river or its destination.
+**Root cause**: The agent failed to effectively query for the specific body of water associated with Minneapolis that leads to the Gulf of Mexico after identifying Minneapolis as the death city.
+**Fix**: [retrieval_config] Improve the agent's strategy for formulating downstream queries. After identifying Minneapolis, it should prioritize searching for rivers or bodies of water *in* Minneapolis, and then check their destination. For example, a more targeted subsequent query could be 'rivers in Minneapolis' followed by 'destination of Mississippi River'.
 
 - **Chunk search**: FOUND in 1 chunks
   - Chunk: Mississippi River (content)
 - **Graph**: answer IN graph, 10 question entities found, 9 paths
   - Shortest path (3 hops): southeast library → ralph rapson → minnesota → mississippi river
-- **Agent**: 11 tool calls, answer NOT in results
-  - Tools: {'semantic_plan': 1, 'resources': 1, 'todo_write': 1, 'entity_search': 3, 'chunk_retrieve': 3, 'entity_info': 1, 'relationship_search': 1}
+- **Agent**: 8 tool calls, answer NOT in results
+  - Tools: {'semantic_plan': 1, 'todo_write': 1, 'entity_search': 3, 'chunk_retrieve': 2, 'entity_info': 1}
   - Queries: ['Where does the body of water by the city where the', 'Southeast Library designer', 'Ralph Rapson death place']
 
 ### 4hop1__152562_5274_458768_33633
@@ -110,201 +114,209 @@
 **Question**: When did the explorer reach the city where the headquarters of the only group larger than Vilaiyaadu Mankatha's record label is located?
 **Gold**: August 3, 1769
 **Predicted**: (empty)
-**Family**: `INTERMEDIATE_ENTITY_ERROR` (high) — source: llm
+**Family**: `CONTROL_FLOW` (high) — source: llm
 **Heuristic said**: `QUERY_FORMULATION` (LLM overrode)
 **Optimal strategy**: vdb_search
-**Optimal path**: 1. Use entity_search to find 'Vilaiyaadu Mankatha' and get its associated record label. 2. Use entity_search to find the record label identified in step 1. 3. Use relationship_search or entity_info to find groups associated with that record label. 4. Use relationship_search or entity_info to find which of these groups is the largest. 5. Use relationship_search or entity_info to find the headquarters city of the largest group. 6. Use entity_search to find the explorer who reached that city. 7. Use relationship_search or entity_info to find when the explorer reached the city.
-**Divergence**: Tool call [8] entity_search({'query': 'Vilaiyaadu Mankatha', 'method': 'string', 'top_k': '5'}) was successful, but the subsequent searches [9] and [10] failed to retrieve the correct information. Specifically, tool call [9] entity_search({'query': 'Sony Music Entertainment', 'method': 'string', 'top_k': '5'}) returned 'spain' as the answer for atom a2, which is incorrect. The agent seems to have focused on string matching too early and didn't properly verify the information. The graph reachability indicates 'vilaiyaadu mankatha' -> 'sony music entertainment' -> 'united states' -> 'us' which suggests a path the agent did not explore.
-**Root cause**: The agent incorrectly identified 'Spain' as the answer to an intermediate question and failed to utilize graph traversal tools effectively to explore entity relationships.
-**Fix**: [routing] The agent's routing logic needs to be improved to prioritize graph traversal (like entity_traverse) when available and to better validate intermediate entity resolutions before proceeding.
+**Optimal path**: 1. Identify 'Vilaiyaadu Mankatha's record label using entity_search or relationship_search. 2. Find the group larger than that record label using relationship_search or entity_search. 3. Find the headquarters city of that larger group using entity_info or relationship_search. 4. Find the explorer and date associated with that city using chunk_retrieve.
+**Divergence**: Tool call #25 - The agent incorrectly marked atom A1 as unresolved and failed to advance due to an apparent misunderstanding of the 'completed' status, despite `entity_search` in tool call #5 resolving 'Vilaiyaadu Mankatha' to 'Sony Music Entertainment'. This blocked further progress on identifying the larger group and its headquarters.
+**Root cause**: The agent's control flow mechanism for marking atoms as resolved or unresolved was flawed, leading to a premature stop despite having sufficient information to identify intermediate entities.
+**Fix**: [harness] Refine the atom lifecycle management in the agent's harness to correctly interpret successful entity resolution and allow progression even if exact text matches for specific sub-questions are not immediately found, as long as the core entity is identified and can be used for subsequent steps.
 
 - **Chunk search**: FOUND in 1 chunks
   - Chunk: Santa Monica, California (content)
 - **Graph**: answer IN graph, 10 question entities found, 9 paths
   - Shortest path (3 hops): vilaiyaadu mankatha → sony music entertainment → united states → us
-- **Agent**: 10 tool calls, answer NOT in results
-  - Tools: {'semantic_plan': 1, 'resources': 1, 'todo_write': 1, 'chunk_retrieve': 3, 'entity_search': 3, 'submit_answer': 1}
-  - Queries: ['When did the explorer reach the city where the hea', 'Vilaiyaadu Mankatha', 'Vilaiyaadu Mankatha']
+- **Agent**: 12 tool calls, answer NOT in results
+  - Tools: {'semantic_plan': 1, 'todo_write': 2, 'entity_search': 3, 'chunk_retrieve': 2, 'relationship_search': 2, 'reason': 1, 'entity_info': 1}
+  - Queries: ['When did the explorer reach the city where the hea', 'Vilaiyaadu Mankatha record label', 'Vilaiyaadu Mankatha']
 
 ### 3hop1__305282_282081_73772
 
 **Question**: When was the start of the battle of the birthplace of the performer of III?
 **Gold**: December 14, 1814
 **Predicted**: (empty)
-**Family**: `QUERY_FORMULATION` (medium) — source: heuristic_fallback
+**Family**: `INTERMEDIATE_ENTITY_ERROR` (high) — source: llm
+**Heuristic said**: `QUERY_FORMULATION` (LLM overrode)
 **Optimal strategy**: vdb_search
-**Fix**: [prompt] Answer is in 1 chunks but agent's queries (['When was the start of the battle of the birthplace of the performer of III?', 'performer of III', 'III']) didn't surface it. The queries may not match the chunk content.
+**Optimal path**: 1. Decompose the question: 'Who is the performer of III?', 'Where is the birthplace of that performer?', 'What battle occurred at that birthplace?', 'When did that battle start?'. 2. For 'Who is the performer of III?', search for entities related to 'III' and identify its performer. The entity search for 'iii' (string match) correctly identified it as an album by Stanton Moore. Use `entity_info` or `chunk_retrieve` with 'Stanton Moore' to find his related works or information about 'III'. 3. Once Stanton Moore is identified as the performer associated with 'III', find his birthplace. Use `entity_search` for 'Stanton Moore's birthplace' or `entity_info` and then `entity_search` for the birthplace. 4. Once the birthplace is identified (e.g., New Orleans), use `entity_search` or `chunk_retrieve` with the birthplace name and 'battle' to find relevant battles. 5. Once the battle (Battle of New Orleans) is identified, use `chunk_retrieve` with the battle name and 'start date' or similar to find the start date.
+**Divergence**: Tool call [3] `entity_search(semantic, query='III performer')` and subsequent calls [4] `chunk_retrieve(text, query_text='III performer')`. The initial semantic search for 'III performer' was too broad and did not directly yield the correct entity or information. The agent then correctly identified that 'III' itself might be the entity in call [5] `entity_search(string, query='III')`, which surfaced 'iii' as an album by Stanton Moore. However, it failed to pivot effectively to find information about Stanton Moore or his album 'III' to establish him as the 'performer'. Instead, it continued searching for 'iii album performer' semantically, which was also unfruitful.
+**Root cause**: The agent struggled to correctly identify and link the entity 'III' to its performer, Stanton Moore, and then to his associated birthplace and events.
+**Fix**: [retrieval_config] Improve the routing logic to better handle ambiguous entities like 'III'. When a string search for an entity like 'iii' (album) is successful, the system should prioritize searching for related entities (like the album's artist/performer) using `entity_info` or `relationship_search` before resorting to broad semantic searches on the original query terms.
 
 - **Chunk search**: FOUND in 1 chunks
   - Chunk: Battle of New Orleans (content)
 - **Graph**: answer IN graph, 10 question entities found, 9 paths
   - Shortest path (4 hops): birthplace → colombia → united states → new jersey → b
-- **Agent**: 6 tool calls, answer NOT in results
-  - Tools: {'semantic_plan': 1, 'todo_write': 1, 'entity_search': 2, 'chunk_retrieve': 2}
-  - Queries: ['When was the start of the battle of the birthplace', 'performer of III', 'III']
+- **Agent**: 7 tool calls, answer NOT in results
+  - Tools: {'semantic_plan': 1, 'todo_write': 1, 'entity_search': 3, 'chunk_retrieve': 2}
+  - Queries: ['When was the start of the battle of the birthplace', 'III performer', 'III']
 
 ### 2hop__619265_45326
 
 **Question**: How many episodes are in season 5 of the series with The Bag or the Bat?
 **Gold**: 12
 **Predicted**: (empty)
-**Family**: `GRAPH_REPRESENTATION` (high) — source: llm
+**Family**: `RETRIEVAL_RANKING` (high) — source: llm
 **Heuristic said**: `CONTROL_FLOW` (LLM overrode)
 **Optimal strategy**: text_search
-**Optimal path**: 1. Identify the series associated with the episode title 'The Bag or the Bat' using entity_search or chunk_retrieve. 2. Once the series is identified (e.g., 'Ray Donovan'), use entity_search or chunk_retrieve to find information about 'season 5' of that series. 3. Use chunk_retrieve with a query like 'Ray Donovan season 5 episodes' or entity_info on the 'season 5' entity to find the number of episodes.
-**Divergence**: Tool call #6 and #9. After identifying 'Ray Donovan' as the series, the agent attempted to retrieve information about 'Ray Donovan season 5 episodes' using chunk_retrieve, which returned irrelevant results (The Sopranos, Jersey Shore). It then tried entity_info on 'Ray Donovan' but failed due to requiring entity_names. The subsequent entity_info call (#9) also failed to extract the necessary information about season 5 from the 'ray donovan' entity, indicating a gap in how entity information was being accessed or represented for subsequent hops.
-**Root cause**: The agent failed to properly leverage entity information and graph traversal to connect the identified series to its seasons and episode counts, instead relying on keyword searches that yielded irrelevant or insufficient data.
-**Fix**: [graph] Enhance the graph schema and/or traversal capabilities to explicitly link TV series entities to their seasons as distinct entities, and seasons to their episode counts. Ensure that entity_info and entity_traverse tools can reliably access this structured information for series, seasons, and episode counts.
+**Optimal path**: 1. Use `reason(decompose, ...)` to break the question into "What series is 'The Bag or the Bat' in?" and "How many episodes are in season 5 of that series?". 2. Use `entity_search(semantic, 'The Bag or the Bat')` or `chunk_retrieve(text, 'The Bag or the Bat')` to identify the series. The corpus indicates this is 'Ray Donovan'. 3. Use `entity_search(semantic, 'Ray Donovan season 5 episodes')` or `chunk_retrieve(text, 'Ray Donovan season 5 episodes')` to find the episode count for season 5. The gold answer is 12.
+**Divergence**: Tool call [6] chunk_retrieve({'method': 'text', 'query_text': 'Ray Donovan season 5 episodes', 'top_k': '10', 'entity_names': "['Ray Donovan']"}) failed because the retrieved chunks discussed 'The Sopranos' and 'Heroes of Mandalore' instead of 'Ray Donovan'. This indicates a retrieval ranking or corpus issue where the query returned irrelevant documents, or the relevant document was not sufficiently ranked.
+**Root cause**: The agent failed to retrieve accurate information for the second sub-question due to a combination of poor retrieval ranking and potentially irrelevant noisy results returned by the `chunk_retrieve` tool, even after identifying the correct series.
+**Fix**: [retrieval_config] Improve the ranking algorithm for `chunk_retrieve` to better handle noisy queries with specific entity constraints, or implement a re-ranking step that filters out clearly irrelevant documents based on keywords from the entity search result ('Ray Donovan').
 
 - **Chunk search**: FOUND in 1011 chunks
   - Chunk: FC Barcelona (content)
   - Chunk: FC Barcelona (content)
 - **Graph**: answer IN graph, 10 question entities found, 9 paths
   - Shortest path (3 hops): the bag or the bat → showtime → england → messi
-- **Agent**: 11 tool calls, answer in results
-  - Tools: {'semantic_plan': 1, 'todo_write': 2, 'chunk_retrieve': 2, 'entity_search': 2, 'entity_info': 2, 'entity_traverse': 1, 'relationship_search': 1}
-  - Queries: ['How many episodes are in season 5 of the series wi', 'The Bag or the Bat', 'Ray Donovan season 5']
+- **Agent**: 8 tool calls, answer in results
+  - Tools: {'semantic_plan': 1, 'todo_write': 1, 'entity_search': 3, 'chunk_retrieve': 3}
+  - Queries: ['How many episodes are in season 5 of the series wi', 'The Bag or the Bat', 'Ray Donovan season 5 episodes']
 
 ### 4hop3__754156_88460_30152_20999
 
 **Question**: How were the people from whom new coins were a proclamation of independence by the Somali Muslim Ajuran Empire expelled from the country between Thailand and A Lim's country?
 **Gold**: The dynasty regrouped and defeated the Portuguese
 **Predicted**: (empty)
-**Family**: `ANSWER_SYNTHESIS` (high) — source: llm
-**Heuristic said**: `QUERY_FORMULATION` (LLM overrode)
+**Family**: `QUERY_FORMULATION` (high) — source: llm
 **Optimal strategy**: vdb_search
-**Optimal path**: The question asks about people from whom new coins were a proclamation of independence by the Somali Muslim Ajuran Empire and how they were expelled from the country between Thailand and A Lim's country. The optimal path would have been: 1. Use `chunk_retrieve(text, 'Ajuran Empire new coins proclamation independence')` to identify the group that issued coins as a proclamation of independence. This should surface 'The dynasty regrouped and defeated the Portuguese'. 2. The question implies a geographical location related to Thailand and 'A Lim's country'. However, the gold answer 'The dynasty regrouped and defeated the Portuguese' does not mention any country or expulsion. The crucial realization is that the question is likely malformed or contains red herrings, and the answer is contained within the phrase that identifies the people. The optimal path would therefore stop at identifying the 'Portuguese' as the people and then realize that the rest of the question is not answerable or relevant to the provided gold answer.
-**Divergence**: Tool call [4]: `chunk_retrieve({'method': 'text', 'query_text': 'Ajuran new coins proclamation independence', 'top_k': '5'})`. While this call correctly identified 'Portuguese' as the people, the agent's subsequent reasoning in tool call [5] and [8] incorrectly pursued the geographical aspect ('country between Thailand and A Lim's country') and the expulsion aspect, indicating a misinterpretation of the question's structure and the scope of the available gold answer. The agent failed to recognize that the gold answer ('The dynasty regrouped and defeated the Portuguese') *is* the relevant piece of information and doesn't necessitate further retrieval about expulsions from a specific country.
-**Root cause**: The agent over-decomposed the question, attempting to answer parts of it that were not relevant to the provided gold answer, and failed to recognize that the gold answer itself contained the key information without requiring further retrieval on the expulsion details.
-**Fix**: [routing] Modify the agent's routing logic to better prioritize direct evidence for the core entities or claims in the question, especially when intermediate steps lead to dead ends or irrelevant information. If a part of the question cannot be answered by readily available information (or is a red herring based on the gold answer), the agent should recognize this and try to synthesize the answer from what *is* found, rather than getting stuck.
+**Optimal path**: The question asks about people related to the Ajuran Empire, their proclamation of independence via coins, and their expulsion from a country between Thailand and 'A Lim's country'. The optimal path would first identify the people associated with the Ajuran Empire and their coin proclamation. This could involve using `entity_search` for 'Ajuran Empire' and then `entity_info` or `relationship_search` to find related historical events or groups. Alternatively, a `chunk_retrieve(text, query)` with terms like 'Ajuran Empire coins independence' could directly find the relevant text. The gold answer 'The dynasty regrouped and defeated the Portuguese' suggests 'the Portuguese' are the expelled group. The key is to connect the Ajuran Empire to the Portuguese in the context of expulsion and independence. The corpus snippet shows 'The dynasty regrouped and defeated the Portuguese in 1613 and Siam in 1614', which directly links the Ajuran Empire (implied by 'the dynasty') to the Portuguese and a timeframe. The geographic part ('between Thailand and A Lim's country') seems to be a distractor or misinterpretation, as the answer relates to Myanmar and Siam. The agent should have prioritized grounding the historical actors and events (Ajuran Empire, coins, independence, expulsion, Portuguese) using `chunk_retrieve` or `entity_search` on these terms.
+**Divergence**: Tool call [7] `chunk_retrieve({'method': 'text', 'query_text': 'Ajuran Empire new coins proclamation independence daimyos', 'top_k': '10'})` stated 'Atom a1 completed: Myanmar. Evidence refs: chunk_9813, chunk_4039. Advancing to a2.' This indicates a misinterpretation or premature completion of atom a1, and it seems to have incorrectly identified Myanmar as the answer to 'What country is between Thailand and A Lim's country?'. The subsequent calls like [9] `relationship_search` and [13] `chunk_retrieve` focused on 'Ajuran Empire' and eventually found 'the Portuguese' (Tool call [13]), but the initial geographic misstep and the subsequent focus on 'daimyos' (which is not in the gold answer or gold answer context) delayed and confused the retrieval process.
+**Root cause**: The agent struggled to correctly interpret and ground the historical entities and events mentioned in the question, particularly by fixating on a geographically irrelevant sub-question and potentially misinterpreting candidate entities like 'daimyos'.
+**Fix**: [routing] The routing logic for question decomposition needs to better prioritize grounding key historical entities and events before or in parallel with resolving potentially complex or ambiguous geographic constraints, especially when the geographic constraint doesn't seem to directly link to the core historical actors. If a geographic constraint is highly specific and doesn't align with initial entity searches, the system should flag it for review or try alternative interpretations of the geographic scope or the entities involved.
 
 - **Chunk search**: FOUND in 1 chunks
   - Chunk: Myanmar (content)
 - **Graph**: answer IN graph, 10 question entities found, 9 paths
   - Shortest path (3 hops): somali muslim ajuran empire → indian ocean → australia → group
-- **Agent**: 10 tool calls, answer NOT in results
-  - Tools: {'semantic_plan': 1, 'resources': 1, 'todo_write': 1, 'chunk_retrieve': 5, 'entity_search': 2}
-  - Queries: ['How were the people from whom new coins were a pro', 'A Lim country', 'Portuguese expelled from country']
+- **Agent**: 13 tool calls, answer NOT in results
+  - Tools: {'semantic_plan': 1, 'todo_write': 2, 'entity_search': 5, 'chunk_retrieve': 3, 'relationship_search': 1, 'entity_info': 1}
+  - Queries: ['How were the people from whom new coins were a pro', 'between Thailand Malaysia', 'A Lim country']
 
 ### 2hop__199513_801817
 
 **Question**: What is the birthplace of the person after whom São José dos Campos was named?
 **Gold**: Nazareth
 **Predicted**: (empty)
-**Family**: `QUERY_FORMULATION` (medium) — source: heuristic_fallback
+**Family**: `QUERY_FORMULATION` (high) — source: llm
 **Optimal strategy**: text_search
-**Fix**: [prompt] Answer is in 6 chunks but agent's queries (['What is the birthplace of the person after whom São José dos Campos was named?', 'São José dos Campos named after', 'São José dos Campos person']) didn't surface it. The queries may not match the chunk content.
+**Optimal path**: The question asks for the birthplace of the person after whom São José dos Campos was named. First, identify the person: São José dos Campos is named after Saint Joseph. Then, find Saint Joseph's birthplace. The gold answer indicates Nazareth is the birthplace.
+**Divergence**: Tool call [3] and [4]. The agent used entity_search and chunk_retrieve with queries like 'São José dos Campos named after' and 'São José dos Campos'. These queries were too broad or not specific enough to identify 'Saint Joseph' as the namesake, failing to connect the city to its namesake.
+**Root cause**: The agent failed to identify the correct intermediate entity ('Saint Joseph') that links São José dos Campos to its namesake's birthplace due to ineffective query formulation for both entity and text retrieval.
+**Fix**: [retrieval_config] Improve the keyword and semantic search queries to be more robust in identifying common namesakes, especially religious figures, and to better handle variations in entity names.
 
 - **Chunk search**: FOUND in 6 chunks
   - Chunk: Sisters of St Joseph of Nazareth (content)
   - Chunk: Christian (content)
 - **Graph**: answer IN graph, 10 question entities found, 9 paths
   - Shortest path (3 hops): the person → england → new zealand → the sisters of saint joseph of nazareth
-- **Agent**: 8 tool calls, answer NOT in results
-  - Tools: {'semantic_plan': 1, 'todo_write': 1, 'entity_search': 3, 'chunk_retrieve': 2, 'entity_info': 1}
-  - Queries: ['What is the birthplace of the person after whom Sã', 'São José dos Campos named after', 'São José dos Campos person']
+- **Agent**: 7 tool calls, answer NOT in results
+  - Tools: {'semantic_plan': 1, 'todo_write': 1, 'entity_search': 2, 'chunk_retrieve': 1, 'entity_info': 1, 'relationship_search': 1}
+  - Queries: ['What is the birthplace of the person after whom Sã', 'São José dos Campos named after', 'São José dos Campos']
 
 ### 3hop1__820301_720914_41132
 
 **Question**: How many times did plague occur in the place where Crucifixion's creator died?
 **Gold**: 22
 **Predicted**: (empty)
-**Family**: `QUERY_FORMULATION` (high) — source: llm
+**Family**: `CONTROL_FLOW` (high) — source: heuristic_fallback
 **Optimal strategy**: text_search
-**Optimal path**: 1. Identify the creator of 'Crucifixion'. The gold answer location suggests the question is about Lionel Messi, and he is related to FC Barcelona, which has won the Spanish football championship 22 times. This implies 'Crucifixion's creator' might be a misdirection or an indirect reference. A more direct approach would be to look for entities related to football and the number '22'. If we assume the question is *intended* to be about a famous person associated with a place that has a history of plague and is also famous for something else (like football championships), the path would be: Identify 'Crucifixion's creator' -> Find their death location -> Search for plague occurrences in that location. However, the gold answer points to a different interpretation. The gold answer '22' appears in the context of 'FC Barcelona' and 'Spanish football champions'. This suggests the question might be poorly phrased, and the intended entity is Lionel Messi, whose career is tied to FC Barcelona. The number of plague occurrences is not directly retrievable in this context. The gold answer '22' comes from 'FC Barcelona' winning the championship. The problem is likely a misinterpretation of the question by the agent, where it should have focused on the number 22 related to FC Barcelona's championships, and ignored the plague part as irrelevant or unanswerable.
-**Divergence**: Tool call [3] and [6] - The agent's semantic and string searches for 'Crucifixion creator' and 'crucifixion painting' failed to identify Lionel Messi or FC Barcelona as relevant entities. Instead, it focused on religious or artistic interpretations of 'Crucifixion', leading it down an incorrect path.
-**Root cause**: The agent incorrectly interpreted 'Crucifixion's creator' as a literal art-historical query instead of recognizing it as a potential misdirection or a poorly phrased clue towards a different entity (Lionel Messi) strongly associated with the number 22 in a different context (football championships).
-**Fix**: [routing] Improve routing logic to handle ambiguous or potentially misdirected query components. If initial entity searches for a keyword yield no clear path to numeric answers present in corpus snippets (like '22' in FC Barcelona context), re-evaluate the interpretation of the query components or consider alternative entities that have strong numeric associations.
+**Fix**: [harness] Gold answer appeared in tool results but agent submitted empty/no answer. Likely atom lifecycle or submit_answer rejection issue.
 
 - **Chunk search**: FOUND in 469 chunks
   - Chunk: FC Barcelona (content)
   - Chunk: FC Barcelona (content)
 - **Graph**: answer IN graph, 10 question entities found, 6 paths
   - Shortest path (3 hops): crucifixion → christianity → england → messi
-- **Agent**: 7 tool calls, answer NOT in results
-  - Tools: {'semantic_plan': 1, 'todo_write': 1, 'entity_search': 3, 'chunk_retrieve': 1, 'entity_info': 1}
-  - Queries: ['How many times did plague occur in the place where', 'Crucifixion creator', 'Crucifixion artist']
+- **Agent**: 7 tool calls, answer in results
+  - Tools: {'semantic_plan': 1, 'todo_write': 1, 'entity_search': 3, 'chunk_retrieve': 1, 'submit_answer': 1}
+  - Queries: ['How many times did plague occur in the place where', 'Crucifixion creator', 'Ted Key location death']
 
 ### 3hop1__136129_87694_124169
 
 **Question**: What year did the Governor of the city where the basilica named after the same saint as the one that Mantua Cathedral is dedicated to die?
 **Gold**: 1952
 **Predicted**: (empty)
-**Family**: `QUERY_FORMULATION` (medium) — source: heuristic_fallback
+**Family**: `QUERY_FORMULATION` (high) — source: llm
 **Optimal strategy**: text_search
-**Fix**: [prompt] Answer is in 81 chunks but agent's queries (['What year did the Governor of the city where the basilica named after the same saint as the one that', 'Mantua Cathedral dedicated saint', 'Mantua Cathedral']) didn't surface it. The queries may not match the chunk content.
+**Optimal path**: 1. Decompose the question into sub-questions: A1: What saint is Mantua Cathedral dedicated to? A2: What city is the basilica named after that saint located in? A3: Who is the Governor of that city? A4: What year did that Governor die?
+2. For A1, use `entity_search(semantic, 'Mantua Cathedral dedication')` or `chunk_retrieve(text, 'Mantua Cathedral dedication')` to find it's dedicated to Saint Peter.
+3. For A2, use `entity_search(semantic, 'basilica Saint Peter')` or `chunk_retrieve(text, 'basilica Saint Peter city')` to find that St. Peter's Basilica is in Rome.
+4. For A3, use `entity_search(semantic, 'Governor of Rome')` to find that the Governor of Vatican City (which is in Rome) is Camillo Serafini.
+5. For A4, use `entity_info(profile, 'Camillo Serafini')` or `chunk_retrieve(text, 'Camillo Serafini death year')` to find his death year is 1952.
+**Divergence**: Tool call [3], entity_search(semantic, 'Mantua Cathedral dedicated to'). The query was too broad, returning entities like 'saint corbinian' instead of the correct 'saint peter' and thus failing to resolve A1.
+**Root cause**: The agent's initial entity search queries for intermediate entities were not precise enough, leading to incorrect or unresolved intermediate steps and a failure to identify the correct path.
+**Fix**: [harness] Refine the agent's default query generation for entity searches. When a question involves an entity with a specific attribute (like dedication), the system should favor queries that directly probe that attribute, e.g., 'Mantua Cathedral dedication' instead of 'Mantua Cathedral dedicated to'. Also, improve the semantic search to better distinguish between similar-sounding entities when disambiguation is needed.
 
 - **Chunk search**: FOUND in 81 chunks
   - Chunk: Member states of NATO (content)
   - Chunk: Estádio do Arruda (content)
 - **Graph**: answer IN graph, 10 question entities found, 9 paths
   - Shortest path (3 hops): mantua cathedral → italy → england → arsenal
-- **Agent**: 10 tool calls, answer NOT in results
-  - Tools: {'semantic_plan': 1, 'todo_write': 2, 'entity_search': 3, 'chunk_retrieve': 3, 'submit_answer': 1}
-  - Queries: ['What year did the Governor of the city where the b', 'Mantua Cathedral dedicated saint', 'Mantua Cathedral']
+- **Agent**: 11 tool calls, answer NOT in results
+  - Tools: {'semantic_plan': 1, 'todo_write': 3, 'entity_search': 3, 'chunk_retrieve': 3, 'submit_answer': 1}
+  - Queries: ['What year did the Governor of the city where the b', 'Mantua Cathedral dedicated to', 'Mantua Cathedral']
 
 ### 2hop__354635_174222
 
 **Question**: What company succeeded the owner of Empire Sports Network?
 **Gold**: Time Warner Cable
 **Predicted**: (empty)
-**Family**: `RETRIEVAL_RANKING` (high) — source: llm
+**Family**: `ANSWER_SYNTHESIS` (high) — source: llm
 **Heuristic said**: `CONTROL_FLOW` (LLM overrode)
 **Optimal strategy**: text_search
-**Optimal path**: 1. Decompose the question: 'What company succeeded the owner of Empire Sports Network?' into two sub-questions: a) Who owned Empire Sports Network? b) What company succeeded that owner?
-2. For sub-question a), use `entity_search(semantic, 'Empire Sports Network owner')` or `chunk_retrieve(text, 'Empire Sports Network owner')` to find the owner entity. The gold answer indicates this is 'Adelphia Communications Corporation'.
-3. For sub-question b), use `chunk_retrieve(text, 'Adelphia Communications Corporation successor')` or `entity_search(semantic, 'Adelphia Communications Corporation successor')` to find the successor company. The gold answer is 'Time Warner Cable', which appears in the provided chunks. Alternatively, `entity_info` on 'Adelphia Communications Corporation' might reveal its successor if the graph is rich.
-4. Once both parts are answered, use `reason(answer, context)` to synthesize the final answer.
-**Divergence**: Tool call #5 (`chunk_retrieve({'method': 'text', 'query_text': 'Adelphia successor company'})`) and subsequent calls. The agent successfully identified 'Adelphia Communications Corporation' as the owner in step 4. However, in step 5, it failed to retrieve the successor company even though the gold answer 'Time Warner Cable' is present in the corpus chunks (e.g., 'Windjammer Communications' chunk mentions acquisition from bankrupt Adelphia by Time Warner Cable). The agent then incorrectly concluded that 'Atom a2 remains unresolved: The evidence does not mention which company succeeded Adelphia Communications Corporation.' It continued to search for the successor via `entity_search` and `entity_info` which did not yield the correct result in this instance, failing to leverage the available text evidence.
-**Root cause**: The agent failed to properly interpret or leverage the evidence found in the corpus, specifically the chunk mentioning Time Warner Cable's acquisition from bankrupt Adelphia, leading to an incorrect conclusion that the successor information was missing.
-**Fix**: [harness] Improve the agent's ability to synthesize information from retrieved chunks, particularly when the answer is indirectly stated or requires inferring a successor relationship from acquisition details. This could involve refining the prompt to encourage cross-chunk reasoning or implementing a post-retrieval analysis step to explicitly look for successor/predecessor relationships in relevant text.
+**Optimal path**: 1. Decompose the question into: 'Who owned Empire Sports Network?' and 'What company succeeded the owner of Empire Sports Network?'. 2. Use `entity_search(semantic, 'Empire Sports Network owner')` or `chunk_retrieve(text, 'Empire Sports Network owner')` to find the owner. The gold answer states Adelphia Communications Corporation. 3. Use `relationship_search(graph, 'adelphia')` or `chunk_retrieve(text, 'Adelphia succeeded by company')` to find the successor. The gold answer indicates 'Time Warner Cable' acquired systems from bankrupt Adelphia.
+**Divergence**: Tool call #5: `chunk_retrieve({'method': 'text', 'query_text': 'Adelphia succeeded by company', 'top_k': '5', 'entity_names': "['Adelphia Communications Corporation']"})` failed to find the successor because the query was too generic and didn't leverage the direct relationship hint from tool call #8. Tool call #8 `relationship_search({'method': 'graph', 'entity_ids': "['adelphia']", 'top_k': '10'})` successfully found 'time warner cable' in step [8] of the trace, but the agent did not act on this information to resolve atom a2. Instead, it continued to try text retrieval and entity search, failing to synthesize the answer from the available graph information.
+**Root cause**: The agent failed to synthesize the answer from available graph data, prioritizing further text retrieval even after a direct graph relationship indicated the correct successor.
+**Fix**: [routing] Modify the agent's routing logic to prioritize using information from graph traversal tools (like relationship_search) when it directly links entities relevant to subsequent sub-questions, especially when text-based retrieval struggles.
 
 - **Chunk search**: FOUND in 2 chunks
   - Chunk: Windjammer Communications (content)
   - Chunk: Raleigh, North Carolina (content)
 - **Graph**: answer IN graph, 10 question entities found, 9 paths
   - Shortest path (3 hops): empire sports network → new york → canada → war
-- **Agent**: 7 tool calls, answer in results
-  - Tools: {'semantic_plan': 1, 'todo_write': 1, 'entity_search': 2, 'chunk_retrieve': 2, 'entity_info': 1}
-  - Queries: ['What company succeeded the owner of Empire Sports ', 'Empire Sports Network owner', 'Adelphia Communications Corporation successor']
+- **Agent**: 8 tool calls, answer in results
+  - Tools: {'semantic_plan': 1, 'todo_write': 1, 'entity_search': 2, 'chunk_retrieve': 2, 'entity_info': 1, 'relationship_search': 1}
+  - Queries: ['What company succeeded the owner of Empire Sports ', 'Empire Sports Network owner', 'Adelphia successor company']
 
 ### 3hop1__849312_503371_21711
 
 **Question**: When was the Palau de la Generalitat constructed in the city where Martin from the region where Perdiguera is located died?
 **Gold**: built in the 15th century
 **Predicted**: (empty)
-**Family**: `QUERY_FORMULATION` (high) — source: llm
+**Family**: `INTERMEDIATE_ENTITY_ERROR` (high) — source: llm
+**Heuristic said**: `QUERY_FORMULATION` (LLM overrode)
 **Optimal strategy**: vdb_search
-**Optimal path**: 1. Identify 'Palau de la Generalitat' and find its city. 2. Find the city where Martin died. 3. Determine the region for Perdiguera. 4. Link Martin to the region. 5. Find the city associated with Martin's death in that region. 6. Find the construction date for Palau de la Generalitat. The most direct path is to find the city of Palau de la Generalitat first, then determine the region associated with Perdiguera, and finally search for 'Martin' and their death in that region's city. The gold answer is directly available by searching for 'Palau de la Generalitat' and its construction date. The question has a core named entity 'Palau de la Generalitat' and asks for its construction date, but obfuscates the location by adding conditional clauses about 'Martin' and 'Perdiguera'. The optimal strategy would be to focus on the primary entity and its directly associated information, then use the secondary information to confirm the context if necessary, or realize the secondary information might be a distractor if the primary entity's location is already known. Specifically, 'Palau de la Generalitat' is in Barcelona. The question asks for the construction date of 'Palau de la Generalitat' in the city where Martin from the region where Perdiguera is located died. If we find 'Palau de la Generalitat' is in Barcelona, the question simplifies to 'When was the Palau de la Generalitat (in Barcelona) constructed, in the city where Martin from the region where Perdiguera is located died?'. If Barcelona is that city, then we retrieve the construction date. The answer is in a chunk that directly mentions 'Palau de la Generalitat' and its construction date, implying a direct retrieval is possible if the entity is correctly identified and searched. The most efficient path is to retrieve information about 'Palau de la Generalitat' directly and find its construction date, potentially using `entity_search` and then `entity_info` or `chunk_retrieve` on the entity's associated document. The additional conditions about Martin and Perdiguera are complex and potentially misleading if not handled carefully. Given the gold answer states 'built in the 15th century' and is found in a chunk about 'Gothic architecture' mentioning 'Palau de la Generalitat in Barcelona, built in the 15th century', the optimal path is to search for 'Palau de la Generalitat construction date' or retrieve information about 'Palau de la Generalitat' and extract the date. The graph reachability shows a path from 'palau de la generalitat' to 'barcelona' to 'england' to '15th century', indicating graph traversal can work, but direct entity lookup on 'Palau de la Generalitat' for its description or associated facts should be prioritized. A simpler path: 1. Use `entity_search(semantic, 'Palau de la Generalitat')` or `chunk_retrieve(semantic, 'Palau de la Generalitat')` to find information about it. 2. Extract the city and construction date from the retrieved information. The question is designed to make the agent trace through 'Martin' and 'Perdiguera', which is unnecessary if the location of 'Palau de la Generalitat' is known and the question implies this specific building in its city. The agent failed to realize that 'Palau de la Generalitat' is a specific entity whose location can be found directly, and then the question becomes about that specific city. The current strategy tried to resolve the 'Martin' and 'Perdiguera' part first, which seems to be a misinterpretation of the question's focus.
-**Divergence**: The agent's initial semantic planning (step 1) broke the question into sub-questions about 'Perdiguera region', 'Martin', and 'city where Martin died', before even directly querying 'Palau de la Generalitat'. This indicates a failure to prioritize the main entity of the question. The agent then spent multiple turns (steps 3, 4, 6, 7, 8, 9) trying to resolve the 'Martin' and 'Perdiguera' path, which ultimately did not lead to the answer and resulted in an unresolved atom (step 27). Step 9 eventually searched for 'Palau de la Generalitat' but its query was 'france Palau de la Generalitat' which is incorrect. The agent should have directly searched for 'Palau de la Generalitat' without the 'france' prefix or focused on finding its location first, and then its construction date.
-**Root cause**: The agent's decomposition strategy incorrectly prioritized resolving complex conditional clauses about 'Martin' and 'Perdiguera' over directly retrieving information about the primary entity 'Palau de la Generalitat'.
-**Fix**: [routing] The agent's reasoning engine should be updated to identify the main subject entity in a question first, and attempt to retrieve its direct attributes (like location, description, date) before diving into complex conditional clauses about other entities or locations, especially when those clauses are meant to constrain the location of the primary entity.
+**Optimal path**: 1. Identify the city where Martin from the region where Perdiguera is located died. This requires finding the region of Perdiguera (Aragon), then identifying 'Martin' associated with Aragon who died, and finally the city of his death. 2. Once the city is identified, find the construction date of the Palau de la Generalitat in that city.
+**Divergence**: Tool call [7] chunk_retrieve({'method': 'semantic', 'query_text': 'Martin from Aragon died in city', 'top_k': '10', 'entity_names': "['Martin', 'Aragon']", 'document_collection_id': 'MuSiQue_chunks'}) failed because the corpus did not contain information about a 'Martin' from Aragon dying in a specific city, even though the question implies such a person exists and is relevant. The agent then incorrectly tried to search for 'Martin humane city died' in tool call [9] and [20].
+**Root cause**: The agent failed to find the intermediate entity (Martin and his death city) because the available corpus lacked the necessary information, leading to a cascade of incorrect searches and an inability to bridge to the final answer.
+**Fix**: [corpus] Augment the corpus with information linking historical figures (like Martin the Humane, if that was the intended subject) to their places of death, or add information that clarifies if such a person is not relevant to the corpus's scope.
 
 - **Chunk search**: FOUND in 1 chunks
   - Chunk: Gothic architecture (content)
 - **Graph**: answer IN graph, 10 question entities found, 9 paths
   - Shortest path (3 hops): palau de la generalitat → barcelona → england → 15th century
-- **Agent**: 9 tool calls, answer NOT in results
-  - Tools: {'semantic_plan': 1, 'todo_write': 2, 'entity_search': 4, 'entity_info': 1, 'chunk_retrieve': 1}
-  - Queries: ['When was the Palau de la Generalitat constructed i', 'Perdiguera region', 'Perdiguera']
+- **Agent**: 10 tool calls, answer NOT in results
+  - Tools: {'semantic_plan': 1, 'resources': 1, 'todo_write': 1, 'entity_search': 3, 'chunk_retrieve': 3, 'relationship_search': 1}
+  - Queries: ['When was the Palau de la Generalitat constructed i', 'Perdiguera region', 'Martin Aragon died city']
 
 ### 2hop__731956_126089
 
 **Question**: Who was in charge of the place where Castricum is located?
 **Gold**: Johan Remkes
 **Predicted**: (empty)
-**Family**: `RETRIEVAL_RANKING` (high) — source: llm
-**Heuristic said**: `QUERY_FORMULATION` (LLM overrode)
+**Family**: `INTERMEDIATE_ENTITY_ERROR` (high) — source: llm
+**Heuristic said**: `RETRIEVAL_RANKING` (LLM overrode)
 **Optimal strategy**: vdb_search
-**Optimal path**: The question asks who was in charge of the place where Castricum is located. First, determine the location of Castricum. The graph reachability shows Castricum is located in North Holland. Second, find who is in charge of North Holland. The gold answer is in a chunk mentioning 'The King's Commissioner of North Holland is Johan Remkes'. Therefore, the optimal path would be: 1. Use `entity_search` for 'Castricum' to find its associated geographical region (North Holland). 2. Use `entity_search` with 'North Holland' as the query and potentially filter for 'leader' or 'commissioner' roles, or use `entity_traverse` with 'North Holland' as a seed and `onehop` to explore related entities, looking for a political leader. 3. If graph traversal is insufficient, use `chunk_retrieve` with the identified location 'North Holland' and keywords like 'in charge' or 'commissioner' to find the specific person.
-**Divergence**: Tool call [7] `entity_search({'query': 'North Holland governor', 'method': 'semantic', 'top_k': '10'})`. This call attempted to find the governor of North Holland, which is a good semantic query. However, the gold answer 'Johan Remkes' was not returned, indicating the semantic search did not effectively match the text describing him as 'The King's Commissioner of North Holland'. The agent then failed to pursue alternative retrieval strategies like keyword search on 'North Holland' and 'commissioner' or explicitly seeking the role of 'King's Commissioner'.
-**Root cause**: The agent failed to retrieve the correct entity because its semantic search for 'North Holland governor' did not align with the phrasing 'King's Commissioner of North Holland' in the corpus, and it did not fall back to more robust keyword or graph traversal methods.
-**Fix**: [retrieval_config] Enhance the retrieval system to better handle variations in job titles and governmental roles. This could involve expanding the vocabulary for common roles, implementing fuzzy matching for entity names and descriptions, or incorporating a hybrid search approach that combines semantic search with keyword/BM25 search when semantic results are suboptimal or do not contain the target entity.
+**Optimal path**: 1. Use entity_search(semantic, 'Castricum') to find the entity for Castricum. 2. Use entity_traverse(onehop, 'Castricum') to find its direct neighbors. 3. Identify 'North Holland' as the administrative location from the neighbors. 4. Use entity_search(semantic, 'North Holland') or relationship_search('North Holland') to find related entities. 5. Use entity_traverse(onehop, 'North Holland') or entity_info('North Holland') to find the person in charge. The graph path shows 'Castricum' -> 'North Holland' -> 'Johan Remkes', suggesting a traversal approach is best. Alternatively, after finding 'North Holland', a chunk_retrieve(text, 'Who was in charge of North Holland?') could work.
+**Divergence**: Tool call [5] where entity_search(string, 'Castricum') completed atom a1 with 'the beach'. This incorrectly identified the administrative location and prevented the agent from proceeding to find the person in charge of 'North Holland'. The agent should have used the results from the earlier semantic search and graph traversal for atom a1, specifically the 'north holland' neighbor.
+**Root cause**: The agent incorrectly identified 'the beach' as the administrative location for Castricum, likely due to a misinterpretation of the entity_search results, which caused it to fail to connect to the correct administrative region and its leader.
+**Fix**: [harness] The agent's control flow needs to be improved to better handle ambiguous or incorrect intermediate entity resolutions. It should prioritize graph traversal results for location-based sub-questions when semantic searches yield plausible but incorrect entities, and it should have a mechanism to re-evaluate or backtrack if subsequent steps lead to dead ends or nonsensical results.
 
 - **Chunk search**: FOUND in 1 chunks
   - Chunk: North Holland (content)
 - **Graph**: answer IN graph, 8 question entities found, 6 paths
   - Shortest path (2 hops): castricum → north holland → johan remkes
-- **Agent**: 7 tool calls, answer NOT in results
-  - Tools: {'semantic_plan': 1, 'todo_write': 1, 'entity_search': 3, 'chunk_retrieve': 2}
+- **Agent**: 6 tool calls, answer NOT in results
+  - Tools: {'semantic_plan': 1, 'todo_write': 1, 'entity_search': 3, 'entity_traverse': 1}
   - Queries: ['Who was in charge of the place where Castricum is ', 'Castricum', 'Castricum North Holland']
