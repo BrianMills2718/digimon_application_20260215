@@ -230,7 +230,7 @@ See `docs/adr/013-answer-critical-fact-representation.md`.
 
 **Latest results**: See `CURRENT_STATUS.md` for the single source of truth on benchmark numbers.
 
-**50q MuSiQue (2026-03-26)**: Baseline 20.0% → GraphRAG 42.0% LLM-judge (2.1x, 15 graph wins). Plans #14-#16 complete, Plan #17 in progress.
+**50q MuSiQue (2026-03-26)**: Baseline 20.0% → GraphRAG 42.0% LLM-judge (2.1x, 15 graph wins). Plans #14-#16 complete, Plan #17 active. **Note (2026-04-02)**: Plan #17 found results are stochastic (sentinel question 731956 has ~50% pass rate). Prompt tuning alone eliminated the ANSWER_SYNTHESIS failure family. Retrieval stagnation (4-turn limit) is the remaining bottleneck, not graph architecture.
 
 **Routing model**: `openrouter/openai/gpt-5.4-mini` (400K context, strong tool calling, $1.69/M blended). Replaces gemini-2.5-flash as the recommended benchmark agent model.
 
