@@ -15,12 +15,15 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from Core.MCP.tool_metadata import get_tool_operational_metadata
+
 
 # ---- Always-loaded tools ----
-# These 5 tools are always visible to the agent regardless of disclosure mode.
-# They cover: discovery (2), context inspection (1), answer generation (1),
-# and benchmark submission (1).
+# These 6 tools are always visible to the agent regardless of disclosure mode.
+# They cover: discovery/catalog (3), context inspection (1), answer generation
+# (1), and benchmark submission (1).
 ALWAYS_LOADED_TOOLS: list[str] = [
+    "list_tool_catalog",
     "list_operators",
     "get_compatible_successors",
     "list_available_resources",
@@ -43,6 +46,20 @@ class DeferredToolInfo:
     name: str
     description: str
     parameters: dict[str, Any] = field(default_factory=dict)
+    cost_tier: str = "medium"
+    reliability_tier: str = "beta"
+    notes: str = ""
+
+    def to_result_dict(self) -> dict[str, Any]:
+        """Return a JSON-ready representation for MCP search responses."""
+        return {
+            "name": self.name,
+            "description": self.description,
+            "parameters": self.parameters,
+            "cost_tier": self.cost_tier,
+            "reliability_tier": self.reliability_tier,
+            "notes": self.notes,
+        }
 
 
 class DeferredToolRegistry:
@@ -56,18 +73,33 @@ class DeferredToolRegistry:
         """Initialize an empty deferred tool registry."""
         self._tools: dict[str, DeferredToolInfo] = {}
 
-    def register(self, name: str, description: str, parameters: dict[str, Any] | None = None) -> None:
+    def register(
+        self,
+        name: str,
+        description: str,
+        parameters: dict[str, Any] | None = None,
+        cost_tier: str | None = None,
+        reliability_tier: str | None = None,
+        notes: str | None = None,
+    ) -> None:
         """Add a deferred tool's metadata to the registry.
 
         Args:
             name: Tool function name (e.g. 'entity_vdb_search').
             description: Tool docstring or short description.
             parameters: JSON schema dict for the tool's parameters.
+            cost_tier: Coarse relative cost hint for tool selection.
+            reliability_tier: Coarse reliability hint for tool selection.
+            notes: Free-text explanation of the operational metadata.
         """
+        operational = get_tool_operational_metadata(name)
         self._tools[name] = DeferredToolInfo(
             name=name,
             description=description,
             parameters=parameters or {},
+            cost_tier=cost_tier or operational.cost_tier,
+            reliability_tier=reliability_tier or operational.reliability_tier,
+            notes=notes or operational.notes,
         )
 
     def get(self, name: str) -> DeferredToolInfo | None:
@@ -162,10 +194,6 @@ def search_available_tools_impl(
 
     scored.sort(key=lambda x: x[0], reverse=True)
     return [
-        {
-            "name": tool.name,
-            "description": tool.description,
-            "parameters": tool.parameters,
-        }
+        tool.to_result_dict()
         for _, tool in scored[:top_k]
     ]

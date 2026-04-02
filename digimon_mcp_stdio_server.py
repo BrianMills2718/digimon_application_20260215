@@ -72,6 +72,7 @@ from Core.MCP.progressive_disclosure import (
     search_available_tools_impl,
     should_defer_tool,
 )
+from Core.MCP.tool_metadata import get_tool_operational_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,7 @@ _BENCHMARK_HIDDEN_TOOLS: set[str] = {
     "meta_decompose_question", "meta_synthesize_answers",
     # Config / discovery (redundant with prompt)
     "get_config", "set_agentic_model", "list_operators", "get_compatible_successors",
-    "list_graph_types",
+    "list_graph_types", "list_tool_catalog",
     # Cross-modal (not relevant for QA)
     "convert_modality", "validate_conversion", "select_analysis_mode",
     "list_modality_conversions",
@@ -136,6 +137,7 @@ _BENCHMARK_HIDDEN_TOOLS_LEVEL2: set[str] = {
 # Short descriptions for benchmark mode — the system prompt already explains
 # tool usage in detail, so verbose docstrings in the schema are redundant tokens.
 _BENCHMARK_SHORT_DESCS: dict[str, str] = {
+    "list_tool_catalog": "List MCP tools with cost/reliability metadata.",
     "entity_vdb_search": "Semantic vector search over entities.",
     "entity_onehop": "Get all neighbor entities of a given entity.",
     "entity_ppr": "Personalized PageRank from seed entities.",
@@ -8682,7 +8684,8 @@ async def search_available_tools(query: str, top_k: int = 5) -> str:
         top_k: Maximum number of results to return (default 5)
 
     Returns:
-        JSON list of matching tools with name, description, and parameters.
+        JSON list of matching tools with name, description, parameters,
+        cost_tier, reliability_tier, and metadata notes.
     """
     if not PROGRESSIVE_DISCLOSURE or len(_deferred_registry) == 0:
         return json.dumps({
@@ -8694,6 +8697,79 @@ async def search_available_tools(query: str, top_k: int = 5) -> str:
         "results": results,
         "total_deferred_tools": len(_deferred_registry),
     }, indent=2)
+
+
+def _catalog_entry_for_tool(
+    *,
+    name: str,
+    description: str,
+    parameters: dict[str, Any],
+    visibility: str,
+) -> dict[str, Any]:
+    """Build a JSON-safe tool-catalog entry with operational metadata."""
+    operational = get_tool_operational_metadata(name)
+    return {
+        "name": name,
+        "description": description,
+        "parameters": parameters,
+        "visibility": visibility,
+        "cost_tier": operational.cost_tier,
+        "reliability_tier": operational.reliability_tier,
+        "notes": operational.notes,
+    }
+
+
+def _collect_tool_catalog() -> list[dict[str, Any]]:
+    """Collect the current MCP tool catalog, including deferred tools."""
+    catalog: list[dict[str, Any]] = []
+    visible_names = sorted(mcp._tool_manager._tools.keys())
+    for tool_name in visible_names:
+        tool_obj = mcp._tool_manager._tools[tool_name]
+        catalog.append(
+            _catalog_entry_for_tool(
+                name=tool_name,
+                description=tool_obj.description or "",
+                parameters=tool_obj.parameters if isinstance(tool_obj.parameters, dict) else {},
+                visibility="visible",
+            )
+        )
+
+    for deferred in _deferred_registry.all_tools():
+        catalog.append({**deferred.to_result_dict(), "visibility": "deferred"})
+
+    catalog.sort(key=lambda item: (0 if item["visibility"] == "visible" else 1, item["name"]))
+    return catalog
+
+
+@mcp.tool()
+async def list_tool_catalog(include_parameters: bool = True) -> str:
+    """List registered DIGIMON MCP tools with coarse cost/reliability metadata.
+
+    This is the authoritative discovery surface for tool selection heuristics.
+    The current metadata is dummy tiering intended for planner guidance and
+    future budget attribution, not measured telemetry.
+
+    Args:
+        include_parameters: Include each tool's JSON parameter schema. Disable
+            when you only need names, descriptions, and operational metadata.
+
+    Returns:
+        JSON object with every currently registered tool, including deferred
+        tools when progressive disclosure is active.
+    """
+    tools = _collect_tool_catalog()
+    if not include_parameters:
+        tools = [{k: v for k, v in tool.items() if k != "parameters"} for tool in tools]
+
+    return json.dumps(
+        {
+            "tools": tools,
+            "total_tools": len(tools),
+            "visible_tools": sum(1 for tool in tools if tool["visibility"] == "visible"),
+            "deferred_tools": sum(1 for tool in tools if tool["visibility"] == "deferred"),
+        },
+        indent=2,
+    )
 
 
 # =============================================================================

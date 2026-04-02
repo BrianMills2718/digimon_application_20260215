@@ -51,7 +51,15 @@ class SharedContextStore:
 ```python
 # tools/tool_registry.py
 class MCPToolRegistry:
-    def register_tool(self, tool_id: str, handler: Callable)
+    def register_tool(
+        self,
+        tool_id: str,
+        handler: Callable,
+        *,
+        cost_tier: str = "medium",
+        reliability_tier: str = "beta",
+        notes: str = "",
+    )
     def get_tool(self, tool_id: str) -> MCPTool
     def list_tools(self) -> List[dict]
 ```
@@ -86,6 +94,11 @@ class MCPAgent:
     "status": "success",
     "result": {
         // Method-specific results
+    },
+    "metadata": {
+        "cost_tier": "medium",
+        "reliability_tier": "beta",
+        "notes": "Coarse operational hint for planning"
     }
 }
 ```
@@ -176,3 +189,16 @@ print(f"Operation took {elapsed*1000:.1f}ms")
 # Check WebSocket state
 print(f"WebSocket state: {websocket.state}")
 ```
+## Tool Metadata
+
+DIGIMON's maintained stdio MCP surface exposes coarse operational metadata per
+registered tool:
+
+- `cost_tier`: relative expected spend/latency bucket (`low`, `medium`, `high`)
+- `reliability_tier`: confidence bucket for planner trust (`stable`, `beta`, `experimental`)
+- `notes`: short explanation of why the tool was bucketed that way
+
+The live `digimon-kgrag` server exposes this through `list_tool_catalog`, and
+`search_available_tools` includes the same fields for deferred tools when
+progressive disclosure is enabled. These values are placeholders for planner
+heuristics and future budget attribution, not measured observability data.

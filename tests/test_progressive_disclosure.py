@@ -93,8 +93,9 @@ class TestAlwaysLoadedTools:
     """Verify the always-loaded tool set."""
 
     def test_always_loaded_tools_list(self) -> None:
-        """ALWAYS_LOADED_TOOLS contains the expected 5 tools."""
+        """ALWAYS_LOADED_TOOLS contains the expected discovery/core tools."""
         expected = {
+            "list_tool_catalog",
             "list_operators",
             "get_compatible_successors",
             "list_available_resources",
@@ -102,7 +103,7 @@ class TestAlwaysLoadedTools:
             "submit_answer",
         }
         assert set(ALWAYS_LOADED_TOOLS) == expected
-        assert len(ALWAYS_LOADED_TOOLS) == 5
+        assert len(ALWAYS_LOADED_TOOLS) == 6
 
 
 class TestShouldDeferTool:
@@ -149,6 +150,9 @@ class TestDeferredToolRegistry:
         assert tool.name == "my_tool"
         assert tool.description == "Does something"
         assert tool.parameters == {"param": "schema"}
+        assert tool.cost_tier == "medium"
+        assert tool.reliability_tier == "beta"
+        assert tool.notes
 
     def test_contains(self) -> None:
         """Containment check works."""
@@ -206,6 +210,9 @@ class TestSearchAvailableTools:
             assert "name" in r
             assert "description" in r
             assert "parameters" in r
+            assert "cost_tier" in r
+            assert "reliability_tier" in r
+            assert "notes" in r
 
     def test_search_prioritizes_name_match(self, populated_registry: DeferredToolRegistry) -> None:
         """Exact name substring match is ranked higher than description-only match."""
