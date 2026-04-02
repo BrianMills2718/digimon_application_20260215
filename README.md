@@ -69,9 +69,9 @@ embedding:
 ### Canonical Docs
 
 - `FUNCTIONALITY.md` — supported user workflow and non-goals
-- `docs/ACTIVE_DOCS.md` — current doc index and archive policy
-- `docs/SYSTEM_OVERVIEW.md` — architecture and benchmark caveats
-- `docs/COMPETITIVE_ANALYSIS.md` — evidence, baselines, and open thesis
+- `(removed — doc did not exist)` — current doc index and archive policy
+- `(removed — doc did not exist)` — architecture and benchmark caveats
+- `(removed — doc did not exist)` — evidence, baselines, and open thesis
 - `docs/plans/03_prove_adaptive_routing.md` — active investment-decision plan
 
 Historical API/UI/integration docs have been moved under `docs/archive/` and are not supported surfaces.
@@ -98,6 +98,13 @@ Historical API/UI/integration docs have been moved under `docs/archive/` and are
 
 - **MCP server**: `digimon_mcp_stdio_server.py` (50+ tools)
 - **Direct Python**: `eval/run_agent_benchmark.py --backend direct` (in-process, no MCP overhead)
+
+The MCP server now exposes a `list_tool_catalog` discovery tool that returns
+per-tool `cost_tier` and `reliability_tier` metadata, plus explanatory `notes`.
+These are currently dummy planning hints for tool selection and budget
+attribution; they are not calibrated runtime telemetry yet. When progressive
+disclosure is enabled, `search_available_tools` returns the same metadata for
+deferred tools.
 
 ### Two-Model Design
 

@@ -1,6 +1,6 @@
 # Plan #17: Re-Test Thesis with Clean Architecture
 
-**Status:** In Progress
+**Status:** Complete (50q: 42% LLM-judge, ANSWER_SYNTHESIS eliminated via prompt tuning)
 **Type:** implementation
 **Priority:** High
 **Blocked By:** Plan #14 ✅, Plan #15 ✅, Plan #16 ✅ — all prerequisites met

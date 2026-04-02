@@ -36,7 +36,7 @@ integration.
 | 14 | [Fix llm_client / Unblock Benchmark Runner](14_fix_llm_client_benchmark_runner.md) | High | ✅ Complete | #15, #17 |
 | 15 | [Operator Consolidation (28→8-10 tools)](15_operator_consolidation.md) | High | ✅ Complete | #17 |
 | 16 | [HippoRAG-Aligned Build Attributes](16_build_attributes_sota_alignment.md) | High | ✅ Complete | #17 |
-| 17 | [Re-Test Thesis with Clean Architecture](17_retest_thesis.md) | High | 🚧 In Progress | - |
+| 17 | [Re-Test Thesis with Clean Architecture](17_retest_thesis.md) | High | ✅ Complete (50q: 42% LLM-judge, prompt tuning eliminated ANSWER_SYNTHESIS) | - |
 | 18 | [PTC Validation (conditional)](18_ptc_validation.md) | Medium | 📋 Planned | - |
 | 20 | [Tool Linearization + Restore Planning Tools](20_tool_linearization_and_planning_restore.md) | High | ✅ Complete | - |
 | 21 | [Autonomous Failure-Iteration Sprint](21_autonomous_failure_iteration_sprint.md) | High | 🚧 In Progress | Decision-grade Plan #17 rerun |
