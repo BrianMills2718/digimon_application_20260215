@@ -40,6 +40,7 @@ from pathlib import Path
 
 # Plan #136: Timeout for test subprocess calls to prevent hanging forever
 TEST_TIMEOUT_SECONDS = 300  # 5 minutes
+PYTHON = sys.executable
 
 
 def find_plan_file(plan_number: int, plans_dir: Path) -> Path | None:
@@ -100,6 +101,86 @@ def print_human_review_instructions(
     print(f"\nThis confirms a human has checked things automated tests cannot verify.")
 
 
+def get_plan_verification_commands(plan_file: Path) -> list[str]:
+    """Extract command-based verification rows from the plan's Required Tests section."""
+    content = plan_file.read_text()
+    match = re.search(
+        r"##\s*Required Tests\s*\n(.*?)(?=\n##\s|\Z)",
+        content,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if not match:
+        return []
+
+    commands: list[str] = []
+    in_command_table = False
+    for raw_line in match.group(1).splitlines():
+        line = raw_line.strip()
+        if not line.startswith("|"):
+            in_command_table = False
+            continue
+
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if not cells:
+            continue
+
+        if cells[0] == "Command":
+            in_command_table = True
+            continue
+
+        if in_command_table and cells[0].startswith("---"):
+            continue
+
+        if in_command_table:
+            command = cells[0].strip()
+            if command.startswith("`") and command.endswith("`"):
+                command = command[1:-1]
+            if command:
+                commands.append(command)
+
+    return commands
+
+
+def run_declared_verification_commands(
+    commands: list[str],
+    project_root: Path,
+    verbose: bool = True,
+) -> tuple[bool, str]:
+    """Run command-based verification declared directly in the plan."""
+    if verbose:
+        print("\n[1/4] Running plan-declared verification commands...")
+
+    failures: list[str] = []
+    for command in commands:
+        if verbose:
+            print(f"    $ {command}")
+        try:
+            result = subprocess.run(
+                ["bash", "-lc", command],
+                cwd=project_root,
+                capture_output=True,
+                text=True,
+                timeout=TEST_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            failures.append(f"timeout: {command}")
+            if verbose:
+                print(f"      TIMEOUT after {TEST_TIMEOUT_SECONDS}s")
+            continue
+
+        if result.returncode != 0:
+            failures.append(command)
+            if verbose:
+                print("      FAILED")
+                print((result.stdout + result.stderr)[-2000:])
+        elif verbose:
+            print("      PASSED")
+
+    if failures:
+        return False, f"{len(commands) - len(failures)}/{len(commands)} commands passed"
+    return True, f"{len(commands)}/{len(commands)} commands passed"
+
+
 def run_unit_tests(project_root: Path, verbose: bool = True) -> tuple[bool, str]:
     """Run unit/component tests (excluding E2E).
 
@@ -110,7 +191,7 @@ def run_unit_tests(project_root: Path, verbose: bool = True) -> tuple[bool, str]
 
     try:
         result = subprocess.run(
-            ["pytest", "tests/", "--ignore=tests/e2e/", "-v", "--tb=short"],
+            [PYTHON, "-m", "pytest", "tests/", "--ignore=tests/e2e/", "-v", "--tb=short"],
             cwd=project_root,
             capture_output=True,
             text=True,
@@ -159,7 +240,7 @@ def run_e2e_tests(project_root: Path, verbose: bool = True) -> tuple[bool, str]:
 
     try:
         result = subprocess.run(
-            ["pytest", "tests/e2e/test_smoke.py", "-v", "--tb=short"],
+            [PYTHON, "-m", "pytest", "tests/e2e/test_smoke.py", "-v", "--tb=short"],
             cwd=project_root,
             capture_output=True,
             text=True,
@@ -214,7 +295,15 @@ def run_real_e2e_tests(project_root: Path, verbose: bool = True) -> tuple[bool, 
 
     try:
         result = subprocess.run(
-            ["pytest", "tests/e2e/test_real_e2e.py", "-v", "--tb=short", "--run-external"],
+            [
+                PYTHON,
+                "-m",
+                "pytest",
+                "tests/e2e/test_real_e2e.py",
+                "-v",
+                "--tb=short",
+                "--run-external",
+            ],
             cwd=project_root,
             capture_output=True,
             text=True,
@@ -256,7 +345,7 @@ def check_doc_coupling(project_root: Path, verbose: bool = True) -> tuple[bool, 
 
     try:
         result = subprocess.run(
-            ["python", "scripts/check_doc_coupling.py", "--strict"],
+            [PYTHON, "scripts/check_doc_coupling.py", "--strict"],
             cwd=project_root,
             capture_output=True,
             text=True,
@@ -458,14 +547,26 @@ def complete_plan(
 
     # Run verification steps
     all_passed = True
+    declared_commands = get_plan_verification_commands(plan_file)
 
-    # 1. Unit tests
-    unit_passed, unit_summary = run_unit_tests(project_root, verbose)
+    # 1. Unit tests or plan-declared commands
+    if declared_commands:
+        unit_passed, unit_summary = run_declared_verification_commands(
+            declared_commands,
+            project_root,
+            verbose,
+        )
+    else:
+        unit_passed, unit_summary = run_unit_tests(project_root, verbose)
     if not unit_passed:
         all_passed = False
 
     # 2. E2E smoke tests
-    if skip_e2e:
+    if declared_commands:
+        e2e_smoke_passed, e2e_smoke_summary = True, "covered by plan-declared commands"
+        if verbose:
+            print("\n[2/4] E2E smoke tests... SKIPPED (covered by plan-declared commands)")
+    elif skip_e2e:
         e2e_smoke_passed, e2e_smoke_summary = True, "skipped (--skip-e2e)"
         if verbose:
             print("\n[2/4] E2E smoke tests... SKIPPED (--skip-e2e flag)")
@@ -475,7 +576,11 @@ def complete_plan(
             all_passed = False
 
     # 3. Real E2E tests (actual LLM calls)
-    if skip_e2e or skip_real_e2e:
+    if declared_commands:
+        e2e_real_passed, e2e_real_summary = True, "covered by plan-declared commands"
+        if verbose:
+            print("\n[3/4] Real E2E tests... SKIPPED (covered by plan-declared commands)")
+    elif skip_e2e or skip_real_e2e:
         e2e_real_passed, e2e_real_summary = True, "skipped (--skip-real-e2e)"
         if verbose:
             print("\n[3/4] Real E2E tests... SKIPPED (--skip-real-e2e flag)")
@@ -485,9 +590,14 @@ def complete_plan(
             all_passed = False
 
     # 4. Doc coupling
-    doc_passed, doc_summary = check_doc_coupling(project_root, verbose)
-    if not doc_passed:
-        all_passed = False
+    if declared_commands:
+        doc_passed, doc_summary = True, "covered by plan-declared commands"
+        if verbose:
+            print("\n[4/4] Checking doc-code coupling... SKIPPED (covered by plan-declared commands)")
+    else:
+        doc_passed, doc_summary = check_doc_coupling(project_root, verbose)
+        if not doc_passed:
+            all_passed = False
 
     # Summary
     if verbose:

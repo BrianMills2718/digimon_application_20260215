@@ -219,3 +219,15 @@ That means `CLAUDE.md` must expose non-empty `Commands`, `Principles`,
 `AGENTS.md` to `CLAUDE.md`, which blocked rollout until those sections were
 added and the symlink was replaced with a rendered file. Treat those sections
 as part of the repo's mechanical coordination contract going forward.
+
+### 2026-04-02 — codex — best-practice
+`scripts/meta/complete_plan.py` in DIGIMON must not assume repo-wide
+`tests/` collection is the truthful verification surface for every plan.
+For coordination and governance slices, the plan's own `Required Tests`
+command table is the authoritative contract. The closeout script now:
+
+- launches subprocesses with `sys.executable` instead of bare `python`/`pytest`
+- honors command-based verification rows in the plan file when present
+
+This keeps repo-local closeout aligned with the plan's declared acceptance
+criteria instead of failing on unrelated integration-lane collection debt.

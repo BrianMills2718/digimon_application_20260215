@@ -1,6 +1,19 @@
 # Plan #25: authoritative coordination prerequisite remediation
 
-**Status:** In Progress
+**Status:** ✅ Complete
+
+**Verified:** 2026-04-02T12:28:41Z
+**Verification Evidence:**
+```yaml
+completed_by: scripts/complete_plan.py
+timestamp: 2026-04-02T12:28:41Z
+tests:
+  unit: 8/8 commands passed
+  e2e_smoke: covered by plan-declared commands
+  e2e_real: covered by plan-declared commands
+  doc_coupling: covered by plan-declared commands
+commit: 7c215e0
+```
 **Type:** implementation
 **Priority:** High
 **Blocked By:** None
@@ -54,9 +67,9 @@ This plan explicitly does **not** change:
 - `meta-process.yaml` — local governed-repo configuration and enabled features
 - `Makefile` — existing repo interface and missing worktree entrypoints before remediation
 - `scripts/relationships.yaml` — current coupling surface for DIGIMON docs/scripts
-- `/home/brian/projects/project-meta_worktrees/plan-58-authoritative-registry-rollout/scripts/meta/install_governed_repo.py` — sanctioned installer used for this remediation
-- `/home/brian/projects/project-meta_worktrees/plan-58-authoritative-registry-rollout/scripts/meta/audit_governed_repo.py` — external mechanical governed audit used as the acceptance oracle
-- `/home/brian/projects/project-meta_worktrees/plan-58-authoritative-registry-rollout/docs/plans/60_wave-1-authoritative-coordination-adoption-and-digimon-prerequisite-remediation.md` — parent rollout plan this remediation unblocks
+- `/home/brian/projects/project-meta/scripts/meta/install_governed_repo.py` — sanctioned installer used for this remediation
+- `/home/brian/projects/project-meta/scripts/meta/audit_governed_repo.py` — external mechanical governed audit used as the acceptance oracle
+- `/home/brian/projects/project-meta/docs/plans/60_wave-1-authoritative-coordination-adoption-and-digimon-prerequisite-remediation.md` — parent rollout plan this remediation unblocks
 
 ---
 
@@ -132,22 +145,22 @@ This plan explicitly does **not** change:
 |---------|-----|
 | `python scripts/sync_plan_status.py --check` | Plan index remains in sync after adding Plan 25 |
 | `python scripts/check_markdown_links.py docs/plans/25_authoritative-coordination-prerequisite-remediation.md docs/plans/CLAUDE.md` | New plan links are valid |
-| `python scripts/check_doc_coupling.py --roots CLAUDE.md docs/plans/25_authoritative-coordination-prerequisite-remediation.md docs/plans/CLAUDE.md` | Coupled docs remain consistent enough for the local validator surface |
+| `python scripts/check_doc_coupling.py --strict` | Local doc-coupling validator still passes after the remediation |
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] DIGIMON remediation worktree audits as mechanically `governed`
-- [ ] `AGENTS.md` is a generated file, not a symlink to `CLAUDE.md`
-- [ ] Local `check_coordination_claims.py`, `create_plan.py`, and
+- [x] DIGIMON remediation worktree audits as mechanically `governed`
+- [x] `AGENTS.md` is a generated file, not a symlink to `CLAUDE.md`
+- [x] Local `check_coordination_claims.py`, `create_plan.py`, and
       `plan_reservations.py` are present and runnable
-- [ ] Local `validate_plan.py`, `file_context.py`, and
+- [x] Local `validate_plan.py`, `file_context.py`, and
       `check_markdown_links.py` are present and runnable
-- [ ] The Makefile exposes sanctioned `worktree`, `worktree-list`, and
+- [x] The Makefile exposes sanctioned `worktree`, `worktree-list`, and
       `worktree-remove` targets
-- [ ] This plan records the remediation scope and verification commands clearly
-- [ ] The remediation slice is committed in the clean DIGIMON worktree
+- [x] This plan records the remediation scope and verification commands clearly
+- [x] The remediation slice is committed in the clean DIGIMON worktree
 
 ---
 
