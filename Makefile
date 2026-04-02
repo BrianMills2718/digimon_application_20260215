@@ -220,6 +220,16 @@ diagnose-failures:  ## Diagnose all failures in latest MuSiQue run
 	print(f'Diagnosing {len(fails)} failures from {latest}'); \
 	[subprocess.run([sys.executable, 'scripts/diagnose_question.py', latest, qid]) for qid in fails]"
 
+.PHONY: sentinel
+sentinel:  ## Run sentinel set — regression check on known-passing questions (~$0.10)
+	conda run -n digimon python eval/run_agent_benchmark.py \
+		--agent-spec none --allow-missing-agent-spec \
+		--missing-agent-spec-reason "relocated" \
+		--dataset MuSiQue \
+		--questions-file eval/fixtures/sentinel_set.txt \
+		--model $(MODEL) --backend direct \
+		--agent-spec none --allow-missing-agent-spec --missing-agent-spec-reason "relocated"
+
 .PHONY: oracle
 oracle:  ## Run LLM-verified oracle diagnostic on latest MuSiQue failures (writes report)
 	@LATEST=$$(ls -t results/MuSiQue_gpt-5-4-mini_consolidated_*.json 2>/dev/null | head -1); \
