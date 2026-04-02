@@ -210,6 +210,29 @@ endpoint merge semantics.
 - Remaining failures are split: QUERY_FORMULATION (6), INTERMEDIATE_ENTITY_ERROR
   (4), RETRIEVAL_RANKING (2), GRAPH_REPRESENTATION (1), ANSWER_SYNTHESIS (1).
   Most need VDB/graph improvements, not prompt fixes.
+- **STAG_TURNS=6 is the best default** — halves stagnation rate (58%→32%),
+  adds 2 new LLM-judge passes (94201 Mississippi River Delta, 619265 12 episodes).
+- **entity_search top_k=10 is WORSE** than top_k=5 — dilutes results with
+  noise, agent gets confused by more candidates. Reverted.
+
+### 2026-04-02 — claude-code — bug-pattern
+**Evidence pointer tracking is broken for DIGIMON's linearized tool results.**
+The llm_client stagnation detector (`_tool_evidence_pointer_labels` in
+`agent_artifacts.py`) parses tool results as JSON looking for `chunk_id`,
+`evidence_refs` fields. DIGIMON's linearized results are plain text, not JSON,
+so every evidence turn produces zero evidence pointers and the stagnation
+detector fires incorrectly.
+
+Impact: 100% of evidence turns counted as "stagnant" regardless of whether
+the agent found new entities or chunks. STAG_TURNS=6 is the workaround.
+
+Fix attempted: wrapping linearized text in JSON envelope with evidence_refs.
+REVERTED — caused 6x latency regression because model struggled to parse
+JSON-wrapped tool results.
+
+Proper fix needed in llm_client: modify `_collect_evidence_pointer_labels`
+to handle plain-text results, or add a separate metadata channel for
+evidence pointers that doesn't change the visible tool result.
 
 ### 2026-04-02 — codex — best-practice
 The `digimon-kgrag` FastMCP tool objects support planner metadata directly via
