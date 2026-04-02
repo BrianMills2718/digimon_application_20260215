@@ -54,37 +54,46 @@ messages:
          a. Use the ATOM's sub-question as the search query, NOT the full original question.
             Example: atom "What is Lady Godiva's birthplace?" → search "Lady Godiva birthplace",
             NOT "When was Lady Godiva's birthplace abolished?"
-         b. `entity_search(query=<atom sub-question>)` to find relevant entities.
-         c. **Before accepting an entity as the answer**: verify it matches the question's
+         b. **Keep queries SHORT: 2-5 keywords.** Long queries dilute relevance.
+            Good: "Stanton Moore birthplace", "Battle of New Orleans start date"
+            Bad: "performer of III birthplace battle start date"
+            If an atom sub-question is too long, extract the key entity + relationship.
+         c. `entity_search(query=<focused keywords>)` to find relevant entities.
+         d. **Before accepting an entity as the answer**: verify it matches the question's
             relationship. If the question asks "who was X compared to", don't just pick the
             first related entity — confirm via `chunk_retrieve` that the specific relationship
             (compared, signed by, born in, etc.) actually connects them. If entity_search
             returns multiple candidates, check source text for each before committing.
-         d. Check `entity_info(method="profile")` for edge_count. If edges exist,
+         e. Check `entity_info(method="profile")` for edge_count. If edges exist,
             use `entity_traverse` or `relationship_search`. If 0 edges, use `chunk_retrieve`.
-         e. `chunk_retrieve(query_text=<atom sub-question>)` to get source text evidence.
+         f. `chunk_retrieve(query_text=<focused keywords>)` to get source text evidence.
             **Always retrieve source text to confirm** — do not resolve atoms based only
             on entity_search or entity_info results.
-         f. Extract the specific answer for THIS atom from the evidence. Read ALL retrieved
+         g. **If a search returns nothing, SIMPLIFY — don't repeat similar queries.**
+            Drop qualifiers: "Mantua Cathedral dedicated to saint" → "Mantua Cathedral".
+            Switch method: semantic → string, or text → semantic.
+            Try graph traversal: `entity_traverse(onehop)` or `relationship_search(graph)` from any entity you've found — the graph often has the chain.
+         h. Extract the specific answer for THIS atom from the evidence. Read ALL retrieved
             chunks, not just the first one. Match the atom's relationship type (birthplace,
             abolished, founded) to the chunk text.
-         g. Update `todo_write` with status="done" and include the atom's resolved
+         i. Update `todo_write` with status="done" and include the atom's resolved
             short value in `answer` (or `result`) plus any `evidence_refs`.
-         h. Use the answer from this atom as input to the NEXT atom's search.
+         j. Use the answer from this atom as input to the NEXT atom's search.
             Example: atom1 found "Mercia" → atom2 searches "Mercia abolished", not
             "Lady Godiva's birthplace abolished".
             DIGIMON will forward done-atom answers into later retrieval queries when
             you store them in `todo_write`.
-         i. **If the next atom's searches return nothing**, reconsider whether the
+         k. **If the next atom's searches return nothing**, reconsider whether the
             PREVIOUS atom was resolved correctly. The most common error is picking the
             wrong intermediate entity, which makes all downstream searches fail.
 
       4. **Ground before submitting.** Your answer MUST come from source text retrieved via
          `chunk_retrieve`, not from entity summaries or inference.
 
-      5. **Complete the plan.** Do NOT submit until ALL todo atoms are status=done.
+      5. **Complete the plan, then IMMEDIATELY submit.** Do NOT submit until ALL todo atoms are status=done.
          If you have pending atoms, resolve them first. Check your todo status —
          if it shows "2/4 done", you still have work to do.
+         But once all atoms ARE done, submit RIGHT AWAY — do not keep searching for "better" evidence or loop back to verify what you already confirmed.
 
       6. **Verify before submitting.** Before calling submit_answer, check:
          a. **Answer type matches question type.** "What year" → a year, "how many" → a number, "who" → a name. If your answer has extra precision the question didn't ask for, trim it.
