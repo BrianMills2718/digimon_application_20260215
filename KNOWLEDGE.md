@@ -262,3 +262,19 @@ command table is the authoritative contract. The closeout script now:
 
 This keeps repo-local closeout aligned with the plan's declared acceptance
 criteria instead of failing on unrelated integration-lane collection debt.
+
+### 2026-04-02 — codex — integration-issue
+Plan #22's projection follow-through had a real resume-path bug: when
+`ERGraph._build_graph()` re-entered with a checkpoint that already covered all
+selected chunks, it returned success without clearing
+`_checkpoint_processed.json`. That left the artifact in a permanent
+"looks-incomplete" state for the followthrough harness even though the graph
+itself could already be usable. The correct fix is to clear the checkpoint in
+the `remaining == 0` path and let manifest persistence proceed.
+
+### 2026-04-02 — codex — integration-issue
+From this Codex sandbox, the live Plan #22 projection rebuild and tranche rerun
+cannot complete because outbound DNS/network access to Gemini and OpenRouter is
+blocked. The verified unit slice is still valid locally, but any end-to-end
+benchmark or rebuild step that needs remote LLM calls must run in an
+environment with provider network access.

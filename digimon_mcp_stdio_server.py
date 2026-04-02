@@ -8986,7 +8986,15 @@ def _build_operator_chain_namespace() -> dict[str, Any]:
 
 def _apply_registered_tool_operational_metadata() -> None:
     """Attach explicit operational metadata to every live FastMCP tool."""
-    attach_tool_metadata_to_registry(mcp._tool_manager._tools)
+    tool_manager = getattr(mcp, "_tool_manager", None)
+    tool_registry = getattr(tool_manager, "_tools", None)
+    if tool_registry is None:
+        logger.debug(
+            "Skipping FastMCP tool metadata attachment because the active MCP "
+            "instance does not expose a live tool registry."
+        )
+        return
+    attach_tool_metadata_to_registry(tool_registry)
 
 
 _apply_registered_tool_operational_metadata()

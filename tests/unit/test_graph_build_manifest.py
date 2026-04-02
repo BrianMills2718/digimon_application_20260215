@@ -102,6 +102,22 @@ def test_entity_graph_manifest_infers_rkg_profile_when_keywords_enabled() -> Non
     assert manifest.artifacts.communities is True
 
 
+def test_entity_graph_manifest_records_passage_projection_flags() -> None:
+    """Projected entity graphs should advertise passage-node enrichment truthfully."""
+
+    manifest = GraphBuildManifest.from_graph_config(
+        dataset_name="MuSiQue",
+        graph_type="er_graph",
+        graph_config=GraphConfig(
+            graph_profile=GraphProfile.TKG,
+            enable_passage_nodes=True,
+        ),
+    )
+
+    assert manifest.config_flags.enable_passage_nodes is True
+    assert manifest.artifacts.passage_nodes is True
+
+
 def test_entity_graph_manifest_persists_explicit_schema_contract() -> None:
     """Manifest should record the declared schema guidance used for the build."""
 

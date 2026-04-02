@@ -213,6 +213,24 @@ benchmark-first until proven otherwise.
     - rerun the same frozen tranche under the same runtime flags,
     - restore the original graph,
     - write a machine-readable before/after comparison artifact.
+- 2026-04-02: Follow-through unblocker landed for checkpoint-complete resume:
+  - `ERGraph._build_graph()` now clears `_checkpoint_processed.json` when a
+    resumed build finds no remaining chunks, so a fully processed checkpoint is
+    treated as a completed build instead of a permanent in-progress state.
+  - `GraphBuildManifest` now records passage-node projection truth more
+    explicitly:
+    - `artifacts.passage_nodes`
+    - `config_flags.enable_passage_nodes`
+  - verified with:
+    - `.venv/bin/pytest -q tests/unit/test_graph_build_manifest.py tests/unit/test_prebuild_graph_cli.py tests/unit/test_eval_graph_manifest.py tests/unit/test_entity_string_search.py tests/unit/test_ergraph_checkpoint_resume.py tests/unit/test_onto_canon_import.py`
+  - bounded rerun status:
+    - the existing `results/MuSiQue_plan22_projection/er_graph` checkpoint was
+      not in the expected "all chunks already processed" state; it still held
+      `2497/11656` processed chunks, so a real rebuild resumed when re-invoked.
+    - that rebuild could not complete from this session because the sandboxed
+      environment could not resolve Gemini or OpenRouter hosts, so the
+      benchmark-facing tranche rerun remains blocked on network access rather
+      than on the resume-path bug.
 
 ### Phase 0: Freeze The Failure Family
 

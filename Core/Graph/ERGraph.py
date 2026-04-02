@@ -256,7 +256,11 @@ class ERGraph(DelimiterExtractionMixin, BaseGraph):
             remaining = [(i, c) for i, c in indexed_chunks if i not in already_processed]
 
             if not remaining:
-                logger.info("All chunks already processed (checkpoint), skipping extraction")
+                self.clear_checkpoint()
+                logger.info(
+                    "All chunks already processed (checkpoint); "
+                    "cleared checkpoint and treating build as complete"
+                )
                 return True
 
             logger.info(f"Processing {len(remaining)} chunks ({len(already_processed)} already done)")

@@ -29,6 +29,7 @@ class GraphArtifactFlags(BaseModel):
     sparse_matrices: bool = False
     communities: bool = False
     cooccurrence_edges: bool = False
+    passage_nodes: bool = False
     centrality_scores: bool = False
     entity_chunk_provenance: bool = False
     relationship_chunk_provenance: bool = False
@@ -47,6 +48,7 @@ class GraphConfigSnapshot(BaseModel):
     enable_edge_description: bool
     enable_edge_keywords: bool
     enable_chunk_cooccurrence: bool
+    enable_passage_nodes: bool
     use_community: bool
 
 
@@ -163,6 +165,7 @@ class GraphBuildManifest(BaseModel):
                 enable_edge_description=graph_config.enable_edge_description,
                 enable_edge_keywords=graph_config.enable_edge_keywords,
                 enable_chunk_cooccurrence=graph_config.enable_chunk_cooccurrence,
+                enable_passage_nodes=graph_config.enable_passage_nodes,
                 use_community=graph_config.use_community,
             ),
             available_input_chunk_count=available_input_chunk_count,
@@ -326,6 +329,7 @@ def _infer_artifacts(
     return GraphArtifactFlags(
         communities=graph_config.use_community,
         cooccurrence_edges=graph_config.enable_chunk_cooccurrence,
+        passage_nodes=graph_config.enable_passage_nodes,
         entity_chunk_provenance=topology_kind is GraphTopologyKind.ENTITY,
         relationship_chunk_provenance=topology_kind is GraphTopologyKind.ENTITY,
     )
