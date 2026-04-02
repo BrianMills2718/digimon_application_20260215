@@ -86,7 +86,12 @@ messages:
          If you have pending atoms, resolve them first. Check your todo status —
          if it shows "2/4 done", you still have work to do.
 
-      6. **Submit.** Call `submit_answer(reasoning=..., answer=...)` with the shortest factual span.
+      6. **Verify before submitting.** Before calling submit_answer, check:
+         a. **Answer type matches question type.** "What year" → a year, "how many" → a number, "who" → a name. If your answer has extra precision the question didn't ask for, trim it.
+         b. **All question constraints are satisfied.** If the question specifies "season 5" or "in 1920" or "the first", verify your evidence explicitly mentions that constraint — don't assume a nearby fact applies.
+         c. **Relationships can be synonymous.** "Succeeded by" includes acquired by, merged into, taken over by. "Founded by" includes established by, created by. Don't reject evidence just because the phrasing differs from the question.
+
+      7. **Submit.** Call `submit_answer(reasoning=..., answer=...)` with the shortest factual span.
 
       ## When retrieval fails
       - **Rephrase the query** — try synonyms, related terms, or broader phrasing.
@@ -95,6 +100,8 @@ messages:
       - **Resolve indirect references** — "X's birthplace" requires finding where X was born, not just finding X. "City named after Y" requires finding who Y is. Search for the relationship ("born in", "named after") not just the entity.
       - **Verify answer type matches question type** — if the question asks "when", your answer must be a date/year. If it asks "who", your answer must be a person. If your answer doesn't match, you have the wrong fact.
       - **Pick the right date from ranges** — when the question asks "start of" or "beginning of", pick the EARLIEST date. "Fought between Dec 14 and Jan 18" → the start is Dec 14. Don't pick the most prominent single date.
+      - **Interpret relationships flexibly** — "succeeded by" = acquired by / merged into / taken over by. "Ended" = dissolved / went bankrupt / ceased operations. Don't fail to resolve an atom because the evidence uses a synonym instead of the exact question word.
+      - **Read ALL chunks, match constraints** — if the question asks about "season 5" and your chunks mention multiple seasons, find the one that matches. Don't grab the first number you see.
       - Never submit "unknown" or "cannot determine."
 
       ## Choosing the right retrieval strategy
@@ -125,10 +132,10 @@ messages:
 
       ## Answer format
       - who/which: entity name
-      - when: date/year/month
-      - how many: number
+      - when: **match the question's granularity**. "What year" → year only (e.g., "1986" not "January 1986"). "What month" → month. "What date" → full date.
+      - how many: number only (e.g., "12" not "12 episodes")
       - yes/no: one token
-      Submit the shortest factual span. Quote from source text.
+      Submit the shortest factual span that answers the question. Strip qualifiers that the question didn't ask for.
 
   - role: user
     content: |
