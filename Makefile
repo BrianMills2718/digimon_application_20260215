@@ -220,6 +220,24 @@ diagnose-failures:  ## Diagnose all failures in latest MuSiQue run
 	print(f'Diagnosing {len(fails)} failures from {latest}'); \
 	[subprocess.run([sys.executable, 'scripts/diagnose_question.py', latest, qid]) for qid in fails]"
 
+.PHONY: oracle
+oracle:  ## Run LLM-verified oracle diagnostic on latest MuSiQue failures (writes report)
+	@LATEST=$$(ls -t results/MuSiQue_gpt-5-4-mini_consolidated_*.json 2>/dev/null | head -1); \
+	if [ -z "$$LATEST" ]; then echo "No MuSiQue results found. Run make bench-musique first."; exit 1; fi; \
+	echo "Diagnosing failures from $$LATEST"; \
+	conda run -n digimon python eval/oracle_diagnostic.py \
+		--results "$$LATEST" \
+		--report investigations/digimon/$$(date +%Y-%m-%d)-oracle-diagnosis.md
+
+.PHONY: oracle-fast
+oracle-fast:  ## Run heuristic-only oracle diagnostic (no LLM cost)
+	@LATEST=$$(ls -t results/MuSiQue_gpt-5-4-mini_consolidated_*.json 2>/dev/null | head -1); \
+	if [ -z "$$LATEST" ]; then echo "No MuSiQue results found. Run make bench-musique first."; exit 1; fi; \
+	echo "Diagnosing failures from $$LATEST (heuristic only)"; \
+	conda run -n digimon python eval/oracle_diagnostic.py \
+		--results "$$LATEST" --no-llm \
+		--report investigations/digimon/$$(date +%Y-%m-%d)-oracle-diagnosis-heuristic.md
+
 linearization-check:  ## Check for linearization data loss warnings
 	@echo "=== Linearization Data Loss Warnings ==="
 	@grep '"data_loss_warning": true' results/.linearization_log.jsonl 2>/dev/null | \
