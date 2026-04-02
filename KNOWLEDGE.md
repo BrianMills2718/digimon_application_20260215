@@ -190,3 +190,23 @@ entities and `99` exported relationships imported as a DIGIMON GraphML artifact
 with `110` nodes and `78` edges; `16` single-endpoint relationships were
 skipped and the remaining relationship delta came from DIGIMON's duplicate
 endpoint merge semantics.
+
+### 2026-04-02 — claude-code — best-practice
+**Prompt iteration findings on 19q MuSiQue diagnostic set (Plan #17):**
+- ANSWER_SYNTHESIS eliminated (3→0) by adding answer granularity matching
+  ("what year" → year only), pre-submission verification step, and flexible
+  relationship interpretation at atom resolution stage.
+- CONTROL_FLOW fix: "submit immediately when all atoms done" fixed 1 question
+  (511296 "Maria Shriver" — agent had answer but kept looping).
+- QUERY_FORMULATION: "keep queries SHORT (2-5 keywords)" + "simplify when
+  search returns nothing" + "fall back to graph traversal" guidance helped but
+  most QF failures are entity VDB quality issues (entity_search returning wrong
+  entities like Israel→"United States").
+- **Sentinel question 731956 is stochastic** — passes ~50% of runs. Not a
+  reliable regression indicator.
+- Retrieval stagnation is the dominant terminal condition (53-63% of questions).
+  Agent hits 4-turn stagnation limit well before the 20-call budget. The
+  bottleneck is search quality, not search quantity.
+- Remaining failures are split: QUERY_FORMULATION (6), INTERMEDIATE_ENTITY_ERROR
+  (4), RETRIEVAL_RANKING (2), GRAPH_REPRESENTATION (1), ANSWER_SYNTHESIS (1).
+  Most need VDB/graph improvements, not prompt fixes.
