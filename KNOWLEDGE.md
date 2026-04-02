@@ -210,3 +210,12 @@ endpoint merge semantics.
 - Remaining failures are split: QUERY_FORMULATION (6), INTERMEDIATE_ENTITY_ERROR
   (4), RETRIEVAL_RANKING (2), GRAPH_REPRESENTATION (1), ANSWER_SYNTHESIS (1).
   Most need VDB/graph improvements, not prompt fixes.
+
+### 2026-04-02 — codex — integration-issue
+The sanctioned governed-repo installer from `project-meta` now assumes DIGIMON
+can generate `AGENTS.md` from `CLAUDE.md` using the shared renderer contract.
+That means `CLAUDE.md` must expose non-empty `Commands`, `Principles`,
+`Workflow`, and `References` H2 sections. DIGIMON previously symlinked
+`AGENTS.md` to `CLAUDE.md`, which blocked rollout until those sections were
+added and the symlink was replaced with a rendered file. Treat those sections
+as part of the repo's mechanical coordination contract going forward.

@@ -43,6 +43,7 @@ integration.
 | 22 | [Benchmark-First Canonicalization And Projection Hardening](22_benchmark_first_canonicalization_projection_hardening.md) | High | 🚧 In Progress | Next decision-grade MuSiQue rerun |
 | 23 | [Semantic Build Boundary And onto-canon6 Experiment](23_semantic_build_boundary_and_onto_canon_experiment.md) | High | 🚧 In Progress | Any default-path convergence decision |
 | 24 | [Shared Run-Progress Integration For Graph Builds](24_shared_run_progress_integration_for_graph_builds.md) | High | 📋 Planned | llm_client Plan #22 |
+| 25 | [authoritative coordination prerequisite remediation](25_authoritative-coordination-prerequisite-remediation.md) | High | 🚧 In Progress | - |
 
 ## Status Key
 
