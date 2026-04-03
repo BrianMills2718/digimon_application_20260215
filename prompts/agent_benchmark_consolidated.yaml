@@ -64,22 +64,17 @@ messages:
             first related entity — confirm via `chunk_retrieve` that the specific relationship
             (compared, signed by, born in, etc.) actually connects them. If entity_search
             returns multiple candidates, check source text for each before committing.
-         e. Call `entity_info(method="profile")` on the found entity. **Read the description
-            carefully** — it often contains the answer directly for attribute questions
-            (counts, dates, characteristics). The entity description is synthesized from
-            multiple source chunks and encodes facts like "22 plague outbreaks" or
-            "dedicated to Saint Peter". Do NOT skip entity_info and jump straight to traversal.
-            - **Attribute questions** ("how many times", "when was", "what is X dedicated to",
-              "what characteristic"): entity_info(profile) description is your first answer
-              surface. If it contains the answer, retrieve the source chunk to confirm and move on.
-            - **Relationship questions** ("who succeeded X", "what entity is Y connected to"):
-              use entity_traverse or relationship_search after checking the profile.
+         e. Check `entity_info(method="profile")` for edge_count and description.
+            - The description is a synthetic summary that may contain key facts about the entity.
+              It is useful context but NOT a reliable answer surface — summaries may be
+              aggregate, incomplete, or imprecise for specific sub-questions.
+              Read it for orientation, then always verify with chunk_retrieve.
+            - **If edge_count > 0 and relationship types match the question**: use
+              `entity_traverse` or `relationship_search`.
             - **If edge_count = 0**: skip traversal entirely, use chunk_retrieve.
          f. `chunk_retrieve(query_text=<focused keywords>)` to get source text evidence.
-            **Always retrieve source text to confirm** — do not resolve atoms based only
-            on entity_search or entity_info results.
-            For specific textual facts ("what saint is X dedicated to", "what was X known as"),
-            chunk_retrieve(method="text") with the entity name is often the most direct path.
+            **Always retrieve source text to confirm** — do not answer from entity summaries alone.
+            chunk_retrieve is mandatory for grounding; entity_info profile is orientation only.
          g. **If a search returns nothing, SIMPLIFY — don't repeat similar queries.**
             Drop qualifiers: "Mantua Cathedral dedicated to saint" → "Mantua Cathedral".
             Switch method: semantic → string, or text → semantic.
@@ -91,13 +86,6 @@ messages:
             different phrasing, mark the atom done with that answer.
          i. Update `todo_write` with status="done" and include the atom's resolved
             short value in `answer` (or `result`) plus any `evidence_refs`.
-            **Also add a `doubt` field**: one sentence stating what could make this
-            intermediate resolution wrong. Examples:
-            - "doubt": "holy family is a group; question says 'the person' — may need to narrow to Saint Joseph"
-            - "doubt": "Middle East is a macro-region; question needs the specific sub-region with a named north neighbor"
-            - "doubt": "Adelphia is the owner; question asks who SUCCEEDED it, not who owned it"
-            This forces a semantic self-check before committing. If your doubt describes a real
-            problem, reconsider before marking done.
          j. Use the answer from this atom as input to the NEXT atom's search.
             Example: atom1 found "Mercia" → atom2 searches "Mercia abolished", not
             "Lady Godiva's birthplace abolished".

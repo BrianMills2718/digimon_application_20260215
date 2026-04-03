@@ -63,7 +63,9 @@ Plans #3-#13 are **paused, not abandoned**. They represent valid engineering wor
 
 - If Phase D identifies extraction as the bottleneck → Plans #5, #6 resume
 - If Phase D identifies routing/planning as the bottleneck → Plans #12, #13 resume
-- If Phase D validates the thesis → Plans #3 (prove adaptive routing) is complete
+- If Phase D confirms graph value on the maintained lane → Plan #3 can be
+  closed as the investment-decision gate, but the adaptive-vs-fixed H2 question
+  remains open until an explicit comparison is run
 - Plans #7-#11 (extraction supervisor stack) are complete infrastructure; no action needed
 
 ## Budget

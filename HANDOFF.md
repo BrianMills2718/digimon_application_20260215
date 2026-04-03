@@ -134,9 +134,10 @@ DIGIMON must be replaced.
 
 ## Important Constraint
 
-`docs/plans/03_prove_adaptive_routing.md` and `docs/REPO_SURFACE.md` still make
-the core maintained path the benchmark/thesis lane. Do not let architecture
-convergence silently become the default maintained lane without explicit proof.
+`docs/plans/03_prove_adaptive_routing.md`, `docs/plans/17_retest_thesis.md`,
+and `docs/REPO_SURFACE.md` keep the core maintained path on the benchmark lane.
+Do not let architecture convergence silently become the default maintained lane
+without explicit proof.
 
 # GraphRAG Handoff — 2026-03-26
 

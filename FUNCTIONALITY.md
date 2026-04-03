@@ -60,6 +60,10 @@ Those older materials are historical only and belong in `docs/archive/`.
 
 ## Current Value Proposition
 
-The repo is strongest as a research system for testing whether adaptive operator routing over graph retrieval beats simpler baselines on heterogeneous multi-hop QA.
+The repo is strongest as a research system for testing graph-assisted
+retrieval on heterogeneous multi-hop QA, with adaptive operator routing as a
+follow-on thesis rather than a proven default.
 
-That thesis is still being validated. See `docs/COMPETITIVE_ANALYSIS.md` and `docs/plans/03_prove_adaptive_routing.md`.
+Current evidence supports graph value on the maintained benchmark lane, but it
+does not yet prove that adaptive routing beats the best fixed pipeline. See
+`docs/COMPETITIVE_ANALYSIS.md` and `docs/plans/03_prove_adaptive_routing.md`.

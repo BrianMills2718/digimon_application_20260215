@@ -1,6 +1,6 @@
 # Plan #3: Prove Adaptive Operator Routing
 
-**Status:** Blocked — paused pending Plan #17 strategic pivot results
+**Status:** Complete (closeout on development evidence: graph value confirmed, adaptive superiority not proven)
 **Type:** implementation
 **Priority:** High
 **Blocked By:** None
@@ -39,7 +39,7 @@
 
 ---
 
-## Acceptance Criteria (Go/No-Go Gate)
+## Acceptance Criteria
 
 By April 1, 2026, deliver:
 
@@ -160,19 +160,18 @@ Evaluation rule:
 - If all tuning was done on the same questions, the result is a dev score, not decision-grade evidence.
 - Follow `docs/plans/LOCKED_EVAL_PROTOCOL.md` for split locking, overlap checks, and run procedure.
 
-### M6: Go/No-Go Memo (March 30-April 1)
+### M6: Go/No-Go Closeout Memo (April 2) — COMPLETED
 
-- [ ] Write decision memo with benchmark evidence
-- [ ] Apply Gate 1 using the locked evaluation split only
-- [ ] Apply Gate 2 using the locked evaluation split only
-- [ ] If `B*` fails Gate 1: stop graph-specific investment
-- [ ] If `B*` passes Gate 1 but `C` fails Gate 2: keep graph work, stop adaptive-thesis work
-- [ ] If both gates pass: continue with graph + adaptive routing
-- [ ] If results are close but below threshold: classify as inconclusive, not a win
-- [ ] Identify top 3 next-phase improvements only if the relevant gate passes
-- [ ] If a gate fails: identify what to replace, what to keep, and what to stop building
+- [x] Write closeout memo with benchmark evidence from Plans #3 and #17
+- [x] Classify the A/B/C comparison as development evidence because no locked 200q evaluation was run
+- [x] Record graph-investment decision: continue graph/runtime work
+- [x] Record adaptive-routing decision: do not claim proof; explicit H2 comparison remains deferred
+- [x] Link the follow-up execution lane (Plans #17, #21-#23)
 
-**Acceptance:** Memo exists with clear recommendation backed by data. If no locked evaluation is run, the memo must explicitly classify the current result as dev evidence and may recommend an early stop on the adaptive thesis.
+**Acceptance:** Memo exists with a clear recommendation backed by the available
+evidence. Because no locked evaluation was run, the memo explicitly classifies
+the result as development evidence and does not claim decision-grade proof of
+adaptive routing.
 
 Decision Gate:
 
@@ -249,3 +248,49 @@ Decision Gate:
 - The review agent recommended replacing NetworkX with Neo4j. Defer that question until after the thesis decision. The current bottleneck is retrieval quality and evaluation truthfulness, not storage migration.
 - The review agent's "keep/cut/replace/prove" framework is correct. This plan follows it.
 - March 17-18 infrastructure fixes already addressed many review agent concerns. The remaining work is a truthful stop/continue decision.
+
+## Completion Findings (2026-04-02)
+
+### Final decision
+
+Plan #3 is closed as an **investment-decision gate**, not as a proof that
+adaptive routing beat the best fixed alternative.
+
+- **Graph value:** continue. Later benchmark work on the maintained lane
+  confirmed that graph-assisted retrieval materially outperformed the non-graph
+  baseline on MuSiQue (`20.0% -> 42.0%` LLM-judge on the 50q decision-grade
+  comparison recorded in Plan #17 and `CURRENT_STATUS.md`).
+- **Adaptive-routing value:** not proven. The direct A/B/C development
+  comparison in this plan did not show adaptive routing beating either the
+  baseline or the fixed graph pipeline, and the later Plan #17 lane explicitly
+  deferred H2 (`adaptive > fixed`) because it focused on graph value first.
+
+### Recommendation
+
+- Keep investing in DIGIMON's graph/runtime lane.
+- Do **not** claim that adaptive operator routing has been proven to beat the
+  best fixed pipeline on heterogeneous multi-hop QA.
+- Treat any future adaptive-routing claim as requiring an explicit fixed-vs-
+  adaptive comparison on the maintained benchmark surface, not inference from
+  the graph-value result alone.
+
+### Evidence used for closeout
+
+- **Plan #3 development comparison (50q balanced dev sample):**
+  - baseline: `60.0%` LLM-judge
+  - fixed_graph: `54.0%` LLM-judge
+  - hybrid/adaptive: `44.0%` LLM-judge
+- **Plan #17 decision-grade graph-value comparison (50q, 2026-03-26):**
+  - baseline: `20.0%` LLM-judge
+  - GraphRAG consolidated lane: `42.0%` LLM-judge
+  - graph wins: `15`
+- **Plan #17 open question Q1:** explicitly records that Plan #17 answered
+  "does the graph help?" and deferred "does adaptive routing help?"
+
+### Acceptance criteria final status
+
+- [x] README and top-level governance docs now point to the truthful active plan surface
+- [x] Reproducible benchmark slice exists and is documented
+- [x] A/B/C development comparison exists with recorded metrics
+- [x] Closeout memo written with a clear stop/continue recommendation
+- [x] Locked 200q adaptive-routing proof intentionally not claimed

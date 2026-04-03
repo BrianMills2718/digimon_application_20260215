@@ -69,10 +69,11 @@ embedding:
 ### Canonical Docs
 
 - `FUNCTIONALITY.md` — supported user workflow and non-goals
-- `(removed — doc did not exist)` — current doc index and archive policy
-- `(removed — doc did not exist)` — architecture and benchmark caveats
-- `(removed — doc did not exist)` — evidence, baselines, and open thesis
-- `docs/plans/03_prove_adaptive_routing.md` — active investment-decision plan
+- `docs/ACTIVE_DOCS.md` — current doc index and archive policy
+- `docs/SYSTEM_OVERVIEW.md` — architecture and benchmark caveats
+- `docs/COMPETITIVE_ANALYSIS.md` — evidence, baselines, and open thesis
+- `docs/plans/CLAUDE.md` — active implementation-plan index
+- `docs/plans/03_prove_adaptive_routing.md` — adaptive-routing closeout record
 
 Historical API/UI/integration docs have been moved under `docs/archive/` and are not supported surfaces.
 
