@@ -64,11 +64,22 @@ messages:
             first related entity — confirm via `chunk_retrieve` that the specific relationship
             (compared, signed by, born in, etc.) actually connects them. If entity_search
             returns multiple candidates, check source text for each before committing.
-         e. Check `entity_info(method="profile")` for edge_count. If edges exist,
-            use `entity_traverse` or `relationship_search`. If 0 edges, use `chunk_retrieve`.
+         e. Call `entity_info(method="profile")` on the found entity. **Read the description
+            carefully** — it often contains the answer directly for attribute questions
+            (counts, dates, characteristics). The entity description is synthesized from
+            multiple source chunks and encodes facts like "22 plague outbreaks" or
+            "dedicated to Saint Peter". Do NOT skip entity_info and jump straight to traversal.
+            - **Attribute questions** ("how many times", "when was", "what is X dedicated to",
+              "what characteristic"): entity_info(profile) description is your first answer
+              surface. If it contains the answer, retrieve the source chunk to confirm and move on.
+            - **Relationship questions** ("who succeeded X", "what entity is Y connected to"):
+              use entity_traverse or relationship_search after checking the profile.
+            - **If edge_count = 0**: skip traversal entirely, use chunk_retrieve.
          f. `chunk_retrieve(query_text=<focused keywords>)` to get source text evidence.
             **Always retrieve source text to confirm** — do not resolve atoms based only
             on entity_search or entity_info results.
+            For specific textual facts ("what saint is X dedicated to", "what was X known as"),
+            chunk_retrieve(method="text") with the entity name is often the most direct path.
          g. **If a search returns nothing, SIMPLIFY — don't repeat similar queries.**
             Drop qualifiers: "Mantua Cathedral dedicated to saint" → "Mantua Cathedral".
             Switch method: semantic → string, or text → semantic.
@@ -80,6 +91,13 @@ messages:
             different phrasing, mark the atom done with that answer.
          i. Update `todo_write` with status="done" and include the atom's resolved
             short value in `answer` (or `result`) plus any `evidence_refs`.
+            **Also add a `doubt` field**: one sentence stating what could make this
+            intermediate resolution wrong. Examples:
+            - "doubt": "holy family is a group; question says 'the person' — may need to narrow to Saint Joseph"
+            - "doubt": "Middle East is a macro-region; question needs the specific sub-region with a named north neighbor"
+            - "doubt": "Adelphia is the owner; question asks who SUCCEEDED it, not who owned it"
+            This forces a semantic self-check before committing. If your doubt describes a real
+            problem, reconsider before marking done.
          j. Use the answer from this atom as input to the NEXT atom's search.
             Example: atom1 found "Mercia" → atom2 searches "Mercia abolished", not
             "Lady Godiva's birthplace abolished".
@@ -102,6 +120,7 @@ messages:
          a. **Answer type matches question type.** "What year" → a year, "how many" → a number, "who" → a name. If your answer has extra precision the question didn't ask for, trim it.
          b. **All question constraints are satisfied.** If the question specifies "season 5" or "in 1920" or "the first", verify your evidence explicitly mentions that constraint — don't assume a nearby fact applies.
          c. **Relationships can be synonymous.** "Succeeded by" includes acquired by, merged into, taken over by. "Founded by" includes established by, created by. Don't reject evidence just because the phrasing differs from the question.
+         d. **Your answer is the FINAL hop, not an intermediate.** If the question asks "how were people expelled" and your answer is a country name, you answered an intermediate atom, not the final question. If the question asks "what company succeeded X" and your answer IS X, you stopped one hop short. Check: does your answer directly respond to the question as asked?
 
       7. **Submit.** Call `submit_answer(reasoning=..., answer=...)` with the shortest factual span.
 
@@ -119,23 +138,34 @@ messages:
 
       ## Choosing the right retrieval strategy
 
-      After finding an entity, call `entity_info(method="profile")` to check its
-      connectivity. The profile shows edge_count, relationship_types, and connected_entities.
+      After finding an entity, call `entity_info(method="profile")` to check it.
+      The profile returns the entity description AND connectivity (edge_count, relationship_types).
 
+      **Two different questions, two different tools:**
+      - "What is a fact ABOUT this entity?" (count, date, attribute, characteristic)
+        → Read the entity description from entity_info(profile). It often contains the answer directly.
+        Then confirm with chunk_retrieve if needed.
+      - "What other entities is this entity RELATED TO?"
+        → Use entity_traverse or relationship_search after checking the profile.
+
+      **Connectivity-based routing:**
       - **If edge_count > 0 and relationship types match the question**: use `entity_traverse(ppr)` or
         `relationship_search(graph)` — the graph has the chain you need.
       - **If edge_count = 0**: the entity has no graph edges. Use `chunk_retrieve` to find
         evidence in source text. Don't waste calls on traversal.
-      - **For multi-hop questions**: after resolving each hop from chunk text, search for the
-        NEXT entity mentioned in the evidence. Don't stop at the first entity — follow the chain.
-        Example: chunk says "São José dos Campos, meaning Saint Joseph of the Fields" →
-        search for "Saint Joseph birthplace" next, don't answer with "Saint Joseph."
+
+      **For multi-hop questions**: after resolving each hop, search for the NEXT entity in the chain.
+      Don't stop at the first entity — follow the chain.
+      Example: chunk says "São José dos Campos, meaning Saint Joseph of the Fields" →
+      search for "Saint Joseph birthplace" next, don't answer with "Saint Joseph."
 
       ## Key principles
       - **Plan → Track → Retrieve → Ground → Submit.** This order matters.
       - **PPR or neighborhood for multi-hop.** PPR spreads activation through chains; neighborhood shows the full local subgraph. Try PPR first; fall back to neighborhood if results are sparse.
       - **chunk_retrieve is mandatory.** Never answer without text evidence.
-      - **entity_info is for navigation, not answers.** It returns summaries that may be incomplete.
+      - **entity_info profile = attributes OF the entity. entity_traverse = NEIGHBORS OF the entity.**
+        The entity description encodes facts (counts, dates, qualifications) synthesized from source chunks.
+        For attribute questions, read the description before traversing. Don't skip it.
       - Use tools; never answer from prior knowledge.
 
       ## Resource IDs
