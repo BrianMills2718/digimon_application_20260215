@@ -22,7 +22,7 @@ integration.
 | # | Name | Priority | Status | Blocks |
 |---|------|----------|--------|--------|
 | 2 | [DIGIMON V2 Greenfield Planning](02_digimon_v2_greenfield_planning_phase.md) | High | ✅ Complete | - |
-| 3 | [Prove Adaptive Routing](03_prove_adaptive_routing.md) | High | ⏸️ Blocked | Superseded by #17 |
+| 3 | [Prove Adaptive Routing](03_prove_adaptive_routing.md) | High | ✅ Complete (closeout memo: graph value confirmed, adaptive > fixed still unproven) | - |
 | 4 | [Graph Build Rearchitecture](04_graph_build_rearchitecture.md) | High | ⏸️ Blocked | Partially superseded by #16 |
 | 5 | [Extraction Quality Repair](05_extraction_quality_repair.md) | High | ⏸️ Blocked | Resumes if #17 identifies extraction bottleneck |
 | 6 | [Two-Pass Extraction Proof](06_two_pass_extraction_proof.md) | High | ⏸️ Blocked | Resumes if #17 identifies extraction bottleneck |
@@ -44,6 +44,7 @@ integration.
 | 23 | [Semantic Build Boundary And onto-canon6 Experiment](23_semantic_build_boundary_and_onto_canon_experiment.md) | High | 🚧 In Progress | Any default-path convergence decision |
 | 24 | [Shared Run-Progress Integration For Graph Builds](24_shared_run_progress_integration_for_graph_builds.md) | High | 📋 Planned | llm_client Plan #22 |
 | 25 | [authoritative coordination prerequisite remediation](25_authoritative-coordination-prerequisite-remediation.md) | High | ✅ Complete | - |
+| 26 | [DIGIMON isolated governed refresh and ownership-baseline repair](26_digimon-isolated-governed-refresh-and-ownership-baseline-repair.md) | High | ✅ Complete | - |
 
 ## Status Key
 

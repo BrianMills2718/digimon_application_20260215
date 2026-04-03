@@ -22,8 +22,10 @@ Use this file to find the current, supported documentation set.
   Baselines, current evidence, and open thesis.
 - `docs/plans/CLAUDE.md`
   Active implementation-plan index.
+- `docs/ops/CAPABILITY_DECOMPOSITION.md`
+  Repo-local capability ownership source of record for governed rollout and shared registry alignment.
 - `docs/plans/03_prove_adaptive_routing.md`
-  Current investment-decision plan.
+  Closeout record for the original adaptive-routing investment decision.
 
 ## Experimental Capability Docs
 

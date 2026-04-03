@@ -338,3 +338,6 @@ target/
 
 # Stray log output
 Clustering\ nodes
+.claude/active-work.yaml
+.claude/hook_log.jsonl
+.claude/sessions/
