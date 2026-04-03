@@ -11,9 +11,15 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.runtime_paths import artifact_reference_roots, resolve_artifact_reference
 
 
 @dataclass(frozen=True)
@@ -106,7 +112,7 @@ def _artifact_llm_counts(payload: dict[str, Any]) -> tuple[int, int, float]:
 def _scan_result_reference_lines(
     *,
     repo_root: Path,
-    artifact_root: Path,
+    artifact_roots: list[Path],
     doc_path: Path,
 ) -> list[TruthIssue]:
     """Validate markdown result-file references and claimed 6/19-style counts."""
@@ -118,14 +124,19 @@ def _scan_result_reference_lines(
         relative_path = path_match.group(0)
         if "XXXX" in relative_path:
             continue
-        artifact_path = artifact_root / relative_path
-        if not artifact_path.exists():
+        artifact_path = resolve_artifact_reference(relative_path, artifact_roots)
+        if artifact_path is None:
             issues.append(
                 TruthIssue(
                     code="missing_result_artifact",
                     severity="fail",
                     message=f"{doc_path.relative_to(repo_root)} references missing artifact {relative_path}",
-                    evidence={"doc": str(doc_path.relative_to(repo_root)), "line": line_number, "artifact": relative_path},
+                    evidence={
+                        "doc": str(doc_path.relative_to(repo_root)),
+                        "line": line_number,
+                        "artifact": relative_path,
+                        "artifact_roots": [str(root) for root in artifact_roots],
+                    },
                 )
             )
             continue
@@ -223,7 +234,7 @@ def _forbid_pattern(
 
 def validate_docs(
     repo_root: Path,
-    artifact_root: Path,
+    artifact_roots: list[Path],
     facts: MeasuredFacts,
     doc_paths: list[Path],
 ) -> list[TruthIssue]:
@@ -234,7 +245,7 @@ def validate_docs(
         issues.extend(
             _scan_result_reference_lines(
                 repo_root=repo_root,
-                artifact_root=artifact_root,
+                artifact_roots=artifact_roots,
                 doc_path=doc_path,
             )
         )
@@ -348,13 +359,13 @@ def validate_docs(
 def validate_repo(repo_root: Path, artifact_root: Path | None = None) -> tuple[MeasuredFacts, list[TruthIssue]]:
     """Measure live facts and validate the main DIGIMON truth surfaces."""
     repo_root = repo_root.resolve()
-    artifact_root = (artifact_root or repo_root).resolve()
+    artifact_roots = artifact_reference_roots(repo_root, explicit_root=artifact_root)
     facts = measure_live_facts(repo_root)
     doc_paths = [
         repo_root / "CURRENT_STATUS.md",
         repo_root / "docs" / "handoff_2026_04_03.md",
     ]
-    issues = validate_docs(repo_root, artifact_root, facts, doc_paths)
+    issues = validate_docs(repo_root, artifact_roots, facts, doc_paths)
     issues.sort(key=lambda item: (item.severity, item.code, item.message))
     return facts, issues
 

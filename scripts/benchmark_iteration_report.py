@@ -12,10 +12,16 @@ import argparse
 import json
 import math
 import statistics
+import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.runtime_paths import benchmark_glob_roots
 
 
 @dataclass(frozen=True)
@@ -293,8 +299,18 @@ def render_markdown(report: dict[str, Any]) -> str:
 def _select_input_paths(args: argparse.Namespace) -> list[Path]:
     """Resolve the CLI input selection into sorted artifact paths."""
     if args.glob:
-        paths = sorted(Path(args.glob_root).expanduser().glob(args.glob))
-        paths = [path for path in paths if path.name.endswith("Z.json")]
+        paths: list[Path] = []
+        seen: set[Path] = set()
+        for root in benchmark_glob_roots(
+            Path(args.repo_root),
+            explicit_root=Path(args.glob_root) if args.glob_root else None,
+        ):
+            for path in sorted(root.expanduser().glob(args.glob)):
+                resolved = path.resolve()
+                if resolved in seen or not path.name.endswith("Z.json"):
+                    continue
+                seen.add(resolved)
+                paths.append(resolved)
     else:
         paths = [Path(value) for value in args.input]
 
@@ -330,9 +346,13 @@ def main() -> int:
     source.add_argument("--glob", help="Glob pattern for benchmark result JSON artifacts")
     source.add_argument("--input", nargs="+", help="Explicit benchmark artifact paths")
     parser.add_argument(
-        "--glob-root",
+        "--repo-root",
         default=".",
-        help="Root directory used when resolving --glob patterns",
+        help="Repository root used to auto-detect worktree + canonical artifact locations",
+    )
+    parser.add_argument(
+        "--glob-root",
+        help="Optional explicit root used when resolving --glob patterns",
     )
     parser.add_argument("--dataset", help="Optional dataset filter")
     parser.add_argument("--model", help="Optional model filter")

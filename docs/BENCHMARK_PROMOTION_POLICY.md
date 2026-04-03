@@ -71,8 +71,8 @@ Requirements:
 - one generated report with mean/spread and per-question stability
 
 Required commands:
-- `make truth-check ARTIFACT_ROOT=<canonical-repo-root>`
-- `make benchmark-report ARTIFACT_ROOT=<canonical-repo-root> OUTPUT=docs/reports/<name>.md`
+- `make truth-check`
+- `make benchmark-report OUTPUT=docs/reports/<name>.md`
 
 ### 5. Decision-grade 50q run
 

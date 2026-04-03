@@ -438,3 +438,20 @@ In this environment, `conda run -n digimon` fails before script execution with a
 `conda-libmamba-solver` / `libmambapy.QueryFormat` entrypoint error. Benchmark runs
 may still require the full env, but governance/reporting commands should stay on
 plain `python` unless they genuinely need conda-managed dependencies.
+
+### 2026-04-03 — codex — best-practice
+**Truth/report commands now auto-search both the live worktree and canonical checkout for `results/...` artifacts.**
+Plan #28 added `scripts/runtime_paths.py`, which resolves linked-worktree
+canonical roots via `.git` pointer files plus `commondir`. `make truth-check`
+and `make benchmark-report` therefore no longer need a manual
+`ARTIFACT_ROOT=<canonical-repo-root>` in the normal case; that flag is now just
+an explicit override.
+
+### 2026-04-03 — codex — workaround
+**Benchmark-facing `make` targets now bypass `conda run` and exec the resolved DIGIMON interpreter directly.**
+`scripts/run_with_digimon_python.py` resolves the runtime interpreter from
+`DIGIMON_PYTHON`, the active env, or a Conda install inferred from `CONDA_EXE`
+/ `conda` on `PATH`, then `exec`s the requested Python command while exporting
+`DIGIMON_PYTHON` for child processes. This avoids the noisy
+`conda-libmamba-solver` startup failure path and keeps `eval/run_agent_benchmark.py`
+plus MCP child-process launching on the same interpreter.

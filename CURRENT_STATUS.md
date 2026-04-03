@@ -142,13 +142,16 @@ session — it requires careful evaluation to avoid regression on correct eviden
 
 ### Process Controls
 
-- `make truth-check ARTIFACT_ROOT=<canonical-repo-root>` validates
-  `CURRENT_STATUS.md` and the active handoff against live code defaults and
-  referenced result artifacts.
-- `make benchmark-report ARTIFACT_ROOT=<canonical-repo-root> RESULT_GLOB='<precise-glob>' OUTPUT=docs/reports/<name>.md`
-  generates a repeatable distribution report from frozen artifacts. Use a
-  precise glob or explicit `scripts/benchmark_iteration_report.py --input ...`
+- `make truth-check` now auto-searches both the live worktree and the
+  canonical checkout for referenced `results/...` artifacts. Use
+  `ARTIFACT_ROOT=<path>` only as an explicit override.
+- `make benchmark-report RESULT_GLOB='<precise-glob>' OUTPUT=docs/reports/<name>.md`
+  now auto-scans the live worktree plus the canonical checkout. Use a precise
+  glob or explicit `scripts/benchmark_iteration_report.py --input ...`
   invocation when you need one controlled slice rather than broad history.
+- Benchmark-facing `make` targets now run through
+  `scripts/run_with_digimon_python.py`, which resolves the `digimon`
+  interpreter directly instead of depending on `conda run -n digimon`.
 - Promotion rules now live in `docs/BENCHMARK_PROMOTION_POLICY.md`. Do not use
   single-run flips or mixed-setting history as promotion-grade evidence.
 

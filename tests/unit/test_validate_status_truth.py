@@ -158,3 +158,42 @@ def test_validate_repo_can_measure_artifacts_from_external_root(tmp_path: Path) 
     _facts, issues = validate_repo(repo_root, artifact_root=artifact_root)
 
     assert issues == []
+
+
+def test_validate_repo_auto_finds_canonical_artifacts_from_worktree_pointer(tmp_path: Path) -> None:
+    """Worktree validation should auto-search the canonical checkout for historical artifacts."""
+    canonical_root = tmp_path / "canonical"
+    repo_root = tmp_path / "worktrees" / "plan-28"
+    git_dir = canonical_root / ".git" / "worktrees" / "plan-28"
+
+    _write_repo_scaffold(repo_root)
+    (canonical_root / ".git").mkdir(parents=True)
+    git_dir.mkdir(parents=True)
+    (repo_root / ".git").write_text(f"gitdir: {git_dir}\n")
+    (git_dir / "commondir").write_text("../..\n")
+
+    (canonical_root / "results").mkdir(parents=True)
+    artifact = canonical_root / "results" / "MuSiQue_run.json"
+    _write_result_artifact(artifact, passed=6, total=19)
+
+    (repo_root / "CURRENT_STATUS.md").write_text(
+        "# Status\n\n"
+        "Prompt v3.6 is active.\n"
+        "Live default remains top_k=5.\n"
+        "Run default remains STAG_TURNS=6.\n"
+        "619265 now anchors on Ray Donovan.\n"
+        "754156 gold is The dynasty regrouped and defeated the Portuguese.\n"
+        f"- Latest: `results/{artifact.name}` (6/19 = 31.6%)\n"
+    )
+    (repo_root / "docs" / "handoff_2026_04_03.md").write_text(
+        "# Handoff\n\n"
+        "Prompt v3.6 remains active.\n"
+        "Plan #28 is active.\n"
+        "619265 anchors on Ray Donovan.\n"
+        "754156 gold is The dynasty regrouped and defeated the Portuguese.\n"
+        f"- Latest: `results/{artifact.name}` (6/19 = 31.6%)\n"
+    )
+
+    _facts, issues = validate_repo(repo_root)
+
+    assert issues == []

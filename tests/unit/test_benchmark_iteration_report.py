@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import json
+from argparse import Namespace
 from pathlib import Path
 
-from scripts.benchmark_iteration_report import build_iteration_report, load_run_artifact, render_markdown
+from scripts.benchmark_iteration_report import (
+    _select_input_paths,
+    build_iteration_report,
+    load_run_artifact,
+    render_markdown,
+)
 
 
 def _write_artifact(
@@ -104,3 +110,59 @@ def test_render_markdown_includes_core_sections(tmp_path: Path) -> None:
     assert "## Per-Question Stability" in rendered
     assert "`run.json`" in rendered
     assert "stable_pass" in rendered
+
+
+def test_select_input_paths_auto_scans_repo_and_canonical_roots(tmp_path: Path) -> None:
+    """Glob selection should combine worktree-local and canonical benchmark artifacts."""
+    canonical_root = tmp_path / "canonical"
+    repo_root = tmp_path / "worktrees" / "plan-28"
+    git_dir = canonical_root / ".git" / "worktrees" / "plan-28"
+
+    repo_root.mkdir(parents=True)
+    (canonical_root / ".git").mkdir(parents=True)
+    git_dir.mkdir(parents=True)
+    (repo_root / ".git").write_text(f"gitdir: {git_dir}\n")
+    (git_dir / "commondir").write_text("../..\n")
+
+    (repo_root / "results").mkdir(parents=True)
+    (canonical_root / "results").mkdir(parents=True)
+    local_artifact = repo_root / "results" / "MuSiQue_gpt-5-4-mini_consolidated_20260403T055717Z.json"
+    canonical_artifact = canonical_root / "results" / "MuSiQue_gpt-5-4-mini_consolidated_20260403T045308Z.json"
+    _write_artifact(
+        local_artifact,
+        results=[
+            {
+                "id": "q1",
+                "gold": "A",
+                "predicted": "A",
+                "llm_em": 1,
+                "em": 1,
+                "primary_failure_class": "none",
+            }
+        ],
+    )
+    _write_artifact(
+        canonical_artifact,
+        results=[
+            {
+                "id": "q1",
+                "gold": "A",
+                "predicted": "A",
+                "llm_em": 1,
+                "em": 1,
+                "primary_failure_class": "none",
+            }
+        ],
+    )
+
+    args = Namespace(
+        glob="results/MuSiQue_gpt-5-4-mini_consolidated_*Z.json",
+        glob_root=None,
+        repo_root=str(repo_root),
+        input=None,
+        latest=None,
+    )
+
+    selected = _select_input_paths(args)
+
+    assert selected == [local_artifact.resolve(), canonical_artifact.resolve()]
