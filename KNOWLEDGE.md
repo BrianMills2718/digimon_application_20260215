@@ -243,6 +243,9 @@ Question `4hop3__754156_88460_30152_20999` is mislabeled in older notes. The ben
 ### 2026-04-02 — codex — integration-issue
 Fresh DIGIMON worktrees are not benchmark-runnable by default even when the git tree is clean. The direct benchmark lane assumes local-only artifacts that are absent in a new worktree: `Option/Config2.yaml` and `results/MuSiQue/...` build artifacts. For bounded worktree verification, link or provision those explicitly before running `eval/run_agent_benchmark.py`; otherwise the run fails before the agent loop starts.
 
+### 2026-04-02 — codex — bug-pattern
+Quoted-anchor preservation is necessary but not sufficient for `2hop__619265_45326`. After the contract repair, a bounded live trace (`digimon.benchmark.MuSiQue.2hop__619265_45326.716b5580`) preserved the episode-title anchor, but the agent later re-bound the series hop to `showtime` through bridge probing. The next systemic fix should constrain bridge selection once a source chunk has already named the target series, so distributors/networks do not displace the anchored entity.
+
 ### 2026-04-02 — codex — best-practice
 The `digimon-kgrag` FastMCP tool objects support planner metadata directly via
 their `meta` field. Attaching `cost_tier`, `reliability_tier`, and `notes`

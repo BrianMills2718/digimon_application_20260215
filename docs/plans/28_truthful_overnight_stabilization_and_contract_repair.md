@@ -284,6 +284,12 @@ decision:
   `Option/Config2.yaml` and `results/MuSiQue/...` artifacts. This is now
   recorded in `KNOWLEDGE.md` and must be provisioned explicitly for future
   benchmark runs from claimed worktrees.
+- Bounded runtime probe on `2hop__619265_45326` produced live observability
+  traces (`trace_id=digimon.benchmark.MuSiQue.2hop__619265_45326.716b5580`).
+  The quoted anchor now survives into the live question state, but the run can
+  still drift later to a wrong bridge candidate (`showtime`). Conclusion:
+  exact-anchor preservation is necessary but not sufficient; the next fix must
+  constrain bridge selection once the source chunk already names the series.
 
 ---
 
