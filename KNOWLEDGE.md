@@ -294,6 +294,25 @@ Fix: removed the blocking validator entirely. submit_answer now always goes thro
 Result: submit_answer errors should drop to 0; question is whether partial answers score
 well on LLM-judge (an informed guess vs no answer at all).
 
+### 2026-04-02 — claude-code — best-practice
+**Removing submit_answer validators improved LLM-judge from 36.8% → 57.9% (+21pp).**
+Three validators were removed in series (all in `digimon_mcp_stdio_server.py` server submit_answer
+and `Core/MCP/tool_consolidation.py` wrapper):
+1. **Atom-completion gate**: Blocked submission when todo atoms were pending. Agents were
+   trying to submit as final tool call but getting rejected, then giving up with empty answers.
+2. **Refusal-style check** (`_ANSWER_REFUSAL_RE`): Blocked answers containing "cannot", "unknown",
+   etc. Blocked 199513 (Nazareth) 7 times — agent had correct answer in todo_write but hedged.
+3. **Negation prefix checks** ("not...", "no..."): Overly aggressive, removed with refusal check.
+
+All three checks were well-intentioned (ensure grounded answers) but created unbreakable
+traps. The LLM judge handles answer quality better than string matching. Keep only the
+empty-answer check.
+
+New passes after removal: 511454 (918), 619265 (12), 305282 (Dec 14, 1814), 849312 (15th c),
+9285 (June), potentially 199513 (Nazareth) after refusal check removal. Note: 94201
+(Mississippi River Delta) regressed — agent now submits "Minneapolis" (early intermediate
+answer) instead of continuing to the final answer. Trade-off of gate removal.
+
 ### 2026-04-02 — claude-code — bug-pattern
 **5 questions consistently missing from benchmark results (n_completed=14/19).**
 In STAG_TURNS=4 + accurate evidence tracking run (T192033Z), only 14/19 questions appeared
