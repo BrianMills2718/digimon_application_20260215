@@ -275,6 +275,60 @@ def test_preserves_explicit_entity_resolution_query() -> None:
     assert "off_atom_query_rewritten_to_active_atom" not in contract["rewrite_reason"]
 
 
+def test_compact_search_query_preserves_quoted_title_anchor() -> None:
+    """Quoted titles should survive compaction intact instead of losing stopwords."""
+    compact = dms._compact_search_query('Identify the series that includes "The Bag or the Bat".')
+
+    assert "The Bag or the Bat" in compact
+    assert "Bag Bat" not in compact
+
+
+def test_compact_search_query_preserves_single_quoted_anchor_phrase() -> None:
+    """Single-quoted anchors with internal apostrophes should also be preserved."""
+    compact = dms._compact_search_query("Identify 'A Lim's country'")
+
+    assert "A Lim's country" in compact
+    assert compact != "Lim country"
+
+
+def test_query_contract_preserves_quoted_title_from_active_atom() -> None:
+    """Active-atom rewriting should retain exact quoted titles for retrieval."""
+    dms._current_question = "How many episodes are in season 5 of the series with The Bag or the Bat?"
+    dms._current_semantic_plan.clear()
+    dms._current_semantic_plan.update(
+        {
+            "atoms": [
+                {
+                    "atom_id": "a1",
+                    "sub_question": "Identify the series that includes 'The Bag or the Bat'.",
+                    "depends_on": [],
+                    "operation": "lookup",
+                    "answer_kind": "entity",
+                }
+            ]
+        }
+    )
+    dms._todos.clear()
+    dms._todos.extend(
+        [
+            {
+                "id": "a1",
+                "content": "Identify the series that includes 'The Bag or the Bat'.",
+                "status": "in_progress",
+            }
+        ]
+    )
+
+    effective, contract = dms._build_retrieval_query_contract(
+        "How many episodes are in season 5 of the series with The Bag or the Bat?",
+        tool_name="chunk_text_search",
+    )
+
+    assert contract["active_atom_id"] == "a1"
+    assert "The Bag or the Bat" in effective
+    assert "Bag Bat" not in effective
+
+
 def test_entity_search_rewrites_chunk_like_resolution_query_back_to_subject() -> None:
     """Chunk-sized string-resolution queries should collapse back to the active atom subject."""
     _prime_lady_godiva_plan()

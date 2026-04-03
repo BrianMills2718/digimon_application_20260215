@@ -960,9 +960,12 @@ def build_consolidated_tools(dms: Any) -> list:
                 query_json={"entity_name": entity_name},
             )
         elif method == "resolve":
+            resolved_names = entity_names
+            if not resolved_names and entity_name:
+                resolved_names = [entity_name]
             raw = await _timed_call(
                 dms.entity_resolve_names_to_ids(
-                    entity_names=entity_names, vdb_reference_id=vdb_reference_id,
+                    entity_names=resolved_names, vdb_reference_id=vdb_reference_id,
                     dataset_name=dataset_name, top_k_per_name=top_k_per_name,
                 ),
                 tool_name="entity_info", method="resolve",

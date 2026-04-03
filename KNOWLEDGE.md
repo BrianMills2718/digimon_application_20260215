@@ -234,6 +234,15 @@ Proper fix needed in llm_client: modify `_collect_evidence_pointer_labels`
 to handle plain-text results, or add a separate metadata channel for
 evidence pointers that doesn't change the visible tool result.
 
+### 2026-04-02 — codex — bug-pattern
+Question `2hop__619265_45326` is not fundamentally a Batman Beyond aggregate-summary failure. The corpus anchor is the quoted episode title `"The Bag or the Bat"`, which points to `Ray Donovan` (`results/MuSiQue/corpus/Corpus.json`, doc_ids 200 and 213). Failing runs drift only after the query contract compacts the quoted title into loose keywords and semantic retrieval goes off-anchor. Treat this as an exact-anchor preservation failure family.
+
+### 2026-04-02 — codex — bug-pattern
+Question `4hop3__754156_88460_30152_20999` is mislabeled in older notes. The benchmark artifact gold is `The dynasty regrouped and defeated the Portuguese`, not `Laos`. The real failure family is premature submission of intermediate geography (`Laos`, `Myanmar`) instead of the final action/event answer span.
+
+### 2026-04-02 — codex — integration-issue
+Fresh DIGIMON worktrees are not benchmark-runnable by default even when the git tree is clean. The direct benchmark lane assumes local-only artifacts that are absent in a new worktree: `Option/Config2.yaml` and `results/MuSiQue/...` build artifacts. For bounded worktree verification, link or provision those explicitly before running `eval/run_agent_benchmark.py`; otherwise the run fails before the agent loop starts.
+
 ### 2026-04-02 — codex — best-practice
 The `digimon-kgrag` FastMCP tool objects support planner metadata directly via
 their `meta` field. Attaching `cost_tier`, `reliability_tier`, and `notes`

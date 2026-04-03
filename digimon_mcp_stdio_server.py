@@ -870,14 +870,50 @@ def _query_token_overlap(left: str, right: str) -> float:
     return len(left_tokens.intersection(right_tokens)) / len(left_tokens.union(right_tokens))
 
 
+def _extract_preserved_query_phrases(text: str) -> tuple[list[str], str]:
+    """Preserve explicit quoted anchors before generic query compaction runs."""
+    candidate = str(text or "")
+    preserved: list[str] = []
+    spans: list[tuple[int, int]] = []
+
+    for match in re.finditer(r'"([^"]+)"', candidate):
+        phrase = match.group(1).strip()
+        if phrase:
+            preserved.append(phrase)
+            spans.append(match.span())
+
+    if not preserved and candidate.count("'") >= 2:
+        first = candidate.find("'")
+        last = candidate.rfind("'")
+        if first >= 0 and last > first:
+            phrase = candidate[first + 1:last].strip()
+            if phrase and len(phrase.split()) >= 2:
+                preserved.append(phrase)
+                spans.append((first, last + 1))
+
+    if not spans:
+        return preserved, candidate
+
+    remainder_parts: list[str] = []
+    cursor = 0
+    for start, end in sorted(spans):
+        remainder_parts.append(candidate[cursor:start])
+        cursor = end
+    remainder_parts.append(candidate[cursor:])
+    remainder = " ".join(part for part in remainder_parts if part)
+    return preserved, remainder
+
+
 def _compact_search_query(text: str) -> str:
     """Strip question wrappers so retrieval queries focus on informative terms."""
     candidate = _QUERY_LEADIN_RE.sub("", (text or "").strip())
     candidate = _QUERY_PLACEHOLDER_RE.sub(" ", candidate)
+    preserved_phrases, candidate = _extract_preserved_query_phrases(candidate)
     candidate = re.sub(r"[^\w\s'/-]+", " ", candidate)
     tokens = [token.strip() for token in candidate.split() if token.strip()]
     filtered = [token for token in tokens if token.lower() not in _QUERY_STOPWORDS]
-    compact = " ".join(filtered or tokens)
+    compact_parts = preserved_phrases + (filtered or tokens)
+    compact = " ".join(compact_parts)
     return re.sub(r"\s+", " ", compact).strip(" ?.-")
 
 

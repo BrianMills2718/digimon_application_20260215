@@ -43,6 +43,25 @@ Result files:
 **Stochasticity reassessment (2026-04-03):**
 The "stably passing" list below is likely stale. 619265 failed in 3 of the last 4 runs (listed as stable). 766973 timed out in 2 runs. The 57.9% run was a high-end stochastic result. True mean is probably ~42-52% given the distribution of runs. Need ≥3 controlled runs at same settings to establish real baseline.
 
+## Audit Corrections (verified 2026-04-02 / artifacts dated 2026-04-03)
+
+- **619265 is an exact-anchor preservation problem, not fundamentally a Batman Beyond aggregate-summary problem.**
+  The corpus contains `"The Bag or the Bat"` → `Ray Donovan`
+  (`results/MuSiQue/corpus/Corpus.json`, doc_ids 200 and 213). Passing runs
+  identify `Ray Donovan`; failing runs drift after the quoted title is compacted
+  and semantic search goes off-anchor.
+- **754156's benchmark gold is not `Laos`.**
+  The result artifacts record the gold as
+  `The dynasty regrouped and defeated the Portuguese`. Treat this as an
+  answer-kind / premature-intermediate-submit problem, not a country-name
+  question.
+- **The maintained code path does not use `entity_search top_k=10` by default.**
+  Live consolidated default is `top_k=5`; the earlier `10` experiment increased
+  noise and was reverted.
+- **Prompt metadata was stale.**
+  The active consolidated prompt now reflects `version 3.6`, including explicit
+  quoted-anchor preservation guidance.
+
 ### What submit gate removal fixed (+21pp improvement)
 
 The primary fix was removing three blocking validators in `digimon_mcp_stdio_server.py`
@@ -83,7 +102,7 @@ in recent runs. See stochasticity reassessment above.
 | 849312 | ~75% | 15th century — usually passes |
 | 511296 | ~75% | Maria Shriver — usually passes |
 | 731956 | ~75% | Johan Remkes — usually passes |
-| 619265 | ~25% | "12" season 5 episodes — was listed stable, actually stochastic |
+| 619265 | ~25% | Exact-title anchor case (`"The Bag or the Bat"` → `Ray Donovan`); passes when the quoted title stays intact |
 | 766973 | ~50% | Rockland County — sometimes times out |
 | 13548 | ~50% | June 1982 — inconsistent |
 | 9285 | ~50% | "June" vs "March" — query path variation |
@@ -100,14 +119,15 @@ in recent runs. See stochasticity reassessment above.
 | 820301 | 22 | "1" | IEE — wrong answer, retrieval finds wrong chain |
 | 354635 | Time Warner Cable | "Adelphia" or "Comcast" | Close IEE — finds neighbor not target |
 | 71753 | 1930 | "1961" or "1921" | Wrong year — poor entity disambiguation |
-| 754156 | Laos | "expelled by the Portuguese" | Wrong type — text phrase not entity name |
+| 754156 | The dynasty regrouped and defeated the Portuguese | "Laos" / "Myanmar" / "expelled by the Portuguese" | Premature intermediate submit + answer-kind failure |
 
 ### Remaining failure families
 
 | Family | Count | Description |
 |--------|-------|-------------|
 | INTERMEDIATE_ENTITY_ERROR (IEE) | 4 | Agent stops at wrong hop or confuses similar entities |
-| ANSWER_TYPE_MISMATCH | 1 | Retrieves relationship description, not entity name |
+| EXACT_ANCHOR_DRIFT | 1 | Quoted title / literal span is compacted and semantic retrieval drifts off the real anchor |
+| ANSWER_TYPE_MISMATCH | 1 | Final answer should be an action/event phrase but the agent submits an intermediate entity/location |
 | YEAR_DISAMBIGUATION | 1 | Finds plausible but wrong year in related entity |
 
 ### Note: todo_write validator still active
@@ -144,14 +164,15 @@ single-run reruns on subsets, not a full 50q confirmation.
 - Plan #21: Failure iteration sprint ✅ (closed — see plan for findings)
 - Plan #22: Control flow hardening ✅ (submit gate + refusal checks removed, +21pp on 19q)
 - Plan #25: Coordination prerequisite remediation ✅
-- Prompt v3.4: Answer granularity, verification step, flexible relationships, short queries, search loops
+- Prompt v3.6: Answer granularity, verification step, flexible relationships, short queries, quoted-anchor preservation
 - STAG_TURNS=6 default (configurable via Makefile, proven better than 4)
-- entity_search top_k=10 default
+- entity_search top_k=5 default (`10` was tested, worsened noise, and was reverted)
 
 ## Active Work
 
 - Plan #22: Canonicalization + projection hardening (Phase 2 rebuild documented; control flow hardening complete)
 - Plan #23: Semantic build boundary design (in progress, design phase)
+- Plan #28: Truthful overnight stabilization + contract repair (in progress)
 
 ## Latency Breakdown (measured 2026-04-03)
 
@@ -173,7 +194,7 @@ Total per question: ~6s operators + 58-82s LLM (47-48 turns sequential).
 ## Next Actions
 
 1. **Establish real baseline** — run 19q 3+ times at same settings; current 31-58% spread shows high stochasticity; true mean is unclear
-2. **IEE family fix** — 4/6 consistently-failing questions are IEE; entity disambiguation improvement would have broad impact. entity_search returns too many candidates; agent picks wrong semantic type.
-3. **619265 (Batman Beyond, "12")** — previously listed stable, now failing consistently. Agent gets "52 total episodes" from entity_info; needs to retrieve season-specific chunk. Fix: better chunk_retrieve query targeting "season 5".
-4. **todo_write validator review** — `_validate_manual_todo_completion` may contribute to agent getting stuck; hasn't been evaluated since gate removal
-5. **50q confirmatory run** — once 19q baseline is stable, run 50q to confirm the +22pp improvement is real
+2. **Contract / anchor repair verification** — preserve quoted titles and exact literal spans through query rewriting; benchmark failures like 619265 are off-anchor drift, not graph-data absence.
+3. **IEE family fix** — 4/6 consistently-failing questions are still IEE; entity disambiguation improvement would have broad impact once the contract layer is truthful.
+4. **todo_write validator review** — `_validate_manual_todo_completion` may contribute to agent getting stuck; 136129 remains a likely diagnostic case.
+5. **50q confirmatory run** — once the 19q baseline is re-established under fixed settings, rerun 50q to confirm the +22pp improvement is real

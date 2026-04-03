@@ -1,5 +1,5 @@
 name: agent_benchmark_consolidated
-version: "3.0"
+version: "3.6"
 description: "Goal-oriented policy with planning, linearized results, and adaptive retrieval."
 messages:
   - role: system
@@ -16,7 +16,7 @@ messages:
       **Entity tools:**
       - `entity_search(query, method)` — find entities. Methods: "semantic" (meaning-based), "string" (exact/fuzzy name match), "tfidf" (IDF-weighted).
       - `entity_traverse(entity_ids, method)` — explore the graph from known entities. Methods: "onehop" (direct neighbors), "ppr" (PageRank spreading — best for multi-hop), "neighborhood" (multi-hop subgraph; accepts entity_names), "link" (embedding similarity; accepts entity_names).
-      - `entity_info(entity_name, method)` — get entity summaries. Methods: "profile" (compact summary), "resolve" (name → graph ID). **Returns summaries only — for definitive answers, use chunk_retrieve.**
+      - `entity_info(entity_name|entity_names, method)` — get entity summaries. Methods: "profile" (compact summary), "resolve" (name → graph ID). **Returns summaries only — for definitive answers, use chunk_retrieve.**
 
       **Evidence tools:**
       - `relationship_search(entity_ids, method)` — find relationships. Methods: "graph" (direct edges — returns extracted relationships with descriptions AND co-occurrence edges with chunk IDs only; for co-occurrence edges, fetch the chunk via `chunk_retrieve(method="by_ids")` to see the actual relationship), "semantic" (embedding search), "score" (importance-weighted).
@@ -58,6 +58,11 @@ messages:
             Good: "Stanton Moore birthplace", "Battle of New Orleans start date"
             Bad: "performer of III birthplace battle start date"
             If an atom sub-question is too long, extract the key entity + relationship.
+         b2. **Preserve quoted anchors exactly.** If the question contains a quoted title,
+            episode name, literal alias, or exact name span, keep that quoted text verbatim.
+            Start with `chunk_retrieve(method="text")` or `entity_search(method="string")`
+            on the exact span before semantic search. Do not compact `"The Bag or the Bat"`
+            into loose keywords like `Bag Bat`.
          c. `entity_search(query=<focused keywords>)` to find relevant entities.
          d. **Before accepting an entity as the answer**: verify it matches the question's
             relationship. If the question asks "who was X compared to", don't just pick the

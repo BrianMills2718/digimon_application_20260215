@@ -229,7 +229,7 @@ bench-baseline:  ## Run baseline (no graph) benchmark
 		--agent-spec none --allow-missing-agent-spec \
 		--missing-agent-spec-reason "agent_spec relocated"
 
-bench-musique:  ## Run MuSiQue 19q diagnostic set (STAG_TURNS=4 default)
+bench-musique:  ## Run MuSiQue 19q diagnostic set (STAG_TURNS=6 default)
 	conda run -n digimon python eval/run_agent_benchmark.py \
 		--agent-spec none --allow-missing-agent-spec \
 		--missing-agent-spec-reason "relocated" \

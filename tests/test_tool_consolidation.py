@@ -102,6 +102,7 @@ class _FakeDMS:
     def __init__(self) -> None:
         self.captured_payloads: list[tuple[str, str, dict[str, object]]] = []
         self.last_entity_profile_kwargs: dict[str, object] | None = None
+        self.last_entity_resolve_kwargs: dict[str, object] | None = None
         self.last_relationship_kwargs: dict[str, object] | None = None
         self.active_atom: dict[str, object] | None = None
         self.dependency_values: list[str] = []
@@ -126,6 +127,10 @@ class _FakeDMS:
         self.last_entity_profile_kwargs = dict(kwargs)
         return json.dumps({"canonical_name": "godiva", "connected_entities": ["mercia"]})
 
+    async def entity_resolve_names_to_ids(self, **kwargs: object) -> str:
+        self.last_entity_resolve_kwargs = dict(kwargs)
+        return json.dumps({"resolved_entities": [{"resolved_entity_name": "godiva"}]})
+
     async def relationship_onehop(self, **kwargs: object) -> str:
         self.last_relationship_kwargs = dict(kwargs)
         return json.dumps({"relationships": [{"src_id": "godiva", "tgt_id": "mercia"}]})
@@ -149,6 +154,22 @@ async def test_entity_info_wrapper_forwards_context_to_atom_hook() -> None:
     assert payload["resolved_graph_reference_id"] == "MuSiQue_ERGraph"
     assert payload["resolved_dataset_name"] == "MuSiQue"
     assert payload["requested_entity_name"] == "godiva"
+
+
+@pytest.mark.asyncio
+async def test_entity_info_resolve_accepts_single_entity_name_alias() -> None:
+    """Resolve wrapper should accept the single-name call shape the agent already uses."""
+    dms = _FakeDMS()
+    tools = {tool.__name__: tool for tool in build_consolidated_tools(dms)}
+
+    await tools["entity_info"](
+        method="resolve",
+        entity_name="godiva",
+        dataset_name="MuSiQue",
+    )
+
+    assert dms.last_entity_resolve_kwargs is not None
+    assert dms.last_entity_resolve_kwargs["entity_names"] == ["godiva"]
 
 
 @pytest.mark.asyncio

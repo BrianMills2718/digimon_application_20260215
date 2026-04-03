@@ -113,6 +113,13 @@ small slice, run the targeted MuSiQue batch, diagnose the remaining misses, and
 immediately start the next systemic repair until the active plan is exhausted or
 an explicit escalation criterion is hit.
 
+**Truthfulness gate for autonomous execution:** continuous execution does not
+mean continuing from stale or false diagnostics. If `CURRENT_STATUS.md`,
+handoff docs, or plan notes conflict with the live code, benchmark artifacts,
+or current defaults, correct the artifacts first, record the conflict, and then
+continue from the verified state. Running overnight from a known-false handoff
+is a process failure, not momentum.
+
 ### Overnight Phase Sequence (2026-04-02 → 2026-04-03)
 
 Execute these phases in order. Each phase has explicit acceptance criteria.
