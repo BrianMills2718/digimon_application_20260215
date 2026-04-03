@@ -274,7 +274,7 @@ decision:
 - [x] Truth validator + benchmark report tooling landed and verified
 - [x] Handoff/status/process docs updated to use generated truth surfaces
 - [x] Targeted verification completed and findings recorded
-- [ ] 19q fixed-setting triple-run baseline completed OR explicitly deferred with reason
+- [x] 19q fixed-setting triple-run baseline explicitly deferred with reason
 
 ## Progress (2026-04-02)
 
@@ -321,6 +321,29 @@ decision:
   fresh worktrees can still lack `Data/MuSiQue`, so bounded benchmark reruns may
   require `--data-root <canonical-checkout>/Data` until dataset provisioning is
   made worktree-portable.
+- Attempted the fixed-setting 19q baseline with:
+  - `python scripts/run_with_digimon_python.py eval/run_agent_benchmark.py --agent-spec none --allow-missing-agent-spec --missing-agent-spec-reason relocated --dataset MuSiQue --data-root /home/brian/projects/Digimon_for_KG_application/Data --questions-file eval/fixtures/musique_19q_diagnostic_ids.txt --model openrouter/openai/gpt-5.4-mini --backend direct --retrieval-stagnation-turns 6 --question-delay 2 --tag plan28_guard_baseline_r1`
+  - partial artifact: `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T131543Z.json`
+  - partial log: `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T131543Z.log`
+- Deferred the full 19q triple-run gate after `7/19` completed questions because
+  semantic-plan revise and atom-completion helpers were hitting pervasive
+  Gemini `429 RESOURCE_EXHAUSTED` failures throughout the run. Under that
+  condition the baseline would measure provider quota instability as much as
+  DIGIMON logic, so spending two more runs would not be decision-grade.
+- Patched helper structured calls to forward configured `llm_client`
+  fallback models + retries instead of hard-pinning `agentic_llm.model`.
+  This covers semantic-plan revise/scope-repair, atom completion, contextual
+  place completion, bridge judging, bridge disambiguation, and
+  `select_analysis_mode`.
+- Live smoke verification after the patch:
+  - command:
+    `python scripts/run_with_digimon_python.py eval/run_agent_benchmark.py --agent-spec none --allow-missing-agent-spec --missing-agent-spec-reason relocated --dataset MuSiQue --data-root /home/brian/projects/Digimon_for_KG_application/Data --questions 2hop__619265_45326 --model openrouter/openai/gpt-5.4-mini --backend direct --retrieval-stagnation-turns 6 --question-delay 0 --tag plan28_helper_fallback_smoke`
+  - artifact: `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T133705Z.json`
+  - result: completed, but regressed `619265` to predicted `10`
+  - live stderr showed repeated helper fallback events from
+    `gemini/gemini-2.5-flash` to `openrouter/openai/gpt-5.4-mini`
+  - remaining issue: artifact still reported `fallback_used_any=false`, so
+    nested helper fallback usage is not yet surfaced in benchmark provenance
 - Added process-enforcement tooling:
   - `scripts/validate_status_truth.py` + `make truth-check`
   - `scripts/benchmark_iteration_report.py` + `make benchmark-report`

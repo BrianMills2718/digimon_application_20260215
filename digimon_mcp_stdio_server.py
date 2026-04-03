@@ -397,6 +397,55 @@ def _ensure_embedding_provider_initialized(reason: str = "") -> Any:
     return encoder
 
 
+def _configured_helper_fallback_models() -> list[str]:
+    """Return the deduped fallback chain for DIGIMON helper LLM calls."""
+    fallback_candidates: list[Any] = []
+
+    agentic_llm = _state.get("agentic_llm")
+    if agentic_llm is not None:
+        fallback_candidates.extend(getattr(agentic_llm, "_fallback_models", None) or [])
+
+    if not fallback_candidates:
+        llm = _state.get("llm")
+        if llm is not None:
+            fallback_candidates.extend(getattr(llm, "_fallback_models", None) or [])
+
+    if not fallback_candidates:
+        config = _state.get("config")
+        llm_config = getattr(config, "llm", None) if config is not None else None
+        fallback_candidates.extend(getattr(llm_config, "fallback_models", None) or [])
+
+    fallback_models: list[str] = []
+    seen: set[str] = set()
+    for candidate in fallback_candidates:
+        model_name = str(candidate or "").strip()
+        if not model_name or model_name in seen:
+            continue
+        seen.add(model_name)
+        fallback_models.append(model_name)
+    return fallback_models
+
+
+def _helper_structured_llm_policy(
+    *,
+    model_override: str | None = None,
+    num_retries: int = 2,
+) -> tuple[str, dict[str, Any]]:
+    """Resolve model + fallback kwargs for DIGIMON helper structured calls."""
+    llm = _state.get("agentic_llm")
+    config = _state.get("config")
+    config_model = getattr(getattr(config, "llm", None), "model", None) if config is not None else None
+    model = str(model_override or (llm.model if llm else config_model) or "").strip()
+    if not model:
+        raise RuntimeError("No DIGIMON helper model configured.")
+
+    call_kwargs: dict[str, Any] = {"num_retries": int(num_retries)}
+    fallback_models = [name for name in _configured_helper_fallback_models() if name != model]
+    if fallback_models:
+        call_kwargs["fallback_models"] = fallback_models
+    return model, call_kwargs
+
+
 async def _ensure_initialized():
     """Lazy initialization of DIGIMON components."""
     if "initialized" in _state:
@@ -469,7 +518,11 @@ async def _ensure_initialized():
         config.agentic_model = agentic_model
         try:
             from Core.Provider.LLMClientAdapter import LLMClientAdapter
-            _state["agentic_llm"] = LLMClientAdapter(agentic_model)
+            _state["agentic_llm"] = LLMClientAdapter(
+                agentic_model,
+                fallback_models=fallback,
+                num_retries=3,
+            )
             logger.info(f"Agentic LLM initialized: {agentic_model}")
         except ImportError:
             logger.warning("llm_client not available — agentic_model ignored, using default LLM")
@@ -1821,8 +1874,7 @@ async def _infer_atom_completion_with_llm(
         evidence_text=evidence_text,
     )
 
-    llm = _state.get("agentic_llm")
-    model = llm.model if llm else _state["config"].llm.model
+    model, helper_kwargs = _helper_structured_llm_policy(num_retries=2)
     trace_id = f"digimon.atom_completion.{tool_name}.{uuid.uuid4().hex[:8]}"
     try:
         decision, _meta = await acall_llm_structured(
@@ -1832,6 +1884,7 @@ async def _infer_atom_completion_with_llm(
             task="digimon.atom_completion",
             trace_id=trace_id,
             max_budget=0,
+            **helper_kwargs,
         )
     except Exception as exc:
         logger.warning("atom completion judge failed: %s", exc)
@@ -1923,8 +1976,7 @@ async def _infer_contextual_place_completion_with_llm(
         evidence_text=evidence_text,
     )
 
-    llm = _state.get("agentic_llm")
-    model = llm.model if llm else _state["config"].llm.model
+    model, helper_kwargs = _helper_structured_llm_policy(num_retries=2)
     trace_id = f"digimon.atom_place_completion.{tool_name}.{uuid.uuid4().hex[:8]}"
     try:
         decision, _meta = await acall_llm_structured(
@@ -1934,6 +1986,7 @@ async def _infer_contextual_place_completion_with_llm(
             task="digimon.atom_place_completion",
             trace_id=trace_id,
             max_budget=0,
+            **helper_kwargs,
         )
     except Exception as exc:
         logger.warning("contextual place completion judge failed: %s", exc)
@@ -2443,8 +2496,7 @@ async def _infer_bridge_candidate_with_llm(
         evidence_text=evidence_text,
     )
 
-    llm = _state.get("agentic_llm")
-    model = llm.model if llm else _state["config"].llm.model
+    model, helper_kwargs = _helper_structured_llm_policy(num_retries=2)
     trace_id = f"digimon.atom_bridge.{tool_name}.{uuid.uuid4().hex[:8]}"
     try:
         decision, _meta = await acall_llm_structured(
@@ -2454,6 +2506,7 @@ async def _infer_bridge_candidate_with_llm(
             task="digimon.atom_bridge",
             trace_id=trace_id,
             max_budget=0,
+            **helper_kwargs,
         )
     except Exception as exc:
         logger.warning("atom bridge judge failed: %s", exc)
@@ -7145,7 +7198,12 @@ async def set_agentic_model(model: str) -> str:
     from Core.Provider.LLMClientAdapter import LLMClientAdapter
 
     old_model = _state["agentic_llm"].model if _state.get("agentic_llm") else None
-    _state["agentic_llm"] = LLMClientAdapter(model)
+    fallback_models = _configured_helper_fallback_models()
+    _state["agentic_llm"] = LLMClientAdapter(
+        model,
+        fallback_models=fallback_models,
+        num_retries=3,
+    )
     _state["agentic_model_source"] = "runtime_override"
 
     logger.info(f"Agentic model changed: {old_model} -> {model}")
@@ -8137,8 +8195,7 @@ async def select_analysis_mode(
         return json.dumps({"error": f"Prompt render failed: {e}"})
 
     # Use agentic LLM if available, else fall back to default LLM
-    llm = _state.get("agentic_llm")
-    model = llm.model if llm else _state["config"].llm.model
+    model, helper_kwargs = _helper_structured_llm_policy(num_retries=2)
 
     try:
         _sam_trace = f"digimon.select_analysis_mode.{dataset_name or 'none'}.{uuid.uuid4().hex[:8]}"
@@ -8147,6 +8204,7 @@ async def select_analysis_mode(
             task="digimon.select_analysis_mode",
             trace_id=_sam_trace,
             max_budget=0,
+            **helper_kwargs,
         )
         logger.info(
             f"select_analysis_mode: recommended '{decision.recommended_mode}' "
@@ -8287,13 +8345,16 @@ if BENCHMARK_MODE:
             {"role": "user", "content": user_prompt},
         ]
 
-        llm = _state.get("agentic_llm")
-        model = llm.model if llm else _state["config"].llm.model
         trace_id = f"digimon.semantic_plan.{uuid.uuid4().hex[:8]}"
 
         # Use deepseek for planning to avoid Gemini rate limits.
         # Planning is cheap (~500 tokens) and deepseek handles structured output well.
         plan_model = "deepseek/deepseek-chat"
+        plan_call_kwargs = _helper_structured_llm_policy(
+            model_override=plan_model,
+            num_retries=2,
+        )[1]
+        revise_model, revise_call_kwargs = _helper_structured_llm_policy(num_retries=2)
         try:
             plan, _meta = await acall_llm_structured(
                 plan_model,
@@ -8302,7 +8363,7 @@ if BENCHMARK_MODE:
                 task="digimon.semantic_plan",
                 trace_id=trace_id,
                 max_budget=0,
-                num_retries=2,
+                **plan_call_kwargs,
             )
 
             # Second-pass plan critic/reviser:
@@ -8342,12 +8403,13 @@ if BENCHMARK_MODE:
             revised_trace_id = f"digimon.semantic_plan.revise.{uuid.uuid4().hex[:8]}"
             try:
                 revised_plan, _rev_meta = await acall_llm_structured(
-                    model,
+                    revise_model,
                     critique_messages,
                     response_model=SemanticPlan,
                     task="digimon.semantic_plan.revise",
                     trace_id=revised_trace_id,
                     max_budget=0,
+                    **revise_call_kwargs,
                 )
                 plan = revised_plan
             except Exception as revise_err:
@@ -8374,12 +8436,13 @@ if BENCHMARK_MODE:
                 repair_trace_id = f"digimon.semantic_plan.scope_repair.{uuid.uuid4().hex[:8]}"
                 try:
                     repaired_plan, _repair_meta = await acall_llm_structured(
-                        model,
+                        revise_model,
                         repair_messages,
                         response_model=SemanticPlan,
                         task="digimon.semantic_plan.scope_repair",
                         trace_id=repair_trace_id,
                         max_budget=0,
+                        **revise_call_kwargs,
                     )
                     plan = repaired_plan
                 except Exception as repair_err:
@@ -8562,8 +8625,7 @@ if BENCHMARK_MODE:
             {"role": "user", "content": user_prompt},
         ]
 
-        llm = _state.get("agentic_llm")
-        model = llm.model if llm else _state["config"].llm.model
+        model, helper_kwargs = _helper_structured_llm_policy(num_retries=2)
         trace_id = f"digimon.bridge_disambiguate.{uuid.uuid4().hex[:8]}"
 
         try:
@@ -8574,6 +8636,7 @@ if BENCHMARK_MODE:
                 task="digimon.bridge_disambiguate",
                 trace_id=trace_id,
                 max_budget=0,
+                **helper_kwargs,
             )
             # Ensure winner is one of provided candidates
             candidate_names = [c["candidate"] for c in candidates]

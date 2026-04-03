@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import llm_client
 import pytest
 
 import digimon_mcp_stdio_server as dms
@@ -1612,3 +1615,129 @@ async def test_cached_atom_validation_payload_drives_manual_done_rejection(monke
             },
             previous_todo=dms._todo_item_by_id("a2"),
         )
+
+
+def test_helper_structured_llm_policy_uses_agentic_fallback_chain() -> None:
+    """Helper structured calls should inherit fallback routing instead of hard-pinning one model."""
+    original_state = dict(dms._state)
+    try:
+        dms._state.clear()
+        dms._state.update(
+            {
+                "config": SimpleNamespace(
+                    llm=SimpleNamespace(
+                        model="gemini/gemini-2.5-flash",
+                        fallback_models=[
+                            "gemini/gemini-2.5-flash",
+                            "openrouter/openai/gpt-5.4-mini",
+                            "deepseek/deepseek-chat",
+                        ],
+                    )
+                ),
+                "agentic_llm": SimpleNamespace(
+                    model="gemini/gemini-2.5-flash",
+                    _fallback_models=[
+                        "gemini/gemini-2.5-flash",
+                        "openrouter/openai/gpt-5.4-mini",
+                        "deepseek/deepseek-chat",
+                    ],
+                ),
+            }
+        )
+
+        model, helper_kwargs = dms._helper_structured_llm_policy(num_retries=2)
+
+        assert model == "gemini/gemini-2.5-flash"
+        assert helper_kwargs["num_retries"] == 2
+        assert helper_kwargs["fallback_models"] == [
+            "openrouter/openai/gpt-5.4-mini",
+            "deepseek/deepseek-chat",
+        ]
+    finally:
+        dms._state.clear()
+        dms._state.update(original_state)
+
+
+@pytest.mark.asyncio
+async def test_atom_completion_judge_forwards_helper_fallback_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Atom-completion helper calls should pass fallback models into llm_client."""
+    _prime_lady_godiva_plan()
+    original_state = dict(dms._state)
+    captured: dict[str, object] = {}
+
+    async def _fake_acall_llm_structured(model, messages, response_model, **kwargs):
+        captured["model"] = model
+        captured["messages"] = messages
+        captured["kwargs"] = kwargs
+        return (
+            response_model(
+                should_mark_done=True,
+                resolved_value="Mercia",
+                confidence=0.93,
+                evidence_refs=["chunk_84"],
+                rationale="The evidence names Mercia directly.",
+            ),
+            SimpleNamespace(),
+        )
+
+    monkeypatch.setattr(llm_client, "acall_llm_structured", _fake_acall_llm_structured)
+    monkeypatch.setattr(
+        llm_client,
+        "render_prompt",
+        lambda *args, **kwargs: [{"role": "user", "content": "judge this evidence"}],
+    )
+
+    try:
+        dms._state.clear()
+        dms._state.update(
+            {
+                "config": SimpleNamespace(
+                    llm=SimpleNamespace(
+                        model="gemini/gemini-2.5-flash",
+                        fallback_models=[
+                            "openrouter/openai/gpt-5.4-mini",
+                            "deepseek/deepseek-chat",
+                        ],
+                    )
+                ),
+                "agentic_llm": SimpleNamespace(
+                    model="gemini/gemini-2.5-flash",
+                    _fallback_models=[
+                        "openrouter/openai/gpt-5.4-mini",
+                        "deepseek/deepseek-chat",
+                    ],
+                ),
+            }
+        )
+
+        update = await dms._infer_atom_completion_with_llm(
+            dms._semantic_plan_atom_by_id("a1"),
+            dms._todo_item_by_id("a1"),
+            {
+                "chunks": [
+                    {
+                        "chunk_id": "chunk_84",
+                        "text": "Lady Godiva was associated with Mercia.",
+                    }
+                ],
+                "query_contract": {
+                    "effective_query": "What is Lady Godiva's birthplace?",
+                },
+            },
+            tool_name="chunk_retrieve",
+            method="by_entities",
+        )
+
+        assert update is not None
+        assert update["event"] == "atom_autocomplete"
+        assert captured["model"] == "gemini/gemini-2.5-flash"
+        assert captured["kwargs"]["num_retries"] == 2
+        assert captured["kwargs"]["fallback_models"] == [
+            "openrouter/openai/gpt-5.4-mini",
+            "deepseek/deepseek-chat",
+        ]
+    finally:
+        dms._state.clear()
+        dms._state.update(original_state)

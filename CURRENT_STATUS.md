@@ -208,7 +208,7 @@ Total per question: ~6s operators + 58-82s LLM (47-48 turns sequential).
 
 ## Next Actions
 
-1. **Run a fixed-setting 19q triple-run baseline** — same settings, three runs, one generated report; current five-run history is still mixed-setting evidence only.
+1. **Validate helper fallback quality + observability before spending on the 19q gate** — the attempted fixed-setting run `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T131543Z.json` was aborted at `7/19` completed because semantic-plan / atom-completion helpers hit pervasive Gemini `429 RESOURCE_EXHAUSTED` failures. Plan #28 now routes those helper calls through configured `llm_client` fallbacks, but the follow-up smoke run `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T133705Z.json` regressed `619265` to predicted answer `10`, and the benchmark artifact still reported `fallback_used_any=false` despite live helper fallback warnings. Another triple-run now would still mix controller behavior with unresolved helper-fallback quality/observability drift.
 2. **Reclassify from artifacts after every change** — rerun `make truth-check` and regenerate the iteration report before updating narrative docs.
 3. **IEE family fix after the bridge guard** — 199513 / 354635 / 820301 remain the clearest stable-fail IEE cases.
 4. **Worktree dataset portability** — benchmark reruns from fresh worktrees may still need `--data-root <canonical-checkout>/Data` until the MuSiQue dataset is provisioned locally.

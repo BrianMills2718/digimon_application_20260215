@@ -474,3 +474,25 @@ The live 619265 verification run succeeded only after passing
 worktree's local `Data/` directory did not include the MuSiQue dataset. Treat
 dataset-root portability as a separate remaining gap from artifact-root
 portability.
+
+### 2026-04-03 — codex — performance
+**Do not treat the current fixed-setting 19q gate as decision-grade while helper-model Gemini quota is unstable.**
+The attempted baseline run `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T131543Z.json`
+was stopped at `7/19` completed because semantic-plan revise and
+atom-completion helpers were repeatedly failing with Gemini
+`429 RESOURCE_EXHAUSTED`. Under that condition DIGIMON falls back to draft
+plans and loses helper judgments, so a triple-run baseline would be dominated
+by provider instability rather than clean before/after controller signal.
+
+### 2026-04-03 — codex — integration-issue
+**DIGIMON helper structured calls had been bypassing the configured fallback chain.**
+The main benchmark lane already passed `fallback_models` into `llm_client`, but
+helper calls like semantic-plan revise and atom-completion were extracting only
+`agentic_llm.model` and calling `acall_llm_structured(...)` directly. Plan #28
+patched those helpers to forward `fallback_models` + retries, and a live smoke
+run then showed repeated Gemini `429 RESOURCE_EXHAUSTED` helper calls falling
+back instead of failing hard. However the same smoke artifact
+`results/MuSiQue_gpt-5-4-mini_consolidated_20260403T133705Z.json` regressed
+`619265` to answer `10`, and the benchmark summary still recorded
+`fallback_used_any=false`. Treat helper fallback quality and nested-fallback
+observability as the next blocker before re-spending on the 19q gate.
