@@ -1199,21 +1199,32 @@ def build_consolidated_tools(dms: Any) -> list:
     # and tell the agent to complete remaining atoms first.
     _original_submit = dms.submit_answer if hasattr(dms, "submit_answer") else None
 
-    async def submit_answer(reasoning: str, answer: str) -> str:
+    async def submit_answer(reasoning: str, answer: str, force: bool = False) -> str:
         """Submit your final answer. Call once with your best answer.
 
-        NOTE: If you have pending todo atoms, this will be rejected.
-        Complete all atoms first, then submit.
+        Args:
+            reasoning: Your reasoning for the answer.
+            answer: Your final answer (shortest factual span).
+            force: Set to True to submit even if todo atoms are still pending.
+                   Use this only when evidence is exhausted and further searching
+                   won't help. Prefer marking atoms done via todo_write first.
+
+        NOTE: If you have pending todo atoms, submission is rejected UNLESS force=True.
+        Preferred path: use todo_write to mark atoms done (status='done', answer='best inference')
+        then call submit_answer normally.
+        Emergency path: submit_answer(force=True) to bypass atom check when evidence exhausted.
         """
         # Check todo completion
         todos = getattr(dms, '_todos', [])
-        if todos:
+        if todos and not force:
             pending = [t for t in todos if t.get('status') not in ('done', 'completed', 'complete')]
             if pending:
                 pending_ids = [t.get('id', '?') for t in pending[:5]]
                 return _json.dumps({
                     "error": f"Cannot submit: {len(pending)} todo atoms still pending: {pending_ids}. "
-                    "Complete all atoms before submitting. Use todo_write to mark them done with evidence.",
+                    "Option 1 (preferred): Use todo_write to mark each pending atom done with your best inference "
+                    "(status='done', answer='your best guess'), then call submit_answer again. "
+                    "Option 2 (if evidence truly exhausted): Call submit_answer(force=True) to submit immediately.",
                     "pending_atoms": len(pending),
                     "pending_ids": pending_ids,
                 })
