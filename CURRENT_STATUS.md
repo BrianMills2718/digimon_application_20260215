@@ -103,7 +103,7 @@ remaining check: empty-answer rejection.
 |----|-----------------|-------|
 | 13548 | 60% | June 1982 case; still drifts to 2002/2009 in bad runs |
 | 511454 | 20% | "918" vs "1870"/"1974"/unknown |
-| 619265 | 40% | Exact-title anchor case (`"The Bag or the Bat"` → `Ray Donovan`); latest bad run still ends at aggregate `52` |
+| 619265 | 40% in historical 5-run slice | Exact-title anchor case (`"The Bag or the Bat"` → `Ray Donovan`); latest bounded rerun after the post-anchor bridge guard passed 1/1 with final answer `12` in `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T130547Z.json` |
 | 731956 | 80% | Johan Remkes; one empty-answer miss remains in the five-run slice |
 | 766973 | 80% | Rockland County; recent misses are timeout / retrieval failures |
 | 136129 | 20% | Sometimes reaches `1952`, often stops at `Saint Peter` or `unknown` |
@@ -180,6 +180,8 @@ single-run reruns on subsets, not a full 50q confirmation.
 - Prompt v3.6: Answer granularity, verification step, flexible relationships, short queries, quoted-anchor preservation
 - STAG_TURNS=6 default (configurable via Makefile, proven better than 4)
 - entity_search top_k=5 default (`10` was tested, worsened noise, and was reverted)
+- Plan #28 continuation: worktree artifact auto-detection + direct runtime-python wrapper + post-anchor bridge guard for anchored string entity hits
+- Bounded verification: `2hop__619265_45326` passed live after the bridge guard (`12/12`, 11 tool calls, `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T130547Z.json`)
 
 ## Active Work
 
@@ -206,8 +208,8 @@ Total per question: ~6s operators + 58-82s LLM (47-48 turns sequential).
 
 ## Next Actions
 
-1. **Add a post-anchor bridge guard** — once a chunk explicitly names the target series/entity, later bridge probes must not replace it with a broadcaster/network/neighbor like `showtime`.
-2. **Run a fixed-setting 19q triple-run baseline** — same settings, three runs, one generated report; current five-run history is still mixed-setting evidence only.
-3. **Reclassify from artifacts after every change** — rerun `make truth-check` and regenerate the iteration report before updating narrative docs.
-4. **IEE family fix after bridge guard** — 199513 / 354635 / 820301 remain the clearest stable-fail IEE cases.
+1. **Run a fixed-setting 19q triple-run baseline** — same settings, three runs, one generated report; current five-run history is still mixed-setting evidence only.
+2. **Reclassify from artifacts after every change** — rerun `make truth-check` and regenerate the iteration report before updating narrative docs.
+3. **IEE family fix after the bridge guard** — 199513 / 354635 / 820301 remain the clearest stable-fail IEE cases.
+4. **Worktree dataset portability** — benchmark reruns from fresh worktrees may still need `--data-root <canonical-checkout>/Data` until the MuSiQue dataset is provisioned locally.
 5. **50q confirmatory run only after the 19q ladder clears** — no decision-grade rerun before the fixed-setting 19q baseline exists.

@@ -455,3 +455,22 @@ an explicit override.
 `DIGIMON_PYTHON` for child processes. This avoids the noisy
 `conda-libmamba-solver` startup failure path and keeps `eval/run_agent_benchmark.py`
 plus MCP child-process launching on the same interpreter.
+
+### 2026-04-03 — codex — bug-pattern
+**After a high-confidence string entity hit, direct subject-anchor completions must beat bridge neighbors.**
+The pre-guard 619265 family failure was not just retrieval drift; bridge probing
+could override a correct direct subject resolution (`Ray Donovan`) with a
+neighboring broadcaster/network entity (`showtime`), after which dependency
+scope rewriting propagated the wrong node. Plan #28 now preserves direct
+autocompletions that resolve to the string-search anchor itself before
+considering bridge candidates. Verified by a bounded live rerun:
+`results/MuSiQue_gpt-5-4-mini_consolidated_20260403T130547Z.json` answered
+`12` correctly in `11` tool calls.
+
+### 2026-04-03 — codex — integration-issue
+**Fresh worktrees can still miss `Data/MuSiQue` even after artifact-root portability is fixed.**
+The live 619265 verification run succeeded only after passing
+`--data-root /home/brian/projects/Digimon_for_KG_application/Data` because the
+worktree's local `Data/` directory did not include the MuSiQue dataset. Treat
+dataset-root portability as a separate remaining gap from artifact-root
+portability.

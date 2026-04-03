@@ -2538,6 +2538,45 @@ def _best_atom_autocomplete_update(
     return max(updates, key=_rank)
 
 
+def _entity_search_subject_aliases(
+    top_match: dict[str, Any] | None,
+    *,
+    candidate_name: str,
+    candidate_entity_id: str,
+) -> set[str]:
+    """Collect normalized alias forms for the resolved string-search subject anchor."""
+    aliases: set[str] = set()
+    if isinstance(top_match, dict):
+        for key in (
+            "canonical_name",
+            "entity_name",
+            "resolved_entity_name",
+            "entity_id",
+            "resolved_entity_id",
+        ):
+            normalized = _normalize_resolved_value(top_match.get(key))
+            if normalized:
+                aliases.add(normalized)
+    for value in (candidate_name, candidate_entity_id):
+        normalized = _normalize_resolved_value(value)
+        if normalized:
+            aliases.add(normalized)
+    return aliases
+
+
+def _update_matches_subject_anchor(update: dict[str, Any], subject_aliases: set[str]) -> bool:
+    """Return True when a direct completion resolves to the current subject anchor itself."""
+    resolved_value = _normalize_resolved_value(update.get("resolved_value"))
+    if not resolved_value or not subject_aliases:
+        return False
+    return any(
+        resolved_value == alias
+        or resolved_value in alias
+        or alias in resolved_value
+        for alias in subject_aliases
+    )
+
+
 async def _maybe_complete_active_atom_from_payload(
     payload: dict[str, Any],
     *,
@@ -2573,6 +2612,11 @@ async def _maybe_complete_active_atom_from_payload(
             if candidate_name and resolved_graph_id:
                 bridge_candidate_updates: list[dict[str, Any]] = []
                 direct_candidate_updates: list[dict[str, Any]] = []
+                subject_aliases = _entity_search_subject_aliases(
+                    top_match,
+                    candidate_name=candidate_name,
+                    candidate_entity_id=candidate_entity_id,
+                )
                 requires_birth_evidence = _atom_requires_birth_evidence(atom)
                 try:
                     profile_raw = await entity_profile(
@@ -2630,10 +2674,21 @@ async def _maybe_complete_active_atom_from_payload(
                     )
                     if bridge_update and bridge_update.get("event") == "atom_autocomplete":
                         bridge_candidate_updates.append(bridge_update)
-                best_update = _best_atom_autocomplete_update(
-                    bridge_candidate_updates or direct_candidate_updates,
-                    answer_kind=answer_kind,
-                )
+                anchored_direct_updates = [
+                    update
+                    for update in direct_candidate_updates
+                    if _update_matches_subject_anchor(update, subject_aliases)
+                ]
+                if anchored_direct_updates:
+                    best_update = _best_atom_autocomplete_update(
+                        anchored_direct_updates,
+                        answer_kind=answer_kind,
+                    )
+                else:
+                    best_update = _best_atom_autocomplete_update(
+                        bridge_candidate_updates or direct_candidate_updates,
+                        answer_kind=answer_kind,
+                    )
                 if best_update:
                     return _apply_atom_completion_update(atom, todo, best_update)
                 if _atom_requires_subject_chunk_probe(atom):

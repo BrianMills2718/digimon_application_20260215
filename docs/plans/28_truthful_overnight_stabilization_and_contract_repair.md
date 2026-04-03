@@ -273,7 +273,7 @@ decision:
 - [x] Prompt/version/control artifacts updated to truthful state
 - [x] Truth validator + benchmark report tooling landed and verified
 - [x] Handoff/status/process docs updated to use generated truth surfaces
-- [ ] Targeted verification completed and findings recorded
+- [x] Targeted verification completed and findings recorded
 - [ ] 19q fixed-setting triple-run baseline completed OR explicitly deferred with reason
 
 ## Progress (2026-04-02)
@@ -299,6 +299,28 @@ decision:
   still drift later to a wrong bridge candidate (`showtime`). Conclusion:
   exact-anchor preservation is necessary but not sufficient; the next fix must
   constrain bridge selection once the source chunk already names the series.
+- Added worktree portability repairs:
+  - `scripts/runtime_paths.py` auto-resolves canonical artifact roots and the
+    DIGIMON runtime interpreter
+  - `scripts/run_with_digimon_python.py` replaces repo `conda run` entrypoints
+  - `make truth-check` / `make benchmark-report` no longer require a manual
+    `ARTIFACT_ROOT` in the normal case
+- Implemented post-anchor bridge guarding for high-confidence
+  `entity_search(method='string')` subject hits: if a direct completion resolves
+  to the anchored subject itself, bridge probes cannot override it with a
+  neighboring entity.
+- Verified the guard deterministically with:
+  - `python -m compileall digimon_mcp_stdio_server.py`
+  - `/home/brian/projects/Digimon_for_KG_application/.venv/bin/pytest -q tests/unit/test_semantic_plan_query_contract.py -k 'entity_search_string or bridge_probe or bridge_inference'`
+    → `12 passed`
+- Verified the guard in a bounded live rerun:
+  - `python scripts/run_with_digimon_python.py eval/run_agent_benchmark.py --agent-spec none --allow-missing-agent-spec --missing-agent-spec-reason relocated --dataset MuSiQue --data-root /home/brian/projects/Digimon_for_KG_application/Data --questions 2hop__619265_45326 --model openrouter/openai/gpt-5.4-mini --backend direct --retrieval-stagnation-turns 6 --question-delay 0 --tag plan28_anchor_guard_q619265`
+  - result artifact: `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T130547Z.json`
+  - outcome: `12/12`, `EM=1.0`, `LLM_EM=1.0`, `11` tool calls, no retrieval stagnation trigger
+- Remaining portability gap after the live rerun:
+  fresh worktrees can still lack `Data/MuSiQue`, so bounded benchmark reruns may
+  require `--data-root <canonical-checkout>/Data` until dataset provisioning is
+  made worktree-portable.
 - Added process-enforcement tooling:
   - `scripts/validate_status_truth.py` + `make truth-check`
   - `scripts/benchmark_iteration_report.py` + `make benchmark-report`

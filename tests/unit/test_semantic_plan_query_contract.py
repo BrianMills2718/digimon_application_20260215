@@ -1219,6 +1219,117 @@ async def test_entity_search_string_prefers_bridge_update_over_direct_profile_co
 
 
 @pytest.mark.asyncio
+async def test_entity_search_string_preserves_subject_anchor_over_bridge_neighbor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A direct completion that matches the resolved subject anchor must beat neighbor bridges."""
+    dms._current_question = 'Which series includes the episode "The Bag or the Bat"?'
+    dms._current_semantic_plan.clear()
+    dms._current_semantic_plan.update(
+        {
+            "atoms": [
+                {
+                    "atom_id": "a1",
+                    "sub_question": 'Which series includes the episode "The Bag or the Bat"?',
+                    "depends_on": [],
+                    "operation": "lookup",
+                    "answer_kind": "entity",
+                },
+                {
+                    "atom_id": "a2",
+                    "sub_question": "How many episodes does that series have?",
+                    "depends_on": ["a1"],
+                    "operation": "aggregation",
+                    "answer_kind": "number",
+                },
+            ]
+        }
+    )
+    dms._todos.clear()
+    dms._todos.extend(
+        [
+            {"id": "a1", "content": 'Which series includes the episode "The Bag or the Bat"?', "status": "in_progress"},
+            {"id": "a2", "content": "How many episodes does that series have?", "status": "pending"},
+        ]
+    )
+
+    async def _fake_entity_profile(*, entity_name: str, graph_reference_id: str, dataset_name: str = ""):
+        return (
+            '{"entity_id":"ray_donovan","canonical_name":"Ray Donovan",'
+            '"connected_entities":["showtime"],'
+            '"evidence_refs":["chunk_200"]}'
+        )
+
+    async def _fake_relationship_onehop(*, entity_ids, graph_reference_id: str):
+        return (
+            '{"one_hop_relationships":['
+            '{"src_id":"ray_donovan","tgt_id":"showtime","description":"Ray Donovan aired on Showtime."}'
+            '], "evidence_refs":["chunk_213"]}'
+        )
+
+    async def _fake_completion(atom, todo, payload, *, tool_name: str, method: str):
+        if tool_name == "entity_info":
+            return {
+                "event": "atom_autocomplete",
+                "atom_id": "a1",
+                "resolved_value": "Ray Donovan",
+                "confidence": 0.93,
+                "evidence_refs": ["chunk_200"],
+                "rationale": 'The profile directly resolves "The Bag or the Bat" to Ray Donovan.',
+                "tool_name": tool_name,
+                "method": method,
+            }
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": "a1",
+            "confidence": 0.24,
+            "rationale": "Relationship payload alone needs interpretation.",
+            "tool_name": tool_name,
+            "method": method,
+        }
+
+    async def _fake_bridge(atom, todo, payload, *, tool_name: str, method: str):
+        return {
+            "event": "atom_autocomplete",
+            "atom_id": "a1",
+            "resolved_value": "showtime",
+            "confidence": 0.89,
+            "evidence_refs": ["chunk_213"],
+            "rationale": "Showtime appears as the neighboring network entity.",
+            "tool_name": tool_name,
+            "method": method,
+            "resolution_mode": "bridge_probe",
+        }
+
+    monkeypatch.setattr(dms, "entity_profile", _fake_entity_profile)
+    monkeypatch.setattr(dms, "relationship_onehop", _fake_relationship_onehop)
+    monkeypatch.setattr(dms, "_infer_atom_completion_with_llm", _fake_completion)
+    monkeypatch.setattr(dms, "_infer_bridge_candidate_with_llm", _fake_bridge)
+
+    update = await dms._maybe_complete_active_atom_from_payload(
+        {
+            "matches": [
+                {
+                    "entity_name": "Ray Donovan",
+                    "canonical_name": "Ray Donovan",
+                    "entity_id": "ray_donovan",
+                    "match_score": 100,
+                }
+            ],
+            "resolved_graph_reference_id": "MuSiQue_ERGraph",
+            "dataset_name": "MuSiQue",
+        },
+        tool_name="entity_search",
+        method="string",
+    )
+
+    assert update is not None
+    assert update["resolved_value"] == "Ray Donovan"
+    assert dms._todo_item_by_id("a1")["answer"] == "Ray Donovan"
+    assert dms._todo_item_by_id("a2")["status"] == "in_progress"
+
+
+@pytest.mark.asyncio
 async def test_bridge_probe_uses_downstream_discriminant_not_subject_tokens(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
