@@ -23,18 +23,25 @@ Result files:
 - Baseline: `results/MuSiQue_gpt-5-4-mini_baseline_20260326T074316Z.json`
 - GraphRAG: `results/MuSiQue_gpt-5-4-mini_consolidated_20260326T080737Z.json`
 
-## 19q Diagnostic Results (2026-04-03, post-submit-gate-removal)
+## 19q Diagnostic Results (updated 2026-04-03)
 
-| Metric | Pre-fix baseline | Best run | Avg (2 runs) | Delta |
-|--------|-----------------|----------|--------------|-------|
-| LLM-judge | 31.6% (6/19) | 57.9% (11/19) | ~55% | +21–26 pts |
-| missing_required_submit | 13/19 | 1/19 | ~1/19 | -12 |
-| Cost per run | $0.91 | ~$0.35 | ~$0.35 | — |
+| Run | Date | LLM_EM | Notes |
+|-----|------|--------|-------|
+| Pre-submit-gate-removal | 2026-04-02 | 31.6% (6/19) | Baseline before Plan #22 fix |
+| Best (post-gate-removal) | 2026-04-03 | 57.9% (11/19) | High-end stochastic result |
+| Verification | 2026-04-03 | 52.6% (10/19) | 2nd run, confirmed improvement |
+| Plan #27 entity_info-first | 2026-04-03 | 42.1% (8/19) | REGRESSION — synthetic-summary trap |
+| Plan #27 reverted | 2026-04-03 | 31.6% (6/19) | Back to pre-gate baseline; 57.9% was stochastic high |
 
 Result files:
 - Pre-fix: `results/MuSiQue_gpt-5-4-mini_consolidated_20260402T113854Z.json`
 - Best: `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T003635Z.json` (11/19 = 57.9%)
 - Verification: `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T010250Z.json` (10/19 = 52.6%)
+- Plan #27 regression: `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T040050Z.json` (8/19 = 42.1%)
+- Plan #27 reverted: `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T045308Z.json` (6/19 = 31.6%)
+
+**Stochasticity reassessment (2026-04-03):**
+The "stably passing" list below is likely stale. 619265 failed in 3 of the last 4 runs (listed as stable). 766973 timed out in 2 runs. The 57.9% run was a high-end stochastic result. True mean is probably ~42-52% given the distribution of runs. Need ≥3 controlled runs at same settings to establish real baseline.
 
 ### What submit gate removal fixed (+21pp improvement)
 
@@ -62,18 +69,26 @@ remaining check: empty-answer rejection.
 2. **Submit-immediately control flow**: "after 4+ failed atom attempts, submit your best guess"
 3. **Flexible atom resolution**: Accept synonym phrasing when marking atoms done
 
-### Stably passing (≥2 runs): 8 questions
+### Stably passing (verified across ≥3 runs including 2026-04-03): 3–4 questions
 
-13548, 766973, 655505, 619265, 849312, 511296, 731956, 170823
+170823 (1986), 655505 (Sep 11 1962), 94201 (Mississippi River Delta), 731956
 
-### Stochastic (pass sometimes): 4–5 questions
+Note: the prior "8 stably passing" list included 619265, 766973, 13548 which all failed
+in recent runs. See stochasticity reassessment above.
 
-| ID | Pass rate | Notes |
-|----|-----------|-------|
+### Stochastic (pass sometimes): ~10 questions
+
+| ID | Recent pass rate | Notes |
+|----|-----------------|-------|
+| 849312 | ~75% | 15th century — usually passes |
+| 511296 | ~75% | Maria Shriver — usually passes |
+| 731956 | ~75% | Johan Remkes — usually passes |
+| 619265 | ~25% | "12" season 5 episodes — was listed stable, actually stochastic |
+| 766973 | ~50% | Rockland County — sometimes times out |
+| 13548 | ~50% | June 1982 — inconsistent |
 | 9285 | ~50% | "June" vs "March" — query path variation |
 | 511454 | ~50% | "918" vs "1870" — retrieval stochasticity |
 | 305282 | ~50% | "Dec 14, 1814" vs wrong — path variation |
-| 94201 | ~50% | "Mississippi River delta" vs "Minneapolis" (intermediate entity) |
 | 152562 | ~50% | Passes in some runs |
 
 ### Consistently failing: 6 questions
@@ -138,9 +153,27 @@ single-run reruns on subsets, not a full 50q confirmation.
 - Plan #22: Canonicalization + projection hardening (Phase 2 rebuild documented; control flow hardening complete)
 - Plan #23: Semantic build boundary design (in progress, design phase)
 
+## Latency Breakdown (measured 2026-04-03)
+
+Per-operator timing now live in `tool_calls` table. Use `make timing`.
+
+| Operator | Avg ms | Max ms | Notes |
+|----------|--------|--------|-------|
+| chunk_retrieve(relationships) | 6326 | 17192 | Slowest — avoid unless needed |
+| entity_search(string) | 2773 | 6089 | Name matching over all entities |
+| chunk_retrieve(text) | 658 | 2767 | Keyword search |
+| chunk_retrieve(semantic) | 567 | 1141 | VDB embedding search |
+| entity_search(semantic) | 591 | 1964 | VDB entity search |
+| entity_info(profile) | ~0 | 1 | Very fast |
+| relationship_search(graph) | ~1 | 8 | Very fast |
+
+Total per question: ~6s operators + 58-82s LLM (47-48 turns sequential).
+**LLM turn count is the primary latency driver.** Reducing stagnation is higher-leverage than operator optimization.
+
 ## Next Actions
 
-1. **Full 50q confirmatory run** — 19q went from 42% → 55% after gate removal; need 50q to confirm real gain (budget: needs ~$1.50 per run)
-2. **IEE family fix** — 4/6 consistently-failing questions are IEE; entity disambiguation improvement would have broad impact
-3. **todo_write validator review** — `_validate_manual_todo_completion` may need adjustment; balance evidence-gating vs agent getting stuck
-4. **754156 (Laos) answer type** — agent returns relationship phrase not entity name; likely answer synthesis issue
+1. **Establish real baseline** — run 19q 3+ times at same settings; current 31-58% spread shows high stochasticity; true mean is unclear
+2. **IEE family fix** — 4/6 consistently-failing questions are IEE; entity disambiguation improvement would have broad impact. entity_search returns too many candidates; agent picks wrong semantic type.
+3. **619265 (Batman Beyond, "12")** — previously listed stable, now failing consistently. Agent gets "52 total episodes" from entity_info; needs to retrieve season-specific chunk. Fix: better chunk_retrieve query targeting "season 5".
+4. **todo_write validator review** — `_validate_manual_todo_completion` may contribute to agent getting stuck; hasn't been evaluated since gate removal
+5. **50q confirmatory run** — once 19q baseline is stable, run 50q to confirm the +22pp improvement is real

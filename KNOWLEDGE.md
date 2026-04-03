@@ -352,6 +352,26 @@ candidates, agent picks wrong one). A disambiguation step or better ranked entit
 (e.g., require year/type constraint matching) would address 3-4 of these.
 
 ### 2026-04-03 — claude-code — performance
+**Stochasticity: 57.9% was a high-end outlier.**
+After 5 runs of the 19q diagnostic set (same prompt, same dataset, same model):
+- 57.9% (11/19) — best run
+- 52.6% (10/19)
+- 42.1% (8/19) — regression run (entity_info-first guidance)
+- 31.6% (6/19) — reverted run
+- 31.6% (6/19) — pre-gate-removal baseline
+
+The mean is roughly 42-52%. Single-run results vary by 5-6 questions. Do NOT use
+one run as ground truth. Need ≥3 runs at identical settings to claim improvement.
+619265 (Batman Beyond, "12") was listed as "stably passing" but failed in 3/4 recent runs.
+
+**Operator timing — full 19q run (156 calls):**
+- chunk_retrieve(relationships): 6.3s avg, 17.2s max — SURPRISINGLY SLOW, avoid if possible
+- entity_search(string): 2.8s avg, 6.1s max — name matching over all entities
+- chunk_retrieve(text): 658ms avg — BM25/text search
+- entity_info(profile): ~0ms — fast in-memory lookup
+- relationship_search(graph): ~1ms — fast adjacency list lookup
+
+### 2026-04-03 — claude-code — performance
 **Latency breakdown (measured, not estimated).**
 Instrumented all 28 operator dispatches in `Core/MCP/tool_consolidation.py` via
 `_timed_call` + `log_tool_call` → `tool_calls` table in llm_observability.db.
