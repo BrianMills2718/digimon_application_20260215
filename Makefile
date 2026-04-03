@@ -1,3 +1,5 @@
+SHELL := /bin/bash
+
 # === META-PROCESS TARGETS ===
 # Added by meta-process install.sh
 
@@ -14,6 +16,12 @@ DATASET ?= HotpotQAsmallest
 NUM ?= 3
 MODEL ?= openrouter/openai/gpt-5.4-mini
 STAG_TURNS ?= 6
+QUESTION_COUNT ?= 19
+RESULT_GLOB ?= results/MuSiQue_gpt-5-4-mini_consolidated_*Z.json
+ARTIFACT_ROOT ?= .
+REPORT_DATASET ?=
+REPORT_MODEL ?=
+REPORT_LATEST ?=
 PYTHON ?= .venv/bin/python
 PYTEST ?= .venv/bin/pytest
 LLM_CLIENT_CLI := conda run -n digimon python -m llm_client
@@ -258,7 +266,7 @@ add-passages-dry:  ## Preview passage node additions
 	conda run -n digimon python scripts/add_passage_nodes.py --dataset $(DATASET) --dry-run
 
 # --- Diagnosis ---
-.PHONY: diagnose diagnose-failures linearization-check check-rules
+.PHONY: diagnose diagnose-failures linearization-check check-rules truth-check benchmark-report
 
 diagnose:  ## Diagnose a specific question (FILE= QID= required)
 ifndef FILE
@@ -324,6 +332,17 @@ linearization-check:  ## Check for linearization data loss warnings
 check-rules:  ## Check CLAUDE.md rule violations (json_object, hardcoded paths, except:pass)
 	@~/projects/.claude/scripts/check-rules.sh . || true
 
+truth-check:  ## Validate CURRENT_STATUS.md and handoff claims against code + artifacts
+	@python scripts/validate_status_truth.py --artifact-root $(ARTIFACT_ROOT)
+
+benchmark-report:  ## Summarize repeated benchmark artifacts (RESULT_GLOB=... QUESTION_COUNT=19 OUTPUT=)
+	@args=(scripts/benchmark_iteration_report.py --glob "$(RESULT_GLOB)" --glob-root "$(ARTIFACT_ROOT)" --question-count "$(QUESTION_COUNT)"); \
+	if [ -n "$(REPORT_DATASET)" ]; then args+=(--dataset "$(REPORT_DATASET)"); fi; \
+	if [ -n "$(REPORT_MODEL)" ]; then args+=(--model "$(REPORT_MODEL)"); fi; \
+	if [ -n "$(REPORT_LATEST)" ]; then args+=(--latest "$(REPORT_LATEST)"); fi; \
+	if [ -n "$(OUTPUT)" ]; then args+=(--output "$(OUTPUT)"); fi; \
+	python "$${args[@]}"
+
 # --- Help ---
 .PHONY: help help-meta
 
@@ -374,6 +393,6 @@ help:  ## Show all targets
 	@grep -E '^(cost|cost-by-model|cost-by-task|errors|recent|summary):.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Graph And Diagnosis:"
-	@grep -E '^(graph-stats|build-progress|enrich|add-passages|add-passages-dry|diagnose|diagnose-failures|linearization-check|check-rules):.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
+	@grep -E '^(graph-stats|build-progress|enrich|add-passages|add-passages-dry|diagnose|diagnose-failures|linearization-check|check-rules|truth-check|benchmark-report):.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
 	@echo ""
-	@echo "Options: DAYS=7 DATASET=HotpotQAsmallest NUM=3 MODEL=openrouter/openai/gpt-5.4-mini LIMIT=20"
+	@echo "Options: DAYS=7 DATASET=HotpotQAsmallest NUM=3 MODEL=openrouter/openai/gpt-5.4-mini LIMIT=20 QUESTION_COUNT=19"

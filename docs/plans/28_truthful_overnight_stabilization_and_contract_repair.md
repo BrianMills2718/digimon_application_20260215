@@ -120,7 +120,14 @@ External comparators reviewed from official sources:
 - `digimon_mcp_stdio_server.py`
 - `tests/unit/test_semantic_plan_query_contract.py`
 - `tests/test_tool_consolidation.py`
-- Optional follow-up: `docs/handoff_2026_04_03.md`
+- `scripts/validate_status_truth.py`
+- `scripts/benchmark_iteration_report.py`
+- `tests/unit/test_validate_status_truth.py`
+- `tests/unit/test_benchmark_iteration_report.py`
+- `docs/HANDOFF_TEMPLATE.md`
+- `docs/BENCHMARK_PROMOTION_POLICY.md`
+- `docs/reports/musique_19q_iteration_report_2026_04_03.md`
+- `docs/handoff_2026_04_03.md`
 
 ---
 
@@ -264,6 +271,8 @@ decision:
 - [x] Quoted-anchor preservation implemented and tested
 - [x] `entity_info(resolve)` single-name compatibility implemented and tested
 - [x] Prompt/version/control artifacts updated to truthful state
+- [x] Truth validator + benchmark report tooling landed and verified
+- [x] Handoff/status/process docs updated to use generated truth surfaces
 - [ ] Targeted verification completed and findings recorded
 - [ ] 19q fixed-setting triple-run baseline completed OR explicitly deferred with reason
 
@@ -290,6 +299,17 @@ decision:
   still drift later to a wrong bridge candidate (`showtime`). Conclusion:
   exact-anchor preservation is necessary but not sufficient; the next fix must
   constrain bridge selection once the source chunk already names the series.
+- Added process-enforcement tooling:
+  - `scripts/validate_status_truth.py` + `make truth-check`
+  - `scripts/benchmark_iteration_report.py` + `make benchmark-report`
+  - `docs/HANDOFF_TEMPLATE.md`
+  - `docs/BENCHMARK_PROMOTION_POLICY.md`
+- Generated `docs/reports/musique_19q_iteration_report_2026_04_03.md` from the
+  five maintained 19q status artifacts. Historical slice summary:
+  `43.16%` mean LLM_EM, `12.00` sample stdev, `31.58%-57.89%` range.
+- Rewrote `docs/handoff_2026_04_03.md` and tightened `CURRENT_STATUS.md` until
+  `python scripts/validate_status_truth.py --artifact-root <canonical-repo-root>`
+  reported a clean truth surface.
 
 ---
 

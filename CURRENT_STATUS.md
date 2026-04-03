@@ -39,9 +39,14 @@ Result files:
 - Verification: `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T010250Z.json` (10/19 = 52.6%)
 - Plan #27 regression: `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T040050Z.json` (8/19 = 42.1%)
 - Plan #27 reverted: `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T045308Z.json` (6/19 = 31.6%)
+- Five-run distribution report: `docs/reports/musique_19q_iteration_report_2026_04_03.md`
 
 **Stochasticity reassessment (2026-04-03):**
-The "stably passing" list below is likely stale. 619265 failed in 3 of the last 4 runs (listed as stable). 766973 timed out in 2 runs. The 57.9% run was a high-end stochastic result. True mean is probably ~42-52% given the distribution of runs. Need ≥3 controlled runs at same settings to establish real baseline.
+Across the five historical status artifacts above, the observed mean is **43.16%**
+LLM_EM with **12.00 points** sample stdev and a **31.58%-57.89%** range. Those
+five runs were **not** at one fixed setting, so this is a historical distribution,
+not a promotion-grade baseline. The report also reclassifies the 19q slice into
+`3 stable pass`, `11 stochastic`, and `5 stable fail` questions.
 
 ## Audit Corrections (verified 2026-04-02 / artifacts dated 2026-04-03)
 
@@ -88,34 +93,31 @@ remaining check: empty-answer rejection.
 2. **Submit-immediately control flow**: "after 4+ failed atom attempts, submit your best guess"
 3. **Flexible atom resolution**: Accept synonym phrasing when marking atoms done
 
-### Stably passing (verified across ≥3 runs including 2026-04-03): 3–4 questions
+### Stable pass (5/5 in the historical status slice): 3 questions
 
-170823 (1986), 655505 (Sep 11 1962), 94201 (Mississippi River Delta), 731956
+170823 (1986), 511296 (Maria Shriver), 655505 (11 September 1962)
 
-Note: the prior "8 stably passing" list included 619265, 766973, 13548 which all failed
-in recent runs. See stochasticity reassessment above.
-
-### Stochastic (pass sometimes): ~10 questions
+### Stochastic (1-4 passes in the historical status slice): 11 questions
 
 | ID | Recent pass rate | Notes |
 |----|-----------------|-------|
-| 849312 | ~75% | 15th century — usually passes |
-| 511296 | ~75% | Maria Shriver — usually passes |
-| 731956 | ~75% | Johan Remkes — usually passes |
-| 619265 | ~25% | Exact-title anchor case (`"The Bag or the Bat"` → `Ray Donovan`); passes when the quoted title stays intact |
-| 766973 | ~50% | Rockland County — sometimes times out |
-| 13548 | ~50% | June 1982 — inconsistent |
-| 9285 | ~50% | "June" vs "March" — query path variation |
-| 511454 | ~50% | "918" vs "1870" — retrieval stochasticity |
-| 305282 | ~50% | "Dec 14, 1814" vs wrong — path variation |
-| 152562 | ~50% | Passes in some runs |
+| 13548 | 60% | June 1982 case; still drifts to 2002/2009 in bad runs |
+| 511454 | 20% | "918" vs "1870"/"1974"/unknown |
+| 619265 | 40% | Exact-title anchor case (`"The Bag or the Bat"` → `Ray Donovan`); latest bad run still ends at aggregate `52` |
+| 731956 | 80% | Johan Remkes; one empty-answer miss remains in the five-run slice |
+| 766973 | 80% | Rockland County; recent misses are timeout / retrieval failures |
+| 136129 | 20% | Sometimes reaches `1952`, often stops at `Saint Peter` or `unknown` |
+| 305282 | 20% | December 14, 1814 chain remains brittle |
+| 849312 | 80% | Usually answers "15th century", but still slips to `1416` |
+| 9285 | 40% | Month-level ambiguity remains (`June`/`July`/`March`) |
+| 152562 | 20% | Still drifts across unrelated entity answers |
+| 94201 | 60% | Mississippi River vs Mississippi River Delta answer granularity |
 
-### Consistently failing: 6 questions
+### Stable fail (0/5 in the historical status slice): 5 questions
 
 | ID | Gold | Typical pred | Root cause |
 |----|------|-------------|-----------|
 | 199513 | Nazareth | "" or "Nauvoo, IL" | IEE — confuses Joseph of Nazareth with Joseph Smith |
-| 136129 | 1952 | "Saint Peter" | IEE — stops at intermediate entity |
 | 820301 | 22 | "1" | IEE — wrong answer, retrieval finds wrong chain |
 | 354635 | Time Warner Cable | "Adelphia" or "Comcast" | Close IEE — finds neighbor not target |
 | 71753 | 1930 | "1961" or "1921" | Wrong year — poor entity disambiguation |
@@ -125,10 +127,11 @@ in recent runs. See stochasticity reassessment above.
 
 | Family | Count | Description |
 |--------|-------|-------------|
-| INTERMEDIATE_ENTITY_ERROR (IEE) | 4 | Agent stops at wrong hop or confuses similar entities |
+| INTERMEDIATE_ENTITY_ERROR (IEE) | 3 stable-fail + several stochastic | Agent stops at wrong hop or confuses similar entities |
 | EXACT_ANCHOR_DRIFT | 1 | Quoted title / literal span is compacted and semantic retrieval drifts off the real anchor |
 | ANSWER_TYPE_MISMATCH | 1 | Final answer should be an action/event phrase but the agent submits an intermediate entity/location |
 | YEAR_DISAMBIGUATION | 1 | Finds plausible but wrong year in related entity |
+| GENERAL_STOCHASTICITY | 11 questions | The same question can flip across runs even without a new generalizable fix |
 
 ### Note: todo_write validator still active
 
@@ -137,10 +140,17 @@ agents from marking atoms done if proposed value doesn't match cached evidence. 
 contribute to CONTROL_FLOW failures and some stochastic misses but was NOT removed in this
 session — it requires careful evaluation to avoid regression on correct evidence-gating.
 
-### Stochasticity policy
+### Process Controls
 
-Single-run single-question flips are noise. Promotion policy: ≥2 runs same result, or
-≥3 question net improvement. The +21pp improvement shown above is stable (2 runs, net +5q).
+- `make truth-check ARTIFACT_ROOT=<canonical-repo-root>` validates
+  `CURRENT_STATUS.md` and the active handoff against live code defaults and
+  referenced result artifacts.
+- `make benchmark-report ARTIFACT_ROOT=<canonical-repo-root> RESULT_GLOB='<precise-glob>' OUTPUT=docs/reports/<name>.md`
+  generates a repeatable distribution report from frozen artifacts. Use a
+  precise glob or explicit `scripts/benchmark_iteration_report.py --input ...`
+  invocation when you need one controlled slice rather than broad history.
+- Promotion rules now live in `docs/BENCHMARK_PROMOTION_POLICY.md`. Do not use
+  single-run flips or mixed-setting history as promotion-grade evidence.
 
 ## Cross-Reference (50q, 2026-03-26)
 
@@ -193,8 +203,8 @@ Total per question: ~6s operators + 58-82s LLM (47-48 turns sequential).
 
 ## Next Actions
 
-1. **Establish real baseline** — run 19q 3+ times at same settings; current 31-58% spread shows high stochasticity; true mean is unclear
-2. **Contract / anchor repair verification** — preserve quoted titles and exact literal spans through query rewriting; benchmark failures like 619265 are off-anchor drift, not graph-data absence.
-3. **IEE family fix** — 4/6 consistently-failing questions are still IEE; entity disambiguation improvement would have broad impact once the contract layer is truthful.
-4. **todo_write validator review** — `_validate_manual_todo_completion` may contribute to agent getting stuck; 136129 remains a likely diagnostic case.
-5. **50q confirmatory run** — once the 19q baseline is re-established under fixed settings, rerun 50q to confirm the +22pp improvement is real
+1. **Add a post-anchor bridge guard** — once a chunk explicitly names the target series/entity, later bridge probes must not replace it with a broadcaster/network/neighbor like `showtime`.
+2. **Run a fixed-setting 19q triple-run baseline** — same settings, three runs, one generated report; current five-run history is still mixed-setting evidence only.
+3. **Reclassify from artifacts after every change** — rerun `make truth-check` and regenerate the iteration report before updating narrative docs.
+4. **IEE family fix after bridge guard** — 199513 / 354635 / 820301 remain the clearest stable-fail IEE cases.
+5. **50q confirmatory run only after the 19q ladder clears** — no decision-grade rerun before the fixed-setting 19q baseline exists.

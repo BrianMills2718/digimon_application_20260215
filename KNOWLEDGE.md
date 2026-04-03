@@ -415,3 +415,26 @@ partial answer. This is the expected trade-off: gate removal helps 12 questions 
 hurts 1 that was previously getting no-answer (empty) vs wrong-answer (Minneapolis).
 LLM-judge: empty=None (no score), wrong=0 — neither scores, so net is 0 either way.
 But it's worth noting this regression pattern for the IEE fix work.
+
+### 2026-04-03 — codex — best-practice
+**Worktree truth/report commands need an explicit artifact root until benchmark history is portable.**
+Fresh claimed worktrees do not reliably contain the historical `results/*.json`
+benchmark artifacts even when the canonical repo does. The new commands are built
+to accept `ARTIFACT_ROOT=<canonical-repo-root>` so `make truth-check` and
+`make benchmark-report` can validate docs against the real artifact store without
+guessing or silently degrading.
+
+### 2026-04-03 — codex — schema-gotcha
+**Use per-question `results[].llm_em` for iteration reporting, not top-level `avg_llm_em_judged`.**
+Some DIGIMON artifacts expose a top-level `avg_llm_em_judged` that does not match
+the maintained 11/19-style question-count summary used in status docs. The new
+`scripts/benchmark_iteration_report.py` intentionally derives headline LLM_EM from
+the per-question `results` list so mean/spread and stability reports stay aligned
+with the artifact rows humans actually inspect.
+
+### 2026-04-03 — codex — integration-issue
+**`conda run -n digimon` is not reliable enough for governance commands in this shell.**
+In this environment, `conda run -n digimon` fails before script execution with a
+`conda-libmamba-solver` / `libmambapy.QueryFormat` entrypoint error. Benchmark runs
+may still require the full env, but governance/reporting commands should stay on
+plain `python` unless they genuinely need conda-managed dependencies.
