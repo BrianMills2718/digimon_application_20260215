@@ -278,3 +278,27 @@ cannot complete because outbound DNS/network access to Gemini and OpenRouter is
 blocked. The verified unit slice is still valid locally, but any end-to-end
 benchmark or rebuild step that needs remote LLM calls must run in an
 environment with provider network access.
+
+### 2026-04-02 — claude-code — bug-pattern
+**The submit_answer atom-completion gate was the primary cause of missing_required_submit failures.**
+In consolidated benchmark mode, `build_consolidated_tools()` wraps submit_answer with a validator
+that blocks submission when any todo atom is pending. 10-13/19 diagnostic questions had
+`ComposabilityTools: submit_answer:1` (interface error) — agents WERE calling submit_answer but getting
+rejected. After rejection, agents ended the conversation without retrying.
+
+Root investigation: agents called submit_answer as their final tool call, got JSON error
+"Cannot submit: N todo atoms still pending". Then gave up (conversation ended with missing answer).
+Adding `force=True` parameter didn't help because agents never retried after first rejection.
+
+Fix: removed the blocking validator entirely. submit_answer now always goes through.
+Result: submit_answer errors should drop to 0; question is whether partial answers score
+well on LLM-judge (an informed guess vs no answer at all).
+
+### 2026-04-02 — claude-code — bug-pattern
+**5 questions consistently missing from benchmark results (n_completed=14/19).**
+In STAG_TURNS=4 + accurate evidence tracking run (T192033Z), only 14/19 questions appeared
+in results. The 5 missing: 354635, 511296, 731956, 136129, 849312. Of these, only 511296
+(Maria Shriver, gold="Maria Shriver") was a passing question. The others were failing.
+Likely cause: run interrupted/crashed mid-execution. The STAG_TURNS=1 run (T235855Z) also
+completed 18/19 (still missing 731956 — this question is likely hitting a timeout).
+Investigate: run `--questions 2hop__731956_126089` standalone to see if it consistently fails.
