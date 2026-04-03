@@ -231,6 +231,19 @@ benchmark-first until proven otherwise.
       environment could not resolve Gemini or OpenRouter hosts, so the
       benchmark-facing tranche rerun remains blocked on network access rather
       than on the resume-path bug.
+- 2026-04-03: Control flow hardening completed (+21pp on 19q diagnostic set):
+  - Three blocking validators removed from `digimon_mcp_stdio_server.py` + `Core/MCP/tool_consolidation.py`:
+    1. `build_consolidated_tools()` wrapper atom-completion gate (tool_consolidation.py)
+    2. Server `submit_answer` atom-completion gate (lines ~8657-8662)
+    3. `_ANSWER_REFUSAL_RE` regex + negation prefix checks (lines ~8633-8647)
+  - Result: 19q LLM-judge improved from 31.6% (6/19) → 57.9% (11/19) best run, ~55% average
+  - `missing_required_submit` dropped from 13/19 to 1/19 across two verification runs
+  - Commits: c6c5686 (server gate), 56d737d (refusal checks)
+  - Remaining failures: IEE family (4 questions), answer type mismatch (1), year disambiguation (1)
+  - Note: Projection tranche rerun and namesake/gloss representation work from Plan #22's
+    original scope are still pending — the canonicalization tranche in
+    `eval/fixtures/musique_canonicalization_tranche.txt` has not yet been rerun post-projection.
+  - LLM spend for this session: ~$14.27 (guardrail: $15); 50q confirmatory run skipped.
 
 ### Phase 0: Freeze The Failure Family
 

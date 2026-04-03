@@ -321,3 +321,42 @@ in results. The 5 missing: 354635, 511296, 731956, 136129, 849312. Of these, onl
 Likely cause: run interrupted/crashed mid-execution. The STAG_TURNS=1 run (T235855Z) also
 completed 18/19 (still missing 731956 — this question is likely hitting a timeout).
 Investigate: run `--questions 2hop__731956_126089` standalone to see if it consistently fails.
+
+### 2026-04-03 — claude-code — best-practice
+**Session summary: submit gate removal is the dominant lever for 19q diagnostic set.**
+Three validators removed in this session (all in `digimon_mcp_stdio_server.py` + `Core/MCP/tool_consolidation.py`):
+1. `build_consolidated_tools()` wrapper atom gate — tool_consolidation.py
+2. Server `submit_answer` atom completion gate — digimon_mcp_stdio_server.py lines ~8657-8662
+3. `_ANSWER_REFUSAL_RE` regex + negation prefix checks — digimon_mcp_stdio_server.py lines ~8633-8647
+
+Result: 19q LLM-judge went from 31.6% (6/19) → 57.9% (11/19) best run, ~55% average.
+`missing_required_submit` dropped from 13/19 to 1/19.
+
+NOT removed: `_validate_manual_todo_completion` in todo_write (line 2005). Still active.
+It blocks marking atoms done without evidence, but unlike submit gate, the agent can work
+around it (try a different value, or skip the atom). Worth reviewing if IEE stochastic failures
+are traced back to it.
+
+### 2026-04-03 — claude-code — best-practice
+**Consistently-failing 19q questions: IEE is the primary remaining family.**
+After gate removal, 6 questions consistently fail:
+- 199513 (gold=Nazareth): Joseph of Nazareth vs Joseph Smith confusion — classic IEE
+- 136129 (gold=1952): agent stops at Saint Peter intermediate entity
+- 820301 (gold=22): retrieves wrong entity chain, gets "1"
+- 354635 (gold=Time Warner Cable): finds Adelphia/Comcast — adjacent entity, not target
+- 71753 (gold=1930): finds 1961 or 1921 — nearby but wrong year for nearby entity
+- 754156 (gold=Laos): returns phrase "expelled by the Portuguese" not entity name
+
+IEE fix priority: entity disambiguation at search time (entity_search returns too many
+candidates, agent picks wrong one). A disambiguation step or better ranked entity search
+(e.g., require year/type constraint matching) would address 3-4 of these.
+
+### 2026-04-03 — claude-code — bug-pattern
+**94201 (Mississippi River Delta) regressed with gate removal.**
+Pre-gate-removal: agent would loop/fail to submit, resulting in empty prediction.
+Post-gate-removal: agent now submits "Minneapolis" — an intermediate entity found early
+in retrieval. The gate removal allows the agent to submit prematurely when it has a
+partial answer. This is the expected trade-off: gate removal helps 12 questions but
+hurts 1 that was previously getting no-answer (empty) vs wrong-answer (Minneapolis).
+LLM-judge: empty=None (no score), wrong=0 — neither scores, so net is 0 either way.
+But it's worth noting this regression pattern for the IEE fix work.
