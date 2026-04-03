@@ -137,8 +137,34 @@ Adding one more tool call (entity_info before traverse) increases call count per
 
 ---
 
+## Run History
+
+| Date | Prompt version | LLM_EM | Notes |
+|------|---------------|--------|-------|
+| 2026-04-02 | Baseline (pre-Plan #27) | 57.9% (11/19) | Best prior run |
+| 2026-04-03 | Plan #27 Phase 1 (entity_info-first + doubt field) | 42.1% (8/19) | REGRESSION — synthetic-summary trap: agent accepted "52" (total episodes) instead of season 5 count, "not stated" from entity_info instead of chunk_retrieve for Nazareth |
+| 2026-04-03 | Plan #27 reverted (entity_info orientation-only, no doubt field) | pending | Verification run in progress |
+
+## Latency Findings (2026-04-03, measured)
+
+Added timing instrumentation to all 28 operator dispatches (`_timed_call` in
+`tool_consolidation.py`). Results from 2 sentinel questions:
+
+- **Operators**: 6–7 calls/question, 6–7s total
+  - entity_search(string): ~2.5s avg (slowest)
+  - chunk_retrieve(text): ~1.7s avg
+  - entity_info/relationship_search: <1ms
+- **LLM turns**: 47–48 per 2-hop question, 1.2–1.7s avg
+- **LLM total per question**: 58–82s sequential
+
+The "52s unaccounted gap" was LLM inference. Operators are ~20% of wall time.
+Primary latency driver = LLM turn count, not operator speed.
+
+Use `make timing` to inspect after any benchmark run.
+
 ## Notes
 
 - All fixes are general improvements to retrieval strategy, not patches for specific questions.
 - The entity ontology context (what the graph contains vs doesn't) should ideally be surfaced by the `resources()` tool or in the graph schema. Future work: expose node_fields and edge_fields from the graph build manifest as part of the resources() response.
 - The `_validate_manual_todo_completion` validator (line 2005, digimon_mcp_stdio_server.py) is left untouched in this plan. It already does evidence-based validation. The doubt field is additive, not a replacement.
+- **entity_info-first is architecturally correct** but needs more nuance: the entity description IS an answer surface, but it's a SYNTHESIZED aggregate — "52 total episodes" ≠ "12 season 5 episodes." The prompt must communicate this distinction before reintroducing entity_info as a primary answer surface. The current revert to "orientation only" is safe. Future version: "check entity_info for orientation, then use chunk_retrieve to get the specific value."
