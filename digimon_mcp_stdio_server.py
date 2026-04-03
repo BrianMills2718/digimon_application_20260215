@@ -8630,19 +8630,12 @@ if BENCHMARK_MODE:
             raise ValueError(
                 "Answer is too long. Submit a concise factual answer (name/date/number/short phrase).",
             )
-        if _ANSWER_REFUSAL_RE.search(normalized_answer):
-            raise ValueError(
-                "Refusal-style answers are not allowed. Submit your best factual guess.",
-            )
-        lowered_answer = normalized_answer.lower()
-        if lowered_answer.startswith("not "):
-            raise ValueError(
-                "Negative/abstaining answers are not allowed. Submit a factual guess (name/date/number).",
-            )
-        if lowered_answer.startswith("no ") and lowered_answer != "no":
-            raise ValueError(
-                "Abstaining answers are not allowed. Submit a factual guess (name/date/number).",
-            )
+        # Refusal/negation checks removed: they were blocking legitimate answers that
+        # happened to contain words like "cannot" (e.g., agent hedging around a correct
+        # factual answer). The LLM judge evaluates answer quality; let all non-empty
+        # answers through and let the judge score them.
+        # (Previously these checks caused 7 submit rejections for 199513/Nazareth where
+        # the agent had the correct answer in todo_write but was hedging in submit text.)
 
         # Answer-kind validation removed — semantic_plan's answer_kind prediction
         # is frequently wrong (e.g. "date" for count questions), and every false
