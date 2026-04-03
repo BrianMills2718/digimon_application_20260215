@@ -1222,9 +1222,8 @@ def build_consolidated_tools(dms: Any) -> list:
                 pending_ids = [t.get('id', '?') for t in pending[:5]]
                 return _json.dumps({
                     "error": f"Cannot submit: {len(pending)} todo atoms still pending: {pending_ids}. "
-                    "Option 1 (preferred): Use todo_write to mark each pending atom done with your best inference "
-                    "(status='done', answer='your best guess'), then call submit_answer again. "
-                    "Option 2 (if evidence truly exhausted): Call submit_answer(force=True) to submit immediately.",
+                    "If you have evidence to resolve them, retrieve more evidence and mark them done via todo_write first. "
+                    "If evidence is truly exhausted, call submit_answer(force=True) to submit your current best answer.",
                     "pending_atoms": len(pending),
                     "pending_ids": pending_ids,
                 })

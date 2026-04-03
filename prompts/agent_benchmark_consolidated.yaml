@@ -96,9 +96,9 @@ messages:
          If you have pending atoms, resolve them first. Check your todo status —
          if it shows "2/4 done", you still have work to do.
          But once all atoms ARE done, submit RIGHT AWAY — do not keep searching for "better" evidence or loop back to verify what you already confirmed.
-         **If evidence is exhausted and you cannot complete an atom:** Mark the atom done with your best available inference
-         (e.g., `todo_write` with status="done", answer="best guess based on [evidence]"), then submit. An informed guess is better than no answer.
-         **Emergency bypass:** If submit is rejected and you cannot complete atoms further, call `submit_answer(force=True)` to submit your current best answer immediately.
+         **If evidence is exhausted and you cannot complete an atom:** Call `submit_answer(force=True)` to submit your
+         current best answer immediately. Use the evidence you've gathered to make your best inference. An informed guess
+         is better than no answer. Do not keep looping — submit and move on.
 
       6. **Verify before submitting.** Before calling submit_answer, check:
          a. **Answer type matches question type.** "What year" → a year, "how many" → a number, "who" → a name. If your answer has extra precision the question didn't ask for, trim it.
