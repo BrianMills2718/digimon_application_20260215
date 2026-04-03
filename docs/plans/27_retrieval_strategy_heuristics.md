@@ -117,10 +117,13 @@ Add `doubt` as a first-class optional field to the todo_write schema in `Core/MC
 
 ## Acceptance Criteria
 
-- [ ] Phase 1 prompt changes committed with `[Plan #27]` prefix
-- [ ] 19q diagnostic rerun after Phase 1; ≥2 of {820301, 136129, 199513, 354635} improve without regression on stably-passing questions
-- [ ] Improvement sustained across ≥2 runs (not single-run stochastic flip)
-- [ ] Fix affects general failure family, not just the specific question: any question asking about an entity's attribute should benefit from the entity_info-first heuristic
+- [x] Phase 1 prompt changes committed with `[Plan #27]` prefix
+- [~] 19q diagnostic rerun after Phase 1: entity_info-first REGRESSED (42.1%); reverted; verification run returned 31.6% (stochastic baseline, not a fix) — CRITERIA NOT MET
+- [ ] Improvement sustained across ≥2 runs — NOT YET (Phase 1 reverted due to regression)
+- [ ] Fix affects general failure family — NOT YET (entity_info-first is right architecture but needs nuance; see Notes)
+
+**Phase 1 REVERTED. Phase 2 (doubt field) DEFERRED.**
+What survives from this phase: step 6d final-hop check, "Two different questions, two different tools" framework in retrieval strategy section, timing instrumentation (separate deliverable).
 
 ---
 
@@ -143,7 +146,7 @@ Adding one more tool call (entity_info before traverse) increases call count per
 |------|---------------|--------|-------|
 | 2026-04-02 | Baseline (pre-Plan #27) | 57.9% (11/19) | Best prior run |
 | 2026-04-03 | Plan #27 Phase 1 (entity_info-first + doubt field) | 42.1% (8/19) | REGRESSION — synthetic-summary trap: agent accepted "52" (total episodes) instead of season 5 count, "not stated" from entity_info instead of chunk_retrieve for Nazareth |
-| 2026-04-03 | Plan #27 reverted (entity_info orientation-only, no doubt field) | pending | Verification run in progress |
+| 2026-04-03 | Plan #27 reverted (entity_info orientation-only, no doubt field) | 31.6% (6/19) | Stochastic baseline — 57.9% was a high-end outlier. True mean ~42-52%. |
 
 ## Latency Findings (2026-04-03, measured)
 
