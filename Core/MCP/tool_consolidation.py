@@ -1199,35 +1199,13 @@ def build_consolidated_tools(dms: Any) -> list:
     # and tell the agent to complete remaining atoms first.
     _original_submit = dms.submit_answer if hasattr(dms, "submit_answer") else None
 
-    async def submit_answer(reasoning: str, answer: str, force: bool = False) -> str:
+    async def submit_answer(reasoning: str, answer: str) -> str:
         """Submit your final answer. Call once with your best answer.
 
-        Args:
-            reasoning: Your reasoning for the answer.
-            answer: Your final answer (shortest factual span).
-            force: Set to True to submit even if todo atoms are still pending.
-                   Use this only when evidence is exhausted and further searching
-                   won't help. Prefer marking atoms done via todo_write first.
-
-        NOTE: If you have pending todo atoms, submission is rejected UNLESS force=True.
-        Preferred path: use todo_write to mark atoms done (status='done', answer='best inference')
-        then call submit_answer normally.
-        Emergency path: submit_answer(force=True) to bypass atom check when evidence exhausted.
+        Submit as soon as you have an answer, even if some todo atoms are still pending.
+        An imperfect answer is better than no answer — do not loop endlessly searching.
+        If you have been searching for 4+ tool calls without completing all atoms, submit now.
         """
-        # Check todo completion
-        todos = getattr(dms, '_todos', [])
-        if todos and not force:
-            pending = [t for t in todos if t.get('status') not in ('done', 'completed', 'complete')]
-            if pending:
-                pending_ids = [t.get('id', '?') for t in pending[:5]]
-                return _json.dumps({
-                    "error": f"Cannot submit: {len(pending)} todo atoms still pending: {pending_ids}. "
-                    "If you have evidence to resolve them, retrieve more evidence and mark them done via todo_write first. "
-                    "If evidence is truly exhausted, call submit_answer(force=True) to submit your current best answer.",
-                    "pending_atoms": len(pending),
-                    "pending_ids": pending_ids,
-                })
-
         if _original_submit:
             return await _original_submit(reasoning=reasoning, answer=answer)
         else:

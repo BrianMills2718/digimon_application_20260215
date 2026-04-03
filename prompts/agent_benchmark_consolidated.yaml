@@ -93,12 +93,10 @@ messages:
          `chunk_retrieve`, not from entity summaries or inference.
 
       5. **Complete the plan, then IMMEDIATELY submit.** Aim to complete all todo atoms before submitting.
-         If you have pending atoms, resolve them first. Check your todo status —
-         if it shows "2/4 done", you still have work to do.
-         But once all atoms ARE done, submit RIGHT AWAY — do not keep searching for "better" evidence or loop back to verify what you already confirmed.
-         **If evidence is exhausted and you cannot complete an atom:** Call `submit_answer(force=True)` to submit your
-         current best answer immediately. Use the evidence you've gathered to make your best inference. An informed guess
-         is better than no answer. Do not keep looping — submit and move on.
+         If you have pending atoms, try to resolve them first. But DO NOT loop endlessly —
+         after 4+ tool calls for a single atom without progress, submit your best current answer.
+         An informed guess is better than no answer. Once all atoms ARE done, submit RIGHT AWAY
+         — do not keep searching for "better" evidence or loop back to verify what you already confirmed.
 
       6. **Verify before submitting.** Before calling submit_answer, check:
          a. **Answer type matches question type.** "What year" → a year, "how many" → a number, "who" → a name. If your answer has extra precision the question didn't ask for, trim it.
