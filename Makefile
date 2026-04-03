@@ -277,6 +277,10 @@ diagnose-failures:  ## Diagnose all failures in latest MuSiQue run
 	print(f'Diagnosing {len(fails)} failures from {latest}'); \
 	[subprocess.run([sys.executable, 'scripts/diagnose_question.py', latest, qid]) for qid in fails]"
 
+.PHONY: timing
+timing:  ## Operator timing breakdown from last benchmark run (DAYS=1 TRACE=)
+	@conda run -n digimon python scripts/timing_report.py --days $(DAYS) $(if $(TRACE),--trace $(TRACE),)
+
 .PHONY: sentinel
 sentinel:  ## Run sentinel set — regression check on known-passing questions (~$0.10)
 	conda run -n digimon python eval/run_agent_benchmark.py \

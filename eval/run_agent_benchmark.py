@@ -3211,44 +3211,58 @@ async def main() -> None:
             heartbeat_task = asyncio.create_task(_heartbeat())
 
         try:
-            with llm_activate_feature_profile(feature_profile), llm_activate_experiment_run(_experiment_run_id):
-                agent_result = await run_agent(
-                    q["question"], args.dataset,
-                    timeout=args.timeout,
-                    turn_timeout=args.turn_timeout,
-                    model=args.model,
-                    reasoning_effort=args.effort,
-                    max_turns=args.max_turns,
-                    max_tool_calls=args.max_tool_calls,
-                    mcp_session_pool=session_pool,
-                    mode=args.mode,
-                    backend=args.backend,
-                    python_tools=DIRECT_TOOLS if args.backend == "direct" else None,
-                    temperature=args.temperature,
-                    fallback_models=fallback_models,
-                    finalization_fallback_models=finalization_fallback_models,
-                    num_retries=args.num_retries,
-                    forced_final_max_attempts=forced_final_max_attempts,
-                    forced_final_circuit_breaker_threshold=forced_final_circuit_breaker_threshold,
-                    retrieval_stagnation_turns=retrieval_stagnation_turns,
-                    retrieval_stagnation_action=retrieval_stagnation_action,
-                    suppress_control_loop_calls=bool(args.suppress_control_loop_calls),
-                    force_submit_retry_on_max_tool_calls=bool(args.force_submit_retry_on_max_tool_calls),
-                    accept_forced_answer_on_max_tool_calls=bool(args.accept_forced_answer_on_max_tool_calls),
-                    lane_policy=args.lane_policy,
-                    trace_id=trace_id,
-                    codex_profile=effective_codex_profile,
-                )
+            # Propagate trace_id into consolidated tool timing observability.
+            try:
+                from Core.MCP.tool_consolidation import CURRENT_TRACE_ID as _TOOL_TRACE_VAR
+                _trace_token = _TOOL_TRACE_VAR.set(trace_id)
+            except Exception:
+                _trace_token = None  # type: ignore[assignment]
 
-                # LLM judge (runs before lock — it's an independent LLM call)
-                llm_em_val: int | None = None
-                if judge_model and agent_result["answer"]:
-                    judged = await llm_judge(
-                        q["question"], agent_result["answer"], q["answer"],
-                        model=judge_model,
+            try:
+                with llm_activate_feature_profile(feature_profile), llm_activate_experiment_run(_experiment_run_id):
+                    agent_result = await run_agent(
+                        q["question"], args.dataset,
+                        timeout=args.timeout,
+                        turn_timeout=args.turn_timeout,
+                        model=args.model,
+                        reasoning_effort=args.effort,
+                        max_turns=args.max_turns,
+                        max_tool_calls=args.max_tool_calls,
+                        mcp_session_pool=session_pool,
+                        mode=args.mode,
+                        backend=args.backend,
+                        python_tools=DIRECT_TOOLS if args.backend == "direct" else None,
+                        temperature=args.temperature,
+                        fallback_models=fallback_models,
+                        finalization_fallback_models=finalization_fallback_models,
+                        num_retries=args.num_retries,
+                        forced_final_max_attempts=forced_final_max_attempts,
+                        forced_final_circuit_breaker_threshold=forced_final_circuit_breaker_threshold,
+                        retrieval_stagnation_turns=retrieval_stagnation_turns,
+                        retrieval_stagnation_action=retrieval_stagnation_action,
+                        suppress_control_loop_calls=bool(args.suppress_control_loop_calls),
+                        force_submit_retry_on_max_tool_calls=bool(args.force_submit_retry_on_max_tool_calls),
+                        accept_forced_answer_on_max_tool_calls=bool(args.accept_forced_answer_on_max_tool_calls),
+                        lane_policy=args.lane_policy,
+                        trace_id=trace_id,
+                        codex_profile=effective_codex_profile,
                     )
-                    if judged is not None:
-                        llm_em_val = int(judged)
+            finally:
+                try:
+                    if _trace_token is not None:
+                        _TOOL_TRACE_VAR.reset(_trace_token)
+                except Exception:
+                    pass
+
+            # LLM judge (runs before lock — it's an independent LLM call)
+            llm_em_val: int | None = None
+            if judge_model and agent_result["answer"]:
+                judged = await llm_judge(
+                    q["question"], agent_result["answer"], q["answer"],
+                    model=judge_model,
+                )
+                if judged is not None:
+                    llm_em_val = int(judged)
         finally:
             if heartbeat_task:
                 heartbeat_task.cancel()

@@ -351,6 +351,29 @@ IEE fix priority: entity disambiguation at search time (entity_search returns to
 candidates, agent picks wrong one). A disambiguation step or better ranked entity search
 (e.g., require year/type constraint matching) would address 3-4 of these.
 
+### 2026-04-03 — claude-code — performance
+**Latency breakdown (measured, not estimated).**
+Instrumented all 28 operator dispatches in `Core/MCP/tool_consolidation.py` via
+`_timed_call` + `log_tool_call` → `tool_calls` table in llm_observability.db.
+Use `make timing` to view, or `python scripts/timing_report.py`.
+
+Measured on 2 sentinel questions (2hop, gpt-5.4-mini, backend=direct):
+- Operator calls: 6–7 per question, 5.7–7.3s total
+  - entity_search(string): ~2.5s avg (slowest single operator)
+  - chunk_retrieve(text): ~1.7s avg
+  - entity_search(semantic): ~0.6s avg
+  - entity_info/relationship_search: <1ms (fast)
+- LLM agent turns: 47–48 per 2-hop question (!), avg 1.2–1.7s per call
+- LLM total: 58–82s per question (sequential turns)
+
+**Key finding**: the ~52s "unaccounted gap" was LLM inference. Operator time is
+only 6–7s/question (~20% of total wall time). The dominant cost is LLM turn count
+(47–48 turns per 2-hop question). Reducing agent turn count (stagnation reduction,
+better planning) is the highest-leverage latency improvement, not operator optimization.
+
+Parallelism note: questions run in parallel by default (2 at a time), so wall-clock
+"effective per question" looks lower than the actual per-question sequential time.
+
 ### 2026-04-03 — claude-code — bug-pattern
 **94201 (Mississippi River Delta) regressed with gate removal.**
 Pre-gate-removal: agent would loop/fail to submit, resulting in empty prediction.

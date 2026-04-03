@@ -25,6 +25,68 @@ from __future__ import annotations
 
 import json as _json
 import logging
+import time as _time
+import uuid as _uuid
+from contextvars import ContextVar
+from datetime import datetime, timezone
+
+# ---------------------------------------------------------------------------
+# Operator timing observability
+# Set these context vars from the benchmark runner before calling acall_llm
+# so tool call timings are correlated with the LLM trace.
+# ---------------------------------------------------------------------------
+
+#: Set to the current benchmark trace_id before invoking the agent loop.
+CURRENT_TRACE_ID: ContextVar[str] = ContextVar("digimon_trace_id", default="")
+#: Set to the current task label (defaults to "digimon.benchmark").
+CURRENT_TASK: ContextVar[str] = ContextVar("digimon_task", default="digimon.benchmark")
+
+
+async def _timed_call(coro, *, tool_name: str, method: str, query_json: dict | None = None) -> str:
+    """Await *coro* and log operator timing to llm_client observability DB.
+
+    Failure never propagates from the logging side — if log_tool_call raises,
+    the operator result is still returned normally.
+    """
+    call_id = _uuid.uuid4().hex[:12]
+    started_at = datetime.now(timezone.utc).isoformat()
+    t0 = _time.perf_counter()
+    status = "succeeded"
+    error_type: str | None = None
+    error_message: str | None = None
+    raw: str = "{}"
+    try:
+        raw = await coro
+        return raw
+    except Exception as exc:
+        status = "failed"
+        error_type = type(exc).__name__
+        error_message = str(exc)[:300]
+        raise
+    finally:
+        duration_ms = int((_time.perf_counter() - t0) * 1000)
+        ended_at = datetime.now(timezone.utc).isoformat()
+        trace_id = CURRENT_TRACE_ID.get() or None
+        task = CURRENT_TASK.get() or "digimon.benchmark"
+        try:
+            from llm_client.observability import ToolCallResult, log_tool_call
+            log_tool_call(ToolCallResult(
+                call_id=call_id,
+                tool_name=tool_name,
+                operation=method,
+                status=status,
+                started_at=started_at,
+                ended_at=ended_at,
+                duration_ms=duration_ms,
+                task=task,
+                trace_id=trace_id,
+                error_type=error_type,
+                error_message=error_message,
+                query_json=query_json,
+            ))
+        except Exception:
+            pass  # observability must never break the tool
+
 
 # Consolidated tool names and their methods
 CONSOLIDATED_TOOLS: dict[str, list[str]] = {
@@ -719,24 +781,40 @@ def build_consolidated_tools(dms: Any) -> list:
             candidate_entity_ids: Pre-existing candidate IDs to re-rank (tfidf only).
         """
         if method == "semantic":
-            raw = await dms.entity_vdb_search(
-                query_text=query, query=query, dataset_name=dataset_name,
-                top_k=top_k, vdb_reference_id=vdb_reference_id,
+            raw = await _timed_call(
+                dms.entity_vdb_search(
+                    query_text=query, query=query, dataset_name=dataset_name,
+                    top_k=top_k, vdb_reference_id=vdb_reference_id,
+                ),
+                tool_name="entity_search", method="semantic",
+                query_json={"query": query, "top_k": top_k},
             )
         elif method == "string":
-            raw = await dms.entity_string_search(
-                query=query, dataset_name=dataset_name, top_k=top_k,
-                graph_reference_id=graph_reference_id,
+            raw = await _timed_call(
+                dms.entity_string_search(
+                    query=query, dataset_name=dataset_name, top_k=top_k,
+                    graph_reference_id=graph_reference_id,
+                ),
+                tool_name="entity_search", method="string",
+                query_json={"query": query, "top_k": top_k},
             )
         elif method == "tfidf":
-            raw = await dms.entity_tfidf(
-                query_text=query, graph_reference_id=graph_reference_id,
-                top_k=top_k, candidate_entity_ids=candidate_entity_ids,
+            raw = await _timed_call(
+                dms.entity_tfidf(
+                    query_text=query, graph_reference_id=graph_reference_id,
+                    top_k=top_k, candidate_entity_ids=candidate_entity_ids,
+                ),
+                tool_name="entity_search", method="tfidf",
+                query_json={"query": query, "top_k": top_k},
             )
         elif method == "agent":
-            raw = await dms.entity_agent(
-                query_text=query, text_context=query,
-                max_entities=top_k,
+            raw = await _timed_call(
+                dms.entity_agent(
+                    query_text=query, text_context=query,
+                    max_entities=top_k,
+                ),
+                tool_name="entity_search", method="agent",
+                query_json={"query": query, "top_k": top_k},
             )
         else:
             return _json.dumps({"error": f"Invalid method '{method}'. Use: semantic, string, tfidf, agent"})
@@ -783,29 +861,41 @@ def build_consolidated_tools(dms: Any) -> list:
             vdb_reference_id: VDB ID for link method.
         """
         if method == "onehop":
-            raw = await dms.entity_onehop(
-                entity_ids=entity_ids, entity_name=None,
-                graph_reference_id=graph_reference_id, dataset_name=dataset_name,
-                top_k=top_k,
+            raw = await _timed_call(
+                dms.entity_onehop(
+                    entity_ids=entity_ids, entity_name=None,
+                    graph_reference_id=graph_reference_id, dataset_name=dataset_name,
+                    top_k=top_k,
+                ),
+                tool_name="entity_traverse", method="onehop",
             )
         elif method == "ppr":
             seeds = entity_ids if isinstance(entity_ids, list) else [entity_ids] if entity_ids else []
-            raw = await dms.entity_ppr(
-                graph_reference_id=graph_reference_id,
-                seed_entity_ids=seeds, top_k=top_k,
+            raw = await _timed_call(
+                dms.entity_ppr(
+                    graph_reference_id=graph_reference_id,
+                    seed_entity_ids=seeds, top_k=top_k,
+                ),
+                tool_name="entity_traverse", method="ppr",
             )
         elif method == "neighborhood":
             names = entity_names or entity_ids or []
-            raw = await dms.entity_neighborhood(
-                entity_names=names, graph_reference_id=graph_reference_id,
-                dataset_name=dataset_name, hops=hops, max_nodes=max_nodes,
+            raw = await _timed_call(
+                dms.entity_neighborhood(
+                    entity_names=names, graph_reference_id=graph_reference_id,
+                    dataset_name=dataset_name, hops=hops, max_nodes=max_nodes,
+                ),
+                tool_name="entity_traverse", method="neighborhood",
             )
         elif method == "link":
             names = entity_names or entity_ids or []
-            raw = await dms.entity_link(
-                source_entities=None, entity_names=names,
-                vdb_reference_id=vdb_reference_id, dataset_name=dataset_name,
-                similarity_threshold=similarity_threshold,
+            raw = await _timed_call(
+                dms.entity_link(
+                    source_entities=None, entity_names=names,
+                    vdb_reference_id=vdb_reference_id, dataset_name=dataset_name,
+                    similarity_threshold=similarity_threshold,
+                ),
+                tool_name="entity_traverse", method="link",
             )
         else:
 
@@ -861,14 +951,21 @@ def build_consolidated_tools(dms: Any) -> list:
                 effective_entity_name = effective_scope[0]
                 entity_id = ""
         if method == "profile":
-            raw = await dms.entity_profile(
-                entity_id=entity_id, entity_name=effective_entity_name,
-                graph_reference_id=graph_reference_id, dataset_name=dataset_name,
+            raw = await _timed_call(
+                dms.entity_profile(
+                    entity_id=entity_id, entity_name=effective_entity_name,
+                    graph_reference_id=graph_reference_id, dataset_name=dataset_name,
+                ),
+                tool_name="entity_info", method="profile",
+                query_json={"entity_name": entity_name},
             )
         elif method == "resolve":
-            raw = await dms.entity_resolve_names_to_ids(
-                entity_names=entity_names, vdb_reference_id=vdb_reference_id,
-                dataset_name=dataset_name, top_k_per_name=top_k_per_name,
+            raw = await _timed_call(
+                dms.entity_resolve_names_to_ids(
+                    entity_names=entity_names, vdb_reference_id=vdb_reference_id,
+                    dataset_name=dataset_name, top_k_per_name=top_k_per_name,
+                ),
+                tool_name="entity_info", method="resolve",
             )
         else:
 
@@ -922,18 +1019,28 @@ def build_consolidated_tools(dms: Any) -> list:
             if scope:
                 effective_entity_ids = scope
         if method == "graph":
-            raw = await dms.relationship_onehop(
-                entity_ids=effective_entity_ids, graph_reference_id=graph_reference_id,
+            raw = await _timed_call(
+                dms.relationship_onehop(
+                    entity_ids=effective_entity_ids, graph_reference_id=graph_reference_id,
+                ),
+                tool_name="relationship_search", method="graph",
             )
         elif method == "semantic":
-            raw = await dms.relationship_vdb_search(
-                query_text=query_text, vdb_reference_id=vdb_reference_id,
-                top_k=top_k,
+            raw = await _timed_call(
+                dms.relationship_vdb_search(
+                    query_text=query_text, vdb_reference_id=vdb_reference_id,
+                    top_k=top_k,
+                ),
+                tool_name="relationship_search", method="semantic",
+                query_json={"query": query_text, "top_k": top_k},
             )
         elif method == "score":
-            raw = await dms.relationship_score_aggregator(
-                graph_reference_id=graph_reference_id,
-                entity_scores=entity_scores, top_k=top_k,
+            raw = await _timed_call(
+                dms.relationship_score_aggregator(
+                    graph_reference_id=graph_reference_id,
+                    entity_scores=entity_scores, top_k=top_k,
+                ),
+                tool_name="relationship_search", method="score",
             )
         else:
 
@@ -997,34 +1104,54 @@ def build_consolidated_tools(dms: Any) -> list:
                 effective_entity_names = scope
                 effective_entity_ids = []
         if method == "text":
-            raw = await dms.chunk_text_search(
-                query_text=query_text, dataset_name=dataset_name,
-                top_k=top_k, entity_names=entity_names,
+            raw = await _timed_call(
+                dms.chunk_text_search(
+                    query_text=query_text, dataset_name=dataset_name,
+                    top_k=top_k, entity_names=entity_names,
+                ),
+                tool_name="chunk_retrieve", method="text",
+                query_json={"query": query_text, "top_k": top_k},
             )
         elif method == "semantic":
-            raw = await dms.chunk_vdb_search(
-                query_text=query_text, dataset_name=dataset_name,
-                top_k=top_k, entity_names=entity_names,
+            raw = await _timed_call(
+                dms.chunk_vdb_search(
+                    query_text=query_text, dataset_name=dataset_name,
+                    top_k=top_k, entity_names=entity_names,
+                ),
+                tool_name="chunk_retrieve", method="semantic",
+                query_json={"query": query_text, "top_k": top_k},
             )
         elif method == "relationships":
-            raw = await dms.chunk_from_relationships(
-                target_relationships=target_relationships or [],
-                document_collection_id=document_collection_id,
-                dataset_name=dataset_name, top_k=top_k,
+            raw = await _timed_call(
+                dms.chunk_from_relationships(
+                    target_relationships=target_relationships or [],
+                    document_collection_id=document_collection_id,
+                    dataset_name=dataset_name, top_k=top_k,
+                ),
+                tool_name="chunk_retrieve", method="relationships",
             )
         elif method == "cooccurrence":
-            raw = await dms.chunk_occurrence(
-                entity_names=entity_names, dataset_name=dataset_name,
-                document_collection_id=document_collection_id, top_k=top_k,
+            raw = await _timed_call(
+                dms.chunk_occurrence(
+                    entity_names=entity_names, dataset_name=dataset_name,
+                    document_collection_id=document_collection_id, top_k=top_k,
+                ),
+                tool_name="chunk_retrieve", method="cooccurrence",
             )
         elif method == "by_ids":
-            raw = await dms.chunk_get_text_by_chunk_ids(
-                chunk_ids=chunk_ids, dataset_name=dataset_name,
+            raw = await _timed_call(
+                dms.chunk_get_text_by_chunk_ids(
+                    chunk_ids=chunk_ids, dataset_name=dataset_name,
+                ),
+                tool_name="chunk_retrieve", method="by_ids",
             )
         elif method == "by_entities":
-            raw = await dms.chunk_get_text_by_entity_ids(
-                entity_ids=effective_entity_ids, entity_names=effective_entity_names,
-                graph_reference_id=graph_reference_id, dataset_name=dataset_name,
+            raw = await _timed_call(
+                dms.chunk_get_text_by_entity_ids(
+                    entity_ids=effective_entity_ids, entity_names=effective_entity_names,
+                    graph_reference_id=graph_reference_id, dataset_name=dataset_name,
+                ),
+                tool_name="chunk_retrieve", method="by_entities",
             )
         else:
 
@@ -1072,21 +1199,30 @@ def build_consolidated_tools(dms: Any) -> list:
             relationship_triples: Relationship data for pcst.
         """
         if method == "khop":
-            raw = await dms.subgraph_khop_paths(
-                graph_reference_id=graph_reference_id,
-                start_entity_ids=start_entity_ids or entity_ids or [],
-                end_entity_ids=end_entity_ids, k_hops=k_hops, max_paths=max_paths,
+            raw = await _timed_call(
+                dms.subgraph_khop_paths(
+                    graph_reference_id=graph_reference_id,
+                    start_entity_ids=start_entity_ids or entity_ids or [],
+                    end_entity_ids=end_entity_ids, k_hops=k_hops, max_paths=max_paths,
+                ),
+                tool_name="subgraph_extract", method="khop",
             )
         elif method == "steiner":
-            raw = await dms.subgraph_steiner_tree(
-                graph_reference_id=graph_reference_id,
-                terminal_node_ids=entity_ids or [],
+            raw = await _timed_call(
+                dms.subgraph_steiner_tree(
+                    graph_reference_id=graph_reference_id,
+                    terminal_node_ids=entity_ids or [],
+                ),
+                tool_name="subgraph_extract", method="steiner",
             )
         elif method == "pcst":
-            raw = await dms.meta_pcst_optimize(
-                entity_ids=entity_ids or [], entity_scores=entity_scores or {},
-                relationship_triples=relationship_triples or [],
-                graph_reference_id=graph_reference_id,
+            raw = await _timed_call(
+                dms.meta_pcst_optimize(
+                    entity_ids=entity_ids or [], entity_scores=entity_scores or {},
+                    relationship_triples=relationship_triples or [],
+                    graph_reference_id=graph_reference_id,
+                ),
+                tool_name="subgraph_extract", method="pcst",
             )
         else:
 
@@ -1117,14 +1253,20 @@ def build_consolidated_tools(dms: Any) -> list:
             max_layer_depth: Max hierarchy depth for from_level.
         """
         if method == "from_entities":
-            raw = await dms.community_detect_from_entities(
-                graph_reference_id=graph_reference_id,
-                seed_entity_ids=seed_entity_ids or [], max_communities=max_communities,
+            raw = await _timed_call(
+                dms.community_detect_from_entities(
+                    graph_reference_id=graph_reference_id,
+                    seed_entity_ids=seed_entity_ids or [], max_communities=max_communities,
+                ),
+                tool_name="community_search", method="from_entities",
             )
         elif method == "from_level":
-            raw = await dms.community_get_layer(
-                community_hierarchy_reference_id=community_hierarchy_reference_id,
-                max_layer_depth=max_layer_depth,
+            raw = await _timed_call(
+                dms.community_get_layer(
+                    community_hierarchy_reference_id=community_hierarchy_reference_id,
+                    max_layer_depth=max_layer_depth,
+                ),
+                tool_name="community_search", method="from_level",
             )
         else:
 
@@ -1157,20 +1299,36 @@ def build_consolidated_tools(dms: Any) -> list:
             synthesis_style: How to combine sub-answers (synthesize method).
         """
         if method == "answer":
-            raw = await dms.meta_generate_answer(
-                query_text=query_text, context_chunks=context_chunks or [],
+            raw = await _timed_call(
+                dms.meta_generate_answer(
+                    query_text=query_text, context_chunks=context_chunks or [],
+                ),
+                tool_name="reason", method="answer",
+                query_json={"query": query_text},
             )
         elif method == "decompose":
-            raw = await dms.meta_decompose_question(
-                query_text=query_text, max_questions=max_questions,
+            raw = await _timed_call(
+                dms.meta_decompose_question(
+                    query_text=query_text, max_questions=max_questions,
+                ),
+                tool_name="reason", method="decompose",
+                query_json={"query": query_text},
             )
         elif method == "synthesize":
-            raw = await dms.meta_synthesize_answers(
-                query_text=query_text, sub_answers=sub_answers or [],
-                synthesis_style=synthesis_style,
+            raw = await _timed_call(
+                dms.meta_synthesize_answers(
+                    query_text=query_text, sub_answers=sub_answers or [],
+                    synthesis_style=synthesis_style,
+                ),
+                tool_name="reason", method="synthesize",
+                query_json={"query": query_text},
             )
         elif method == "extract":
-            raw = await dms.meta_extract_entities(query_text=query_text)
+            raw = await _timed_call(
+                dms.meta_extract_entities(query_text=query_text),
+                tool_name="reason", method="extract",
+                query_json={"query": query_text},
+            )
         else:
 
             return _json.dumps({"error": f"Invalid method '{method}'. Use: answer, decompose, synthesize, extract"})
