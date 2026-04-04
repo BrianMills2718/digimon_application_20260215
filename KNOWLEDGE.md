@@ -496,3 +496,12 @@ back instead of failing hard. However the same smoke artifact
 `619265` to answer `10`, and the benchmark summary still recorded
 `fallback_used_any=false`. Treat helper fallback quality and nested-fallback
 observability as the next blocker before re-spending on the 19q gate.
+
+### 2026-04-04 — codex — best-practice
+**Decision-trace architecture should split shared substrate, project declarations, and optional canonicalization adapters.**
+For decision-trace and modular-agent work, keep the ownership boundary
+explicit: shared infra should own the trace envelope, runtime declaration,
+persistence, and rendering; DIGIMON should only declare its own decision
+points and extractors. `onto-canon6` identity/canonicalization is most
+promising as an offline trace-normalization adapter, not as a default
+benchmark hot-path dependency.

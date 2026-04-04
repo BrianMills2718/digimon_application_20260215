@@ -47,6 +47,7 @@ integration.
 | 26 | [DIGIMON isolated governed refresh and ownership-baseline repair](26_digimon-isolated-governed-refresh-and-ownership-baseline-repair.md) | High | ✅ Complete | - |
 | 27 | [Retrieval Strategy Heuristics](27_retrieval_strategy_heuristics.md) | High | 🚧 In Progress | Next 19q diagnostic rerun |
 | 28 | [Truthful Overnight Stabilization And Contract Repair](28_truthful_overnight_stabilization_and_contract_repair.md) | High | 🚧 In Progress | Corrected 19q baseline + next decision-grade rerun |
+| 29 | [Declarative Decision Tracing And Modular Agent Runtime](29_declarative_decision_tracing_and_modular_agent_runtime.md) | High | 📋 Planned | Shared decision-trace implementation slice and runtime-registry convergence |
 
 ## Status Key
 
