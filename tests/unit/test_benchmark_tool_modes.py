@@ -7,15 +7,21 @@ import json
 from Core.Common.benchmark_tool_modes import filter_tool_names_for_benchmark_mode
 from llm_client import MCPAgentResult, MCPToolCallRecord
 from eval.run_agent_benchmark import (
+    _aggregate_llm_call_observability,
+    _extract_foundation_tool_calls,
     _extract_full_submit_records,
     _atom_lifecycle_provenance,
     _conversation_trace_has_pending_todos,
     _derive_submit_observability,
+    _format_runtime_turn_timeout_label,
+    _format_turn_timeout_label,
     _helper_trace_provenance,
     _read_atom_lifecycle_events_since,
     _read_helper_trace_events_since,
     _preserve_terminal_answer_after_submit_validation,
+    _resolve_effective_turn_timeout,
     _submit_tool_call_accepted,
+    _summarize_timeout_foundation_events,
 )
 
 
@@ -361,3 +367,110 @@ def test_atom_lifecycle_provenance_counts_mutations() -> None:
     assert provenance["atom_completed_event_count"] == 1
     assert provenance["atom_unresolved_event_count"] == 1
     assert provenance["atom_manual_rejected_event_count"] == 1
+
+
+def test_extract_foundation_tool_calls_recovers_pending_tool_attempt() -> None:
+    """Timeout reconstruction should preserve tool attempts even without a result artifact."""
+    records = _extract_foundation_tool_calls(
+        [
+            {
+                "event_type": "ToolCalled",
+                "operation": {"name": "semantic_plan"},
+                "inputs": {
+                    "params": {
+                        "question": "Q",
+                        "tool_reasoning": "Need a semantic plan first.",
+                    }
+                },
+            }
+        ]
+    )
+
+    assert len(records) == 1
+    assert records[0]["tool"] == "semantic_plan"
+    assert records[0]["arguments"]["question"] == "Q"
+    assert records[0]["has_result"] is False
+    assert records[0]["observed_via"] == "foundation_events"
+
+
+def test_summarize_timeout_foundation_events_marks_pending_tool_execution() -> None:
+    """Timeout summaries should identify the active tool when a tool call never completes."""
+    summary = _summarize_timeout_foundation_events(
+        [
+            {"event_type": "LLMCalled", "operation": {"name": "_inner_acall_llm"}},
+            {
+                "event_type": "ToolCalled",
+                "operation": {"name": "semantic_plan"},
+                "inputs": {"params": {"question": "Q"}},
+            },
+        ],
+        [{"model": "openrouter/openai/gpt-5.4-mini", "finish_reason": "tool_calls"}],
+    )
+
+    assert summary["timeout_stage"] == "tool_execution"
+    assert summary["timeout_active_tool"] == "semantic_plan"
+    assert summary["foundation_attempted_tools"] == ["semantic_plan"]
+    assert summary["foundation_pending_tools"] == ["semantic_plan"]
+    assert summary["timeout_models_used"] == ["openrouter/openai/gpt-5.4-mini"]
+
+
+def test_aggregate_llm_call_observability_sums_usage_and_cost() -> None:
+    """Timeout recovery should be able to synthesize usage/cost from llm_call rows."""
+    aggregated = _aggregate_llm_call_observability(
+        [
+            {
+                "model": "m1",
+                "prompt_tokens": 10,
+                "completion_tokens": 3,
+                "total_tokens": 13,
+                "cost": 0.2,
+            },
+            {
+                "model": "m2",
+                "prompt_tokens": 4,
+                "completion_tokens": 1,
+                "total_tokens": 5,
+                "cost": 0.05,
+            },
+        ]
+    )
+
+    assert aggregated["usage"] == {
+        "prompt_tokens": 14,
+        "completion_tokens": 4,
+        "total_tokens": 18,
+    }
+    assert aggregated["cost"] == 0.25
+    assert aggregated["models_used"] == ["m1", "m2"]
+
+
+def test_resolve_effective_turn_timeout_uses_auto_default_when_unspecified() -> None:
+    """Unspecified turn timeout should default to min(question_timeout, 60)."""
+    assert _resolve_effective_turn_timeout(None, 180) == 60
+    assert _resolve_effective_turn_timeout(None, 30) == 30
+    assert _resolve_effective_turn_timeout(None, 0) == 0
+    assert _resolve_effective_turn_timeout(0, 180) == 0
+
+
+def test_format_turn_timeout_label_distinguishes_auto_from_off() -> None:
+    """CLI labels should show when turn timeout came from the auto default."""
+    assert _format_turn_timeout_label(None, 180) == "auto:60s"
+    assert _format_turn_timeout_label(None, 0) == "auto(off)"
+    assert _format_turn_timeout_label(0, 180) == "off"
+    assert _format_turn_timeout_label(45, 180) == "45s"
+
+
+def test_format_runtime_turn_timeout_label_surfaces_policy_disabled(monkeypatch) -> None:
+    """Runtime labels should show when global timeout policy disables a planned timeout."""
+    monkeypatch.setenv("LLM_CLIENT_TIMEOUT_POLICY", "ban")
+
+    assert _format_runtime_turn_timeout_label(None, 180) == "disabled-by-policy(auto:60s)"
+    assert _format_runtime_turn_timeout_label(45, 180) == "disabled-by-policy(45s)"
+
+
+def test_format_runtime_turn_timeout_label_passes_through_when_allowed(monkeypatch) -> None:
+    """Runtime labels should match planned labels when timeout policy allows them."""
+    monkeypatch.setenv("LLM_CLIENT_TIMEOUT_POLICY", "allow")
+
+    assert _format_runtime_turn_timeout_label(None, 180) == "auto:60s"
+    assert _format_runtime_turn_timeout_label(0, 180) == "off"

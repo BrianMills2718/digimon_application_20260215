@@ -604,3 +604,25 @@ provider failure. Treat this as a harness/runtime issue, not evidence for or
 against the new reflection loop. The next live validation step should rerun
 the same question once first-turn timeout behavior is understood, because this
 artifact contains no controller signal.
+
+### 2026-04-04 — codex — integration-issue
+**Benchmark per-turn timeout labels were overstating enforcement when the shared `llm_client` timeout policy was globally banned.**
+In this shell, `LLM_CLIENT_TIMEOUT_POLICY=ban`, which means provider/request
+timeouts are disabled even if DIGIMON passes `timeout=60` or `timeout=180` to
+`acall_llm` / `acall_llm_structured`. Before the latest runner repair,
+benchmark output still printed `turn_timeout=60s`, which was misleading. Plan
+#28 now distinguishes requested/planned turn timeout from
+`turn_timeout_runtime_enforced` and annotates labels like
+`disabled-by-policy(auto:60s)` so timeout artifacts stay truthful.
+
+### 2026-04-04 — codex — bug-pattern
+**`754156` is no longer a first-turn timeout case; it currently fails as unresolved-hop control churn plus forced-terminal answer acceptance.**
+The bounded rerun
+`results/MuSiQue_gpt-5-4-mini_consolidated_20260405T032944Z.json` completed in
+`135.34s` with `16` tool calls and no helper fallback. The controller resolved
+`A1 -> Myanmar`, then repeatedly failed to ground `A2` despite reflection
+redirecting search toward `Somali Muslim Ajuran Empire`. It eventually hit
+`CONTROL_CHURN_THRESHOLD_EXCEEDED`, forced-finalized `by airplanes`, and left
+`A2/A3/A4` pending. Treat this as a controller-policy problem (submit churn +
+forced-terminal acceptance under unresolved atoms), not as a raw timeout or
+prompt-only failure.

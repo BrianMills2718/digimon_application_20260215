@@ -466,6 +466,47 @@ decision:
     understand the first-turn timeout on this question, then rerun the same
     probe to evaluate whether the stored recovery hint changes the controller's
     next retrieval query in a live trace
+- Timeout provenance repair landed in the benchmark runner:
+  - timeout artifacts now reconstruct partial tool telemetry from
+    `foundation_events` + `llm_calls` when cancellation loses the in-memory
+    partial result
+  - the runner now snapshots observability DB row offsets at question start and
+    harvests only the current question's appended rows on timeout
+  - per-turn timeout defaults are now truthful: omitted `--turn-timeout`
+    resolves to `min(question_timeout, 60)` instead of silently acting like
+    explicit `0`
+  - the benchmark surface now distinguishes:
+    - `turn_timeout_requested`
+    - `turn_timeout_planned`
+    - `turn_timeout_runtime_enforced`
+    - `turn_timeout_policy`
+  - when the shared policy disables request timeouts, labels now render as
+    `disabled-by-policy(auto:60s)` rather than pretending the timeout is live
+- Follow-up live probe on `754156` after the timeout/observability repair:
+  - command:
+    `python scripts/run_with_digimon_python.py eval/run_agent_benchmark.py --agent-spec none --allow-missing-agent-spec --missing-agent-spec-reason relocated --dataset MuSiQue --data-root /home/brian/projects/Digimon_for_KG_application/Data --questions 4hop3__754156_88460_30152_20999 --model openrouter/openai/gpt-5.4-mini --backend direct --retrieval-stagnation-turns 6 --question-delay 0 --timeout 180 --tag plan28_timeout_obs_r7`
+  - artifact: `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T032944Z.json`
+  - outcome:
+    - no first-turn timeout
+    - completed in `135.34s` with `16` tool calls
+    - `A1` grounded to `Myanmar`
+    - `A2/A3/A4` remained pending
+    - repeated submit rejections escalated to
+      `CONTROL_CHURN_THRESHOLD_EXCEEDED`
+    - forced-terminal acceptance produced final answer `by airplanes`
+  - truthful interpretation:
+    - the reflection loop did change the controller path and produced useful
+      `atom_reflection_generated` events
+    - the current `754156` bottleneck is not missing reflection and not raw
+      timeout behavior
+    - it is unresolved-hop controller churn plus forced-terminal answer
+      acceptance while multiple atoms remain pending
+  - important environment note:
+    - this shell currently has `LLM_CLIENT_TIMEOUT_POLICY=ban`
+    - direct benchmark runs therefore cannot rely on provider/request timeout
+      enforcement even when a planned per-turn timeout exists
+    - the runner now surfaces that mismatch truthfully; it does not yet
+      override the shared timeout policy
 
 ---
 

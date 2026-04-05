@@ -121,7 +121,7 @@ remaining check: empty-answer rejection.
 | 820301 | 22 | "1" | IEE — wrong answer, retrieval finds wrong chain |
 | 354635 | Time Warner Cable | "Adelphia" or "Comcast" | Close IEE — finds neighbor not target |
 | 71753 | 1930 | "1961" or "1921" | Wrong year — poor entity disambiguation |
-| 754156 | The dynasty regrouped and defeated the Portuguese | "Laos" / "Myanmar" / "expelled by the Portuguese" | Premature intermediate submit + answer-kind failure |
+| 754156 | The dynasty regrouped and defeated the Portuguese | "Laos" / "Myanmar" / "expelled by the Portuguese" / "by airplanes" | Unresolved-hop control churn: `A1 -> Myanmar`, then `A2/A3/A4` stay pending and the controller forced-finalizes an ungrounded answer |
 
 ### Remaining failure families
 
@@ -211,7 +211,8 @@ Total per question: ~6s operators + 58-82s LLM (47-48 turns sequential).
 
 ## Next Actions
 
-1. **Test the new submit-breaker on another premature-submit family question** — `619265` is now grounded, but we need another targeted probe such as `754156` or `199513` before treating the controller-policy fix as general.
-2. **Validate helper fallback quality + observability before spending on the 19q gate** — helper calls now follow configured `llm_client` fallbacks, but the earlier smoke run `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T133705Z.json` still regressed `619265` to `10`, and nested helper fallback usage is not yet fully surfaced in benchmark provenance.
-3. **Reclassify from artifacts after every change** — rerun `make truth-check` and regenerate the iteration report before updating narrative docs.
-4. **50q confirmatory run only after the 19q ladder clears** — no decision-grade rerun before the fixed-setting 19q baseline exists.
+1. **Stop unresolved-hop submit churn on `754156`-style questions** — the latest bounded probe completed end-to-end, but `A2/A3/A4` stayed pending and the controller forced-finalized `by airplanes` under `CONTROL_CHURN_THRESHOLD_EXCEEDED`. The next controller slice should suppress or re-route submit attempts while the active atom is still unresolved, instead of converting that state into a forced-final answer.
+2. **Keep timeout provenance truthful while `LLM_CLIENT_TIMEOUT_POLICY=ban` remains active** — this shell disables per-call timeouts globally, so benchmark artifacts must continue surfacing requested/planned timeout separately from `turn_timeout_runtime_enforced` instead of pretending `auto:60s` is active.
+3. **Validate helper fallback quality + observability before spending on the 19q gate** — helper calls now follow configured `llm_client` fallbacks, but the earlier smoke run `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T133705Z.json` still regressed `619265` to `10`, and nested helper fallback usage is not yet fully surfaced in benchmark provenance.
+4. **Reclassify from artifacts after every change** — rerun `make truth-check` and regenerate the iteration report before updating narrative docs.
+5. **50q confirmatory run only after the 19q ladder clears** — no decision-grade rerun before the fixed-setting 19q baseline exists.
