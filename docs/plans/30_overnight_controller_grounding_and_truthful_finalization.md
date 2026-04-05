@@ -29,16 +29,22 @@ This plan assumes all work happens in worktrees with frequent verified commits.
 - `619265` is no longer the main blocker. The current lane can answer it with a
   grounded submit after the submit-breaker repair.
 - `754156` is currently the clearest live controller failure family.
-  Artifact:
-  `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T032944Z.json`
-  shows:
-  - `A1 -> Myanmar`
-  - `A2/A3/A4` still pending
-  - repeated submit rejections
-  - `CONTROL_CHURN_THRESHOLD_EXCEEDED`
-  - forced-final answer `by airplanes`
+  Artifact history now shows two distinct truths:
+  - `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T032944Z.json` was the
+    pre-repair failure: `A1 -> Myanmar`, `A2/A3/A4` pending, repeated submit
+    rejections, `CONTROL_CHURN_THRESHOLD_EXCEEDED`, forced-final answer
+    `by airplanes`
+  - `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T040232Z.json` is the
+    post-repair truthful artifact: still unresolved, but now
+    `predicted=''`, `submit_completion_mode=missing_required_submit`, and
+    `forced_terminal_accept_reason='control_churn'`
 - This shell has `LLM_CLIENT_TIMEOUT_POLICY=ban`, so benchmark output must
   distinguish planned per-turn timeout from runtime-enforced timeout.
+- A new runtime clue emerged during the same probes:
+  `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T035805Z.json` logged
+  `LINEARIZATION_DATA_LOSS` for `chunk_retrieve(method=by_ids)`, meaning raw
+  evidence existed but the controller-facing linearized summary collapsed to an
+  effectively empty message.
 
 ---
 
@@ -75,6 +81,10 @@ This plan assumes all work happens in worktrees with frequent verified commits.
   the scored prediction.
 - Timeout artifacts contain partial tool provenance when available.
 - Focused unit suite passes.
+
+**Status**
+- Complete. Verified by focused unit suite plus live probe
+  `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T040232Z.json`.
 
 ### Phase 2 — Controller Anti-Churn Repair
 

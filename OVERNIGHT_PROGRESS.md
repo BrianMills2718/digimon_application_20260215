@@ -19,14 +19,20 @@ Keep the maintained DIGIMON benchmark lane truthful overnight by:
 
 ## Current Phase
 
-- Phase 0 complete once plan/governance docs are committed.
-- Next active phase: Phase 1 — Truthful Finalization And Timeout Provenance.
+- Phase 0 complete.
+- Phase 1 complete.
+- Next active phase: Phase 2 — Controller Anti-Churn Repair.
 
 ## Current Verified Blocker
 
-- Artifact `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T032944Z.json`
-  shows `A1 -> Myanmar`, `A2/A3/A4` pending, repeated submit rejection, then
-  `CONTROL_CHURN_THRESHOLD_EXCEEDED` and forced-final answer preservation.
+- Artifact `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T040232Z.json`
+  now fails honestly with `predicted=''`,
+  `forced_terminal_accept_reason='control_churn'`, and one pending atom (`A4`)
+  still blocking a grounded submit.
+- New runtime clue from `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T035805Z.json`:
+  `chunk_retrieve(method=by_ids)` can emit `LINEARIZATION_DATA_LOSS` warnings
+  when raw tool content exists but the linearized summary says empty. This is a
+  likely Phase 2/3 contributor because it can hide evidence from the controller.
 
 ## Notes
 

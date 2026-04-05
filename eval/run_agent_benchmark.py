@@ -1933,6 +1933,9 @@ def _preserve_terminal_answer_after_submit_validation(
     derived_submit: dict[str, Any],
     submit_forced_accept_on_budget_exhaustion: bool | None,
     finalization_fallback_succeeded: bool | None,
+    first_terminal_failure_event_code: str | None,
+    failure_event_codes: list[str] | None,
+    conversation_trace: Any,
 ) -> str:
     """Drop terminal answers that were not accepted through the submit contract.
 
@@ -1948,9 +1951,88 @@ def _preserve_terminal_answer_after_submit_validation(
         return answer
     if bool(derived_submit.get("submit_answer_succeeded")):
         return answer
-    if submit_forced_accept_on_budget_exhaustion or finalization_fallback_succeeded:
-        return answer
-    return ""
+    forced_reason = _derive_forced_terminal_accept_reason(
+        submit_forced_accept_on_budget_exhaustion=submit_forced_accept_on_budget_exhaustion,
+        finalization_fallback_succeeded=finalization_fallback_succeeded,
+        first_terminal_failure_event_code=first_terminal_failure_event_code,
+        failure_event_codes=failure_event_codes,
+    )
+    if forced_reason is None:
+        return ""
+    has_pending_atoms = _submit_path_has_pending_atoms(
+        derived_submit=derived_submit,
+        conversation_trace=conversation_trace,
+    )
+    if has_pending_atoms and forced_reason not in {"budget_exhaustion", "turn_exhaustion"}:
+        return ""
+    return answer
+
+
+def _derive_forced_terminal_accept_reason(
+    *,
+    submit_forced_accept_on_budget_exhaustion: bool | None,
+    finalization_fallback_succeeded: bool | None,
+    first_terminal_failure_event_code: str | None,
+    failure_event_codes: list[str] | None,
+) -> str | None:
+    """Classify the forced-terminal acceptance family for benchmark truthfulness.
+
+    The shared runtime currently exposes only the historical boolean
+    ``submit_forced_accept_on_budget_exhaustion`` even when the real forced-final
+    cause was another policy such as control churn. The benchmark lane therefore
+    derives a more truthful local reason code before deciding whether a terminal
+    answer should remain scoreable.
+    """
+    normalized_codes = {
+        str(code).strip() for code in (failure_event_codes or []) if str(code).strip()
+    }
+    first_code = str(first_terminal_failure_event_code or "").strip()
+    has_forced_accept_signal = bool(
+        submit_forced_accept_on_budget_exhaustion
+        or finalization_fallback_succeeded
+        or any(code.startswith("SUBMIT_FORCED_ACCEPT_") for code in normalized_codes)
+    )
+    if not has_forced_accept_signal:
+        return None
+    if "SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION" in normalized_codes:
+        return "budget_exhaustion"
+    if "SUBMIT_FORCED_ACCEPT_TURN_EXHAUSTION" in normalized_codes:
+        return "turn_exhaustion"
+    if "CONTROL_CHURN_THRESHOLD_EXCEEDED" in normalized_codes or first_code == "CONTROL_CHURN_THRESHOLD_EXCEEDED":
+        return "control_churn"
+    if (
+        "RETRIEVAL_STAGNATION" in normalized_codes
+        or "RETRIEVAL_STAGNATION_OBSERVED" in normalized_codes
+        or first_code in {"RETRIEVAL_STAGNATION", "RETRIEVAL_STAGNATION_OBSERVED"}
+    ):
+        return "retrieval_stagnation"
+    if first_code == "SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION":
+        return "budget_exhaustion"
+    if first_code == "SUBMIT_FORCED_ACCEPT_TURN_EXHAUSTION":
+        return "turn_exhaustion"
+    if first_code == "SUBMIT_FORCED_ACCEPT_FORCED_FINAL":
+        return "forced_final_other"
+    if "SUBMIT_FORCED_ACCEPT_FORCED_FINAL" in normalized_codes:
+        return "forced_final_other"
+    if submit_forced_accept_on_budget_exhaustion:
+        return "budget_exhaustion"
+    if finalization_fallback_succeeded:
+        return "finalization_fallback"
+    return None
+
+
+def _submit_path_has_pending_atoms(*, derived_submit: dict[str, Any], conversation_trace: Any) -> bool:
+    """Return True when submit diagnostics or trace state show unresolved atoms."""
+    pending_count = derived_submit.get("submit_pending_atom_count")
+    try:
+        if pending_count is not None and int(pending_count) > 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    pending_ids = derived_submit.get("submit_pending_atom_ids") or []
+    if isinstance(pending_ids, list) and any(str(item).strip() for item in pending_ids):
+        return True
+    return _conversation_trace_has_pending_todos(conversation_trace)
 
 
 def _conversation_trace_has_pending_todos(conversation_trace: Any) -> bool:
@@ -2548,6 +2630,15 @@ async def run_agent(
             derived_submit=derived_submit,
             submit_forced_accept_on_budget_exhaustion=submit_forced_accept_on_budget_exhaustion,
             finalization_fallback_succeeded=finalization_fallback_succeeded,
+            first_terminal_failure_event_code=(
+                str(first_terminal_failure_event_code) if first_terminal_failure_event_code is not None else None
+            ),
+            failure_event_codes=(
+                [str(code) for code in failure_event_codes]
+                if isinstance(failure_event_codes, list)
+                else None
+            ),
+            conversation_trace=conversation_trace,
         )
         if (
             answer
@@ -2611,6 +2702,18 @@ async def run_agent(
         submit_completion_mode = warning_derived["submit_completion_mode"]
         first_terminal_failure_event_code = warning_derived["first_terminal_failure_event_code"]
         tool_arg_validation_rejections = warning_derived["tool_arg_validation_rejections"]
+        forced_terminal_accept_reason = _derive_forced_terminal_accept_reason(
+            submit_forced_accept_on_budget_exhaustion=submit_forced_accept_on_budget_exhaustion,
+            finalization_fallback_succeeded=finalization_fallback_succeeded,
+            first_terminal_failure_event_code=(
+                str(first_terminal_failure_event_code) if first_terminal_failure_event_code is not None else None
+            ),
+            failure_event_codes=(
+                [str(code) for code in failure_event_codes]
+                if isinstance(failure_event_codes, list)
+                else None
+            ),
+        )
         models_used: list[str] = []
         if isinstance(raw_response, dict):
             raw_models_used = raw_response.get("models_used")
@@ -2696,6 +2799,7 @@ async def run_agent(
             "submit_todo_status_line": derived_submit.get("submit_todo_status_line"),
             "submit_forced_retry_on_budget_exhaustion": submit_forced_retry_on_budget_exhaustion,
             "submit_forced_accept_on_budget_exhaustion": submit_forced_accept_on_budget_exhaustion,
+            "forced_terminal_accept_reason": forced_terminal_accept_reason,
             "submit_completion_mode": submit_completion_mode,
             "tool_arg_coercions": tool_arg_coercions,
             "tool_arg_coercion_calls": tool_arg_coercion_calls,
@@ -3668,6 +3772,7 @@ async def main() -> None:
             "submit_todo_status_line": agent_result.get("submit_todo_status_line"),
             "submit_forced_retry_on_budget_exhaustion": agent_result.get("submit_forced_retry_on_budget_exhaustion"),
             "submit_forced_accept_on_budget_exhaustion": agent_result.get("submit_forced_accept_on_budget_exhaustion"),
+            "forced_terminal_accept_reason": agent_result.get("forced_terminal_accept_reason"),
             "submit_completion_mode": agent_result.get("submit_completion_mode"),
             "composability": composability,
             "tool_calls": tool_names,

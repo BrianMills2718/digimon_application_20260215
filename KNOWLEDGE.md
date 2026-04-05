@@ -626,3 +626,25 @@ redirecting search toward `Somali Muslim Ajuran Empire`. It eventually hit
 `A2/A3/A4` pending. Treat this as a controller-policy problem (submit churn +
 forced-terminal acceptance under unresolved atoms), not as a raw timeout or
 prompt-only failure.
+
+### 2026-04-04 — codex — best-practice
+**Phase #30 made control-churn forced-final answers fail honestly in benchmark artifacts instead of scoring them as predictions.**
+The repair in `eval/run_agent_benchmark.py` now derives a local
+`forced_terminal_accept_reason` from failure codes plus pending-atom state
+before preserving any terminal answer. Verified probe
+`results/MuSiQue_gpt-5-4-mini_consolidated_20260405T040232Z.json` still ended
+via `CONTROL_CHURN_THRESHOLD_EXCEEDED`, but now records `predicted=''`,
+`submit_completion_mode=missing_required_submit`, and
+`forced_terminal_accept_reason='control_churn'`. Treat this as the new
+truthful benchmark contract: forced-terminal acceptance is not the same thing
+as a valid grounded submit.
+
+### 2026-04-04 — codex — integration-issue
+**`chunk_retrieve(method=by_ids)` can hide real evidence behind `LINEARIZATION_DATA_LOSS`, which is likely contributing to unresolved-hop controller churn.**
+Probe `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T035805Z.json`
+emitted:
+`LINEARIZATION_DATA_LOSS tool=chunk_retrieve method=by_ids ... raw has content but linearized says empty`.
+That means the controller may be seeing an effectively empty summary even when
+the raw chunk payload contains answer-bearing evidence. This is a high-value
+Phase #30 follow-up because controller anti-churn and recovery quality both
+depend on truthful tool linearization.

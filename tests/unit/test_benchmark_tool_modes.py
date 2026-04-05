@@ -12,6 +12,7 @@ from eval.run_agent_benchmark import (
     _extract_full_submit_records,
     _atom_lifecycle_provenance,
     _conversation_trace_has_pending_todos,
+    _derive_forced_terminal_accept_reason,
     _derive_submit_observability,
     _format_runtime_turn_timeout_label,
     _format_turn_timeout_label,
@@ -152,11 +153,14 @@ def test_preserve_terminal_answer_clears_freeform_answer_after_failed_submit() -
         derived_submit=derived,
         submit_forced_accept_on_budget_exhaustion=False,
         finalization_fallback_succeeded=False,
+        first_terminal_failure_event_code=None,
+        failure_event_codes=None,
+        conversation_trace=None,
     ) == ""
 
 
-def test_preserve_terminal_answer_keeps_forced_accept_metadata_answer() -> None:
-    """Forced-final acceptance metadata should still produce a scored answer."""
+def test_preserve_terminal_answer_keeps_budget_exhaustion_forced_accept_metadata_answer() -> None:
+    """True budget exhaustion may still preserve a forced-terminal metadata answer."""
     derived = _derive_submit_observability(
         [
             {
@@ -174,7 +178,66 @@ def test_preserve_terminal_answer_keeps_forced_accept_metadata_answer() -> None:
         derived_submit=derived,
         submit_forced_accept_on_budget_exhaustion=True,
         finalization_fallback_succeeded=False,
+        first_terminal_failure_event_code="SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION",
+        failure_event_codes=["SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION"],
+        conversation_trace=None,
     ) == "918"
+
+
+def test_preserve_terminal_answer_drops_control_churn_forced_accept_with_pending_atoms() -> None:
+    """Control-churn forced-final answers must not be scored while atoms remain pending."""
+    derived = _derive_submit_observability(
+        [
+            {
+                "tool": "submit_answer",
+                "result_preview": json.dumps(
+                    {
+                        "status": "rejected",
+                        "pending_atoms": 3,
+                        "pending_ids": ["A2", "A3", "A4"],
+                        "todo_status_line": "[TODO: 1/4 done] [x] A1 | [ ] A2 | [ ] A3 | [ ] A4",
+                        "validation_error": {"reason_code": "pending_atoms"},
+                    }
+                ),
+            }
+        ]
+    )
+
+    assert _preserve_terminal_answer_after_submit_validation(
+        "by airplanes",
+        answer_source="metadata",
+        derived_submit=derived,
+        submit_forced_accept_on_budget_exhaustion=True,
+        finalization_fallback_succeeded=False,
+        first_terminal_failure_event_code="CONTROL_CHURN_THRESHOLD_EXCEEDED",
+        failure_event_codes=[
+            "CONTROL_CHURN_THRESHOLD_EXCEEDED",
+            "SUBMIT_FORCED_ACCEPT_FORCED_FINAL",
+            "REQUIRED_SUBMIT_MISSING",
+        ],
+        conversation_trace=[
+            {
+                "role": "user",
+                "content": "[TODO_STATE] [TODO: 1/4 done] [x] A1 | [ ] A2 | [ ] A3 | [ ] A4",
+            }
+        ],
+    ) == ""
+
+
+def test_derive_forced_terminal_accept_reason_prefers_control_churn_over_legacy_boolean() -> None:
+    """The legacy forced-accept boolean must not mask a control-churn terminal reason."""
+    assert (
+        _derive_forced_terminal_accept_reason(
+            submit_forced_accept_on_budget_exhaustion=True,
+            finalization_fallback_succeeded=False,
+            first_terminal_failure_event_code="CONTROL_CHURN_THRESHOLD_EXCEEDED",
+            failure_event_codes=[
+                "CONTROL_CHURN_THRESHOLD_EXCEEDED",
+                "SUBMIT_FORCED_ACCEPT_FORCED_FINAL",
+            ],
+        )
+        == "control_churn"
+    )
 
 
 def test_conversation_trace_detects_pending_todos() -> None:
