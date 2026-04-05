@@ -127,6 +127,32 @@ def extract_tool_calls(raw_response: object) -> list[dict]:
     return calls
 
 
+def _extract_full_submit_records(
+    raw_response: object,
+    fallback_records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Recover full submit payloads from MCPAgentResult tool records when available."""
+    if not isinstance(raw_response, MCPAgentResult):
+        return fallback_records
+
+    return [
+        {
+            "server": r.server,
+            "tool": r.tool,
+            "arguments": r.arguments,
+            "tool_reasoning": getattr(r, "tool_reasoning", None),
+            "arg_coercions": getattr(r, "arg_coercions", None) or [],
+            "has_result": r.result is not None,
+            "has_error": r.error is not None,
+            "error": r.error[:500] if r.error else None,
+            "result_preview": r.result[:500] if r.result else None,
+            "result_full": r.result if r.tool == "submit_answer" else None,
+            "latency_s": getattr(r, "latency_s", None),
+        }
+        for r in raw_response.tool_calls
+    ]
+
+
 def _helper_trace_log_path(project_root: str) -> Path:
     """Return the DIGIMON helper-decision JSONL path for this repo."""
     return Path(project_root) / "results" / ".helper_decision_trace.jsonl"
@@ -1529,15 +1555,18 @@ def _submit_tool_call_accepted(tool_call: dict[str, Any]) -> bool:
 
 
 def _parse_submit_result_preview(tool_call: dict[str, Any]) -> dict[str, Any] | None:
-    """Parse submit_answer JSON payloads from tool result previews when present."""
-    result_preview = tool_call.get("result_preview")
-    if not isinstance(result_preview, str) or not result_preview.strip():
-        return None
-    try:
-        payload = json.loads(result_preview)
-    except json.JSONDecodeError:
-        return None
-    return payload if isinstance(payload, dict) else None
+    """Parse submit_answer JSON payloads from any preserved result text."""
+    for field_name in ("result_full", "result_preview"):
+        result_text = tool_call.get(field_name)
+        if not isinstance(result_text, str) or not result_text.strip():
+            continue
+        try:
+            payload = json.loads(result_text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
 
 
 def _derive_submit_observability(tool_calls: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2005,6 +2034,7 @@ async def run_agent(
                 }
                 for tc in result.tool_calls
             ]
+        submit_observation_records = _extract_full_submit_records(result.raw_response, tool_calls)
 
         # Extract conversation trace if available
         conversation_trace = None
@@ -2180,7 +2210,7 @@ async def run_agent(
                 lines = [l.strip() for l in answer.split("\n") if l.strip()]
                 answer = lines[-1] if lines else answer
 
-        derived_submit = _derive_submit_observability(tool_calls)
+        derived_submit = _derive_submit_observability(submit_observation_records)
         if derived_submit["submit_events"]:
             requires_submit_answer = True
             submit_answer_call_count = derived_submit["submit_answer_call_count"]

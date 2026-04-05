@@ -412,6 +412,31 @@ decision:
   payload in top-level benchmark result fields, because
   `submit_pending_atom_ids` is still empty in the final artifact when no
   successful submit occurs.
+- Implemented both follow-up repairs:
+  - benchmark submit observability now derives from full `MCPAgentResult`
+    submit records instead of truncated `result_preview` strings
+  - shared `llm_client` turn policy now breaks early when repeated submit
+    validator rejections explicitly signal that the flow has moved into a
+    forced-terminal path
+- Verified the repairs with:
+  - `python -m compileall eval/run_agent_benchmark.py`
+  - `/home/brian/projects/Digimon_for_KG_application/.venv/bin/pytest -q tests/unit/test_benchmark_tool_modes.py`
+  - `python -m compileall /home/brian/projects/llm_client/llm_client/agent/mcp_turn_outcomes.py /home/brian/projects/llm_client/tests/test_mcp_agent.py`
+  - `pytest -q /home/brian/projects/llm_client/tests/test_mcp_agent.py -k 'submit_retry_requires_new_evidence_signal or repeated_submit_rejections_can_force_final_early'`
+- Verified the end-to-end effect in a bounded live rerun:
+  - command:
+    `python scripts/run_with_digimon_python.py eval/run_agent_benchmark.py --agent-spec none --allow-missing-agent-spec --missing-agent-spec-reason relocated --dataset MuSiQue --data-root /home/brian/projects/Digimon_for_KG_application/Data --questions 2hop__619265_45326 --model openrouter/openai/gpt-5.4-mini --backend direct --retrieval-stagnation-turns 6 --question-delay 0 --timeout 180 --tag plan28_submit_breaker_smoke_r2`
+  - artifact: `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T014802Z.json`
+  - outcome:
+    - still `12/12`
+    - `13` tool calls instead of `30`
+    - one rejected submit preserved in provenance (`submit_validation_reason_counts.pending_atoms=1`)
+    - final accepted submit is now grounded (`submit_completion_mode=grounded_submit`)
+    - no forced-final acceptance (`submit_forced_accept_on_budget_exhaustion=false`)
+- Updated interpretation:
+  `619265` is now a genuinely grounded pass under the current controller stack.
+  The next diagnostic target should be another premature-submit family question
+  such as `754156` or `199513`, not more churn on `619265`.
 
 ---
 

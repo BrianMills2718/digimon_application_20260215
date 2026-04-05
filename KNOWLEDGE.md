@@ -564,3 +564,23 @@ payload survived into final result harvesting. The detailed evidence still
 exists in `tool_calls`, `helper_decision_trace`, and `atom_lifecycle_trace`,
 but the summary surface is incomplete. The next observability repair should
 preserve the last rejected-submit payload in the final per-question result.
+
+### 2026-04-04 — codex — best-practice
+**Benchmark submit provenance must be derived from full MCP submit records, not truncated previews.**
+`extract_tool_calls()` deliberately truncates `result_preview` to keep artifacts
+bounded, but submit validator payloads are small and carry the exact diagnostic
+state (`pending_ids`, `todo_status_line`, recovery policy). Plan #28 now
+derives submit observability from the full `MCPAgentResult.tool_calls` records
+when available, while still keeping the public artifact surface compact.
+
+### 2026-04-04 — codex — bug-pattern
+**A shared early breaker for repeated forced-terminal submit rejections converts `619265` from forced-final success into a grounded submit.**
+The follow-up smoke run
+`results/MuSiQue_gpt-5-4-mini_consolidated_20260405T014802Z.json` used the new
+`llm_client` breaker that short-circuits repeated submit-validator loops when
+the validator explicitly says the flow now requires a forced-terminal path.
+Outcome: `619265` still answered `12`, but now in `13` tool calls instead of
+`30`, with `submit_answer_call_count=2`, `submit_validation_reason_counts={"pending_atoms": 1}`,
+`submit_completion_mode=grounded_submit`, `submit_forced_accept_on_budget_exhaustion=false`,
+and no remaining failure event codes. The first submit was rejected on `a2`,
+the loop pivoted once, then completed the atom and submitted cleanly.

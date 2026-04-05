@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 
 from Core.Common.benchmark_tool_modes import filter_tool_names_for_benchmark_mode
+from llm_client import MCPAgentResult, MCPToolCallRecord
 from eval.run_agent_benchmark import (
+    _extract_full_submit_records,
     _atom_lifecycle_provenance,
     _conversation_trace_has_pending_todos,
     _derive_submit_observability,
@@ -266,6 +268,57 @@ def test_derive_submit_observability_surfaces_pending_atoms() -> None:
     assert derived["submit_pending_atom_count"] == 2
     assert derived["submit_pending_atom_ids"] == ["A1", "A2"]
     assert derived["submit_todo_status_line"] == "[TODO: 0/2 done] [ ] A1 | [ ] A2"
+
+
+def test_derive_submit_observability_prefers_full_submit_payload_over_truncated_preview() -> None:
+    """Full submit payloads should recover pending IDs even when previews are truncated."""
+    derived = _derive_submit_observability(
+        [
+            {
+                "tool": "submit_answer",
+                "result_preview": '{"status":"rejected","pending_atoms":1,"pending_ids":["A1"]',
+                "result_full": json.dumps(
+                    {
+                        "status": "rejected",
+                        "pending_atoms": 1,
+                        "pending_ids": ["A1"],
+                        "todo_status_line": "[TODO: 1/2 done] [x] A1 | [>] A2",
+                        "validation_error": {"reason_code": "pending_atoms"},
+                    }
+                ),
+            }
+        ]
+    )
+
+    assert derived["submit_pending_atom_count"] == 1
+    assert derived["submit_pending_atom_ids"] == ["A1"]
+
+
+def test_extract_full_submit_records_recovers_untruncated_submit_results() -> None:
+    """MCPAgentResult-backed tool records should preserve full submit payloads for diagnosis."""
+    raw = MCPAgentResult(
+        tool_calls=[
+            MCPToolCallRecord(
+                server="srv",
+                tool="submit_answer",
+                arguments={"answer": "12"},
+                result=json.dumps(
+                    {
+                        "status": "rejected",
+                        "pending_atoms": 1,
+                        "pending_ids": ["a2"],
+                        "validation_error": {"reason_code": "pending_atoms"},
+                    }
+                ),
+            )
+        ]
+    )
+
+    records = _extract_full_submit_records(raw, [])
+
+    assert len(records) == 1
+    assert records[0]["tool"] == "submit_answer"
+    assert '"pending_ids": ["a2"]' in records[0]["result_full"]
 
 
 def test_read_atom_lifecycle_events_since_prefers_benchmark_trace_id(tmp_path) -> None:
