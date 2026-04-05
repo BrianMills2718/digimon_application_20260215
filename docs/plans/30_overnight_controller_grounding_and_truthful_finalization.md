@@ -169,6 +169,12 @@ This plan assumes all work happens in worktrees with frequent verified commits.
   `28` from `32`, and benchmark artifacts no longer pretend the late failure
   was ordinary budget exhaustion. The next frontier is the unresolved-hop
   reasoning for `atom3/atom4`, not more submit-loop hygiene.
+- Diagnosis surface upgrade: `scripts/diagnose_question.py` now renders a
+  normalized causal trace, and `make trace` / `make trace-diff` are the
+  preferred review surfaces for this plan. The `754156` diff between
+  `...T065932Z.json` and `...T071136Z.json` now shows the core regression in
+  one screen: `a3=Portuguese` vs `atom_3=Somali Muslim Ajuran Empire`, plus the
+  semantic-plan shift that introduced that wrong subject.
 
 ### Phase 4 — Targeted Tranche Verification
 

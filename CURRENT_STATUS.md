@@ -153,6 +153,14 @@ against stale unresolved payloads.
   now auto-scans the live worktree plus the canonical checkout. Use a precise
   glob or explicit `scripts/benchmark_iteration_report.py --input ...`
   invocation when you need one controlled slice rather than broad history.
+- `make trace FILE=<artifact.json> QID=<question_id> [OUTPUT=/tmp/trace.txt]`
+  now renders one normalized question trace from the consolidated artifact.
+  It aligns semantic-plan helper decisions, tool calls, atom lifecycle events,
+  and terminal-answer provenance in one review surface.
+- `make trace-diff FILE=<artifact_a.json> FILE_B=<artifact_b.json> QID=<question_id>`
+  now compares the same question across two runs, including outcome delta,
+  semantic-plan delta, and atom-completion delta. Use this instead of manually
+  diffing raw JSON when diagnosing stochastic regressions.
 - Benchmark-facing `make` targets now run through
   `scripts/run_with_digimon_python.py`, which resolves the `digimon`
   interpreter directly instead of depending on `conda run -n digimon`.
@@ -218,6 +226,7 @@ Total per question: ~6s operators + 58-82s LLM (47-48 turns sequential).
 ## Next Actions
 
 1. **Repair the remaining unresolved-hop reasoning on `754156` now that submit-loop hygiene is truthful** — the latest probe `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T060338Z.json` confirms the loop-control fixes are working: repeated suppressed submits now stop earlier under `control_churn`, with lower cost/tool usage than the prior `...T055724Z.json` and `...T054718Z.json` runs. The next slice should target the still-unresolved `atom3/atom4` chain itself, not more submit-loop policy work.
+2. **Use the normalized trace surfaces before further planner/controller fixes** — for `754156`, `make trace` on `...T071136Z.json` makes the current failure family explicit: the plan evolves into the wrong `atom_3`, the helper then marks `Somali Muslim Ajuran Empire` done with confidence `1.0`, and all later `atom_4` recovery loops inherit that wrong subject. `make trace-diff` against `...T065932Z.json` isolates the regression from `a3=Portuguese` to `atom_3=Somali Muslim Ajuran Empire` without rereading raw JSON.
 2. **Investigate `LINEARIZATION_DATA_LOSS` in `chunk_retrieve(method=by_ids)`** — probe `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T035805Z.json` surfaced a warning that raw chunk content existed while the linearized summary appeared empty. This may be hiding exactly the evidence the controller needs on unresolved-hop questions.
 3. **Keep timeout provenance truthful while `LLM_CLIENT_TIMEOUT_POLICY=ban` remains active** — this shell disables per-call timeouts globally, so benchmark artifacts must continue surfacing requested/planned timeout separately from `turn_timeout_runtime_enforced` instead of pretending `auto:60s` is active.
 4. **Validate helper fallback quality + observability before spending on the 19q gate** — helper calls now follow configured `llm_client` fallbacks, but the earlier smoke run `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T133705Z.json` still regressed `619265` to `10`, and nested helper fallback usage is not yet fully surfaced in benchmark provenance.

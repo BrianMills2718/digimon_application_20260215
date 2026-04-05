@@ -267,14 +267,28 @@ add-passages-dry:  ## Preview passage node additions
 	$(DIGIMON_RUNTIME_PYTHON) scripts/add_passage_nodes.py --dataset $(DATASET) --dry-run
 
 # --- Diagnosis ---
-.PHONY: diagnose diagnose-failures linearization-check check-rules truth-check benchmark-report
+.PHONY: diagnose trace trace-diff diagnose-failures linearization-check check-rules truth-check benchmark-report
 
-diagnose:  ## Diagnose a specific question (FILE= QID= required)
+diagnose:  ## Render normalized trace for one question (FILE= QID= required)
 ifndef FILE
 	@$(DIGIMON_RUNTIME_PYTHON) scripts/diagnose_question.py
 else
-	@$(DIGIMON_RUNTIME_PYTHON) scripts/diagnose_question.py $(FILE) $(QID)
+	@$(DIGIMON_RUNTIME_PYTHON) scripts/diagnose_question.py $(FILE) $(QID) $(if $(OUTPUT),--output $(OUTPUT),)
 endif
+
+trace: diagnose  ## Alias for normalized question trace
+
+trace-diff:  ## Diff one question across two artifacts (FILE= FILE_B= QID= required)
+ifndef FILE
+	$(error FILE is required. Usage: make trace-diff FILE=results/a.json FILE_B=results/b.json QID=<id>)
+endif
+ifndef FILE_B
+	$(error FILE_B is required. Usage: make trace-diff FILE=results/a.json FILE_B=results/b.json QID=<id>)
+endif
+ifndef QID
+	$(error QID is required. Usage: make trace-diff FILE=results/a.json FILE_B=results/b.json QID=<id>)
+endif
+	@$(DIGIMON_RUNTIME_PYTHON) scripts/diagnose_question.py $(FILE) $(QID) --diff-other $(FILE_B) $(if $(OUTPUT),--output $(OUTPUT),)
 
 diagnose-failures:  ## Diagnose all failures in latest MuSiQue run
 	@$(DIGIMON_RUNTIME_PYTHON) -c "\
@@ -395,6 +409,9 @@ help:  ## Show all targets
 	@echo ""
 	@echo "Observability:"
 	@grep -E '^(cost|cost-by-model|cost-by-task|errors|recent|summary):.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
+	@echo ""
+	@echo "Diagnosis:"
+	@grep -E '^(diagnose|trace|trace-diff|diagnose-failures|timing|truth-check|benchmark-report):.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
 	@echo ""
 	@echo "Graph And Diagnosis:"
 	@grep -E '^(graph-stats|build-progress|enrich|add-passages|add-passages-dry|diagnose|diagnose-failures|linearization-check|check-rules|truth-check|benchmark-report):.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'

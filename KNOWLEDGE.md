@@ -218,6 +218,16 @@ endpoint merge semantics.
 ### 2026-04-02 — claude-code — bug-pattern
 **Evidence pointer tracking is broken for DIGIMON's linearized tool results.**
 The llm_client stagnation detector (`_tool_evidence_pointer_labels` in
+
+### 2026-04-05 — codex — best-practice
+Raw consolidated result JSON is still the fullest source of truth, but it is no
+longer the best primary review surface for question-level diagnosis. Use
+`make trace FILE=<artifact.json> QID=<qid>` to inspect one normalized causal
+trace and `make trace-diff FILE=<a.json> FILE_B=<b.json> QID=<qid>` to compare
+two runs. These views align semantic-plan helper decisions, tool calls,
+atom-lifecycle events, and terminal-answer provenance in one place, which makes
+it much easier to see when DIGIMON changed the plan, what the helper judged,
+and which wrong atom completion poisoned the rest of the controller loop.
 `agent_artifacts.py`) parses tool results as JSON looking for `chunk_id`,
 `evidence_refs` fields. DIGIMON's linearized results are plain text, not JSON,
 so every evidence turn produces zero evidence pointers and the stagnation
