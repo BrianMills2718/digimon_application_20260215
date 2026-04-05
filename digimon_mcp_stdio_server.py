@@ -1796,6 +1796,34 @@ def _public_atom_recovery_hint(atom_id: str) -> dict[str, Any] | None:
     }
 
 
+def _recovery_hint_should_force_surface_pivot(
+    atom: dict[str, Any],
+    combined_events: list[dict[str, Any]],
+) -> bool:
+    """Return True when repeated chunk misses on a relation-like entity atom should pivot surfaces."""
+    if _normalize_answer_kind(str(atom.get("answer_kind") or "")) != "entity":
+        return False
+    probe = str(atom.get("sub_question") or "").strip().lower()
+    if not probe:
+        return False
+    if not re.search(r"\b(between|from whom|from which|from what|who were|which people|what people|people)\b", probe):
+        return False
+    chunk_events = [
+        event
+        for event in combined_events
+        if str(event.get("tool_name") or "").strip() == "chunk_retrieve"
+    ]
+    if len(chunk_events) < _ATOM_REFLECTION_TRIGGER_UNRESOLVED:
+        return False
+    non_chunk_events = [
+        event
+        for event in combined_events
+        if str(event.get("tool_name") or "").strip()
+        and str(event.get("tool_name") or "").strip() != "chunk_retrieve"
+    ]
+    return not non_chunk_events
+
+
 async def _maybe_generate_atom_recovery_hint(
     atom: dict[str, Any],
     todo: dict[str, Any],
@@ -1910,6 +1938,18 @@ async def _maybe_generate_atom_recovery_hint(
         "confidence": float(decision.confidence or 0.0),
         "fingerprint": fingerprint,
     }
+    if (
+        _recovery_hint_should_force_surface_pivot(atom, combined_events)
+        and hint["target_tool_name"] in {"", "none", "chunk_retrieve"}
+    ):
+        hint["target_tool_name"] = "entity_search"
+        if not hint["target_method"]:
+            hint["target_method"] = "string"
+        hint["next_action"] = (
+            "Switch surfaces: resolve the subject entity in the graph with "
+            "entity_search(method='string'), then inspect entity_info(profile) "
+            "or relationship_search(graph). Do not guess a bridge entity yet."
+        )
     _atom_recovery_hints[atom_id] = hint
     _record_atom_lifecycle_event(
         {

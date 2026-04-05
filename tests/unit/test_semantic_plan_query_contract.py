@@ -2180,6 +2180,106 @@ async def test_person_bridge_candidate_must_match_focused_validation_without_fro
 
 
 @pytest.mark.asyncio
+async def test_relation_like_entity_reflection_forces_surface_pivot_after_chunk_loops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated chunk misses on relation-like entity atoms should preserve a graph/entity pivot instead of another chunk loop."""
+    dms._current_question = (
+        "How were the people from whom new coins were a proclamation of independence by the Somali Muslim "
+        "Ajuran Empire expelled from the country between Thailand and A Lim's country?"
+    )
+    dms._current_semantic_plan.clear()
+    dms._current_semantic_plan.update(
+        {
+            "atoms": [
+                {
+                    "atom_id": "a3",
+                    "sub_question": "Which people were from whom new coins were a proclamation of independence by the Somali Muslim Ajuran Empire?",
+                    "depends_on": [],
+                    "operation": "relation",
+                    "answer_kind": "entity",
+                }
+            ]
+        }
+    )
+    dms._todos.clear()
+    dms._todos.extend(
+        [{"id": "a3", "content": "Resolve the people tied to the Ajuran proclamation.", "status": "in_progress"}]
+    )
+
+    async def _fake_completion(atom, todo, payload, *, tool_name: str, method: str):
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": "a3",
+            "confidence": 0.2,
+            "rationale": "The current chunks do not directly identify the people from whom the Ajuran Empire declared independence.",
+            "tool_name": tool_name,
+            "method": method,
+            "next_action": (
+                "Switch surfaces: resolve the subject entity in the graph with "
+                "entity_search(method='string'), then inspect entity_info(profile) "
+                "or relationship_search(graph). Do not guess a bridge entity yet."
+            ),
+        }
+
+    async def _fake_helper_call(model, messages, response_model, **kwargs):
+        return (
+            response_model(
+                diagnosis="Repeated chunk retrieval did not identify the target people.",
+                suggested_query="Ajuran Empire new coins proclamation of independence from whom",
+                target_tool_name="chunk_retrieve",
+                target_method="semantic",
+                next_action="Try another semantic chunk retrieval with a narrower independence query.",
+                avoid_values=["Soviet Union"],
+                confidence=0.89,
+            ),
+            SimpleNamespace(),
+        )
+
+    monkeypatch.setattr(dms, "_infer_atom_completion_with_llm", _fake_completion)
+    monkeypatch.setattr(dms, "_call_helper_structured", _fake_helper_call)
+    monkeypatch.setattr(
+        dms,
+        "_helper_structured_llm_policy",
+        lambda num_retries=2: ("openrouter/openai/gpt-5.4-mini", {"num_retries": num_retries}),
+    )
+    monkeypatch.setattr(
+        llm_client,
+        "render_prompt",
+        lambda *args, **kwargs: [{"role": "user", "content": "reflect"}],
+    )
+
+    payload = {
+        "chunks": [
+            {
+                "chunk_id": "chunk_217",
+                "text": "The Ajuran Empire adopted new coinage as a proclamation of independence in regard to the Portuguese.",
+            }
+        ],
+        "query_contract": {
+            "effective_query": "Ajuran Empire new coins proclamation independence",
+        },
+    }
+
+    first_update = await dms._maybe_complete_active_atom_from_payload(
+        payload,
+        tool_name="chunk_retrieve",
+        method="semantic",
+    )
+    second_update = await dms._maybe_complete_active_atom_from_payload(
+        payload,
+        tool_name="chunk_retrieve",
+        method="semantic",
+    )
+
+    assert first_update is not None
+    assert second_update is not None
+    assert second_update["reflection_hint"]["target_tool_name"] == "entity_search"
+    assert second_update["reflection_hint"]["target_method"] in {"", "string", "semantic"}
+    assert second_update["next_action"].startswith("Switch surfaces:")
+
+
+@pytest.mark.asyncio
 async def test_validate_manual_todo_completion_rejects_mismatched_value(monkeypatch: pytest.MonkeyPatch) -> None:
     """Manual done states should be rejected when cached evidence supports a different answer."""
     _prime_lady_godiva_plan()

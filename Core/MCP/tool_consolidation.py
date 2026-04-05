@@ -370,6 +370,113 @@ def _format_query_contract(data: dict[str, Any]) -> str:
     return ""
 
 
+_RECOVERY_HINT_ENFORCE_MIN_CONFIDENCE = 0.75
+
+
+def _normalize_recovery_tool_name(tool_name: str) -> str:
+    """Map tool names to the consolidated retrieval family used by recovery hints."""
+    normalized = str(tool_name or "").strip().lower()
+    aliases = {
+        "entity_vdb_search": "entity_search",
+        "entity_string_search": "entity_search",
+        "entity_tfidf": "entity_search",
+        "entity_agent": "entity_search",
+        "entity_profile": "entity_info",
+        "entity_resolve_names_to_ids": "entity_info",
+        "relationship_onehop": "relationship_search",
+        "relationship_vdb_search": "relationship_search",
+        "relationship_score_aggregator": "relationship_search",
+        "relationship_agent": "relationship_search",
+        "chunk_text_search": "chunk_retrieve",
+        "chunk_vdb_search": "chunk_retrieve",
+        "chunk_from_relationships": "chunk_retrieve",
+        "chunk_occurrence": "chunk_retrieve",
+        "chunk_get_text_by_chunk_ids": "chunk_retrieve",
+        "chunk_get_text_by_entity_ids": "chunk_retrieve",
+        "chunk_aggregator": "chunk_retrieve",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _active_recovery_hint(dms: Any) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Return the active atom plus its public recovery hint, if any."""
+    active_fn = getattr(dms, "_active_semantic_plan_atom", None)
+    if not callable(active_fn):
+        return None, None
+    atom, _todo = active_fn()
+    if not isinstance(atom, dict):
+        return None, None
+    atom_id = str(atom.get("atom_id") or "").strip()
+    if not atom_id:
+        return atom, None
+    getter = getattr(dms, "_public_atom_recovery_hint", None)
+    if callable(getter):
+        hint = getter(atom_id)
+        return atom, hint if isinstance(hint, dict) else None
+    raw_hints = getattr(dms, "_atom_recovery_hints", {})
+    if isinstance(raw_hints, dict):
+        raw_hint = raw_hints.get(atom_id)
+        if isinstance(raw_hint, dict):
+            return atom, {k: v for k, v in raw_hint.items() if k != "fingerprint"}
+    return atom, None
+
+
+def _maybe_block_off_target_retrieval_call(
+    dms: Any,
+    *,
+    tool_name: str,
+    method: str,
+    requested_query: str = "",
+) -> str | None:
+    """Return a policy block when a reflected recovery hint requires a different retrieval surface."""
+    atom, recovery_hint = _active_recovery_hint(dms)
+    if not isinstance(atom, dict) or not isinstance(recovery_hint, dict):
+        return None
+    confidence = float(recovery_hint.get("confidence") or 0.0)
+    if confidence < _RECOVERY_HINT_ENFORCE_MIN_CONFIDENCE:
+        return None
+
+    target_tool = _normalize_recovery_tool_name(str(recovery_hint.get("target_tool_name") or ""))
+    if not target_tool or target_tool == "none":
+        return None
+    if target_tool not in {"entity_search", "entity_info", "relationship_search"}:
+        return None
+    current_tool = _normalize_recovery_tool_name(tool_name)
+    if current_tool == target_tool:
+        return None
+
+    target_method = str(recovery_hint.get("target_method") or "").strip()
+    suggested_query = str(recovery_hint.get("suggested_query") or requested_query or "").strip()
+    next_action = str(recovery_hint.get("next_action") or "").strip()
+    atom_id = str(atom.get("atom_id") or "").strip()
+    tool_display = f"{target_tool}({target_method})" if target_method else target_tool
+
+    return _json.dumps(
+        {
+            "policy_status": "blocked",
+            "policy_code": "RECOVERY_HINT_TOOL_MISMATCH",
+            "message": (
+                f"Active atom {atom_id} currently has a high-confidence recovery hint preferring "
+                f"{tool_display}, but this call used {tool_name}({method}). Follow the hinted "
+                "surface before spending more retrieval budget on off-target calls."
+            ),
+            "suggested_next_actions": [
+                f"Call {tool_display} next with query '{suggested_query}'.".strip(),
+                next_action,
+            ],
+            "query_contract": {
+                "active_atom_id": atom_id,
+                "requested_query": requested_query,
+                "effective_query": suggested_query,
+                "rewritten": bool(suggested_query and _normalize_whitespace(suggested_query) != _normalize_whitespace(requested_query)),
+                "rewrite_reason": ["atom_reflection_tool_guard"],
+                "recovery_hint": recovery_hint,
+            },
+            "recovery_hint": recovery_hint,
+        }
+    )
+
+
 def _format_entity_scope_contract(data: dict[str, Any]) -> str:
     """Render entity-scope rewrites into a short natural-language prefix."""
     scope = data.get("entity_scope_contract")
@@ -542,8 +649,25 @@ def _linearize_inner(raw_json: str, tool_name: str, method: str = "") -> str:
     except (_json.JSONDecodeError, TypeError):
         return raw_json  # Not JSON, return as-is
 
+    if isinstance(data, dict) and str(data.get("policy_status") or "").strip().lower() == "blocked":
+        query_prefix = _format_query_contract(data)
+        message = str(data.get("message") or "Blocked by controller policy.").strip()
+        actions = data.get("suggested_next_actions") or []
+        action_lines = [
+            f"  - {str(action).strip()}"
+            for action in actions
+            if str(action).strip()
+        ]
+        summary = f"Blocked by controller policy: {message}"
+        if action_lines:
+            summary += "\nSuggested next actions:\n" + "\n".join(action_lines)
+        return query_prefix + summary
+
     # Error results pass through
     if isinstance(data, dict) and "error" in data:
+        message = str(data.get("message") or "").strip()
+        if message:
+            return f"Error: {data['error']} — {message}"
         return f"Error: {data['error']}"
 
     label = f"{tool_name}({method})" if method else tool_name
@@ -780,6 +904,14 @@ def build_consolidated_tools(dms: Any) -> list:
             vdb_reference_id: VDB ID for semantic method.
             candidate_entity_ids: Pre-existing candidate IDs to re-rank (tfidf only).
         """
+        blocked = _maybe_block_off_target_retrieval_call(
+            dms,
+            tool_name="entity_search",
+            method=method,
+            requested_query=query,
+        )
+        if blocked is not None:
+            return _linearize(blocked, "entity_search", method)
         if method == "semantic":
             raw = await _timed_call(
                 dms.entity_vdb_search(
@@ -937,6 +1069,14 @@ def build_consolidated_tools(dms: Any) -> list:
             vdb_reference_id: VDB for resolve method.
             top_k_per_name: Candidates per name for resolve.
         """
+        blocked = _maybe_block_off_target_retrieval_call(
+            dms,
+            tool_name="entity_info",
+            method=method,
+            requested_query=entity_name,
+        )
+        if blocked is not None:
+            return _linearize(blocked, "entity_info", method)
         effective_scope: list[str] = []
         entity_scope_contract: dict[str, Any] = {}
         effective_entity_name = entity_name
@@ -1011,6 +1151,14 @@ def build_consolidated_tools(dms: Any) -> list:
             top_k: Max results.
             entity_scores: Entity importance scores for score method.
         """
+        blocked = _maybe_block_off_target_retrieval_call(
+            dms,
+            tool_name="relationship_search",
+            method=method,
+            requested_query=query_text,
+        )
+        if blocked is not None:
+            return _linearize(blocked, "relationship_search", method)
         effective_entity_ids = entity_ids
         entity_scope_contract: dict[str, Any] = {}
         if method == "graph":
@@ -1093,6 +1241,14 @@ def build_consolidated_tools(dms: Any) -> list:
             document_collection_id: Document collection for relationships/cooccurrence.
             graph_reference_id: Graph reference for by_entities.
         """
+        blocked = _maybe_block_off_target_retrieval_call(
+            dms,
+            tool_name="chunk_retrieve",
+            method=method,
+            requested_query=query_text,
+        )
+        if blocked is not None:
+            return _linearize(blocked, "chunk_retrieve", method)
         effective_entity_names = entity_names
         effective_entity_ids = entity_ids
         entity_scope_contract: dict[str, Any] = {}

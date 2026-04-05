@@ -155,6 +155,13 @@ This plan assumes all work happens in worktrees with frequent verified commits.
   before forced-finalization. The next slice should strengthen reflected
   recovery routing and loop suppression on unresolved atoms, not revisit bridge
   validation.
+- Follow-up probe `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T054718Z.json`
+  validates the narrowed recovery-surface guard: the earlier `a2` mis-blocking
+  regression from `...T053930Z.json` is gone, `a4` no longer remains pending,
+  and the controller reaches later-hop entity/subgraph work without
+  policy-induced tool runtime errors. The remaining frontier is narrower and
+  more truthful: unresolved `a3` plus repeated rejected-submit churn under an
+  unchanged evidence digest.
 
 ### Phase 4 — Targeted Tranche Verification
 

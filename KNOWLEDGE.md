@@ -688,6 +688,19 @@ validation.
 
 ### 2026-04-04 — codex — integration-issue
 **The focused unit ladder was briefly blocked by a config bootstrap defect, now fixed by making `LLMConfig.region_name` nullable again.**
+
+### 2026-04-04 — codex — bug-pattern
+**A narrowed recovery-surface guard fixes the false `a2` blockage on `754156`, but the remaining failure is unchanged-evidence submit churn around unresolved `a3`.**
+Probe `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T054718Z.json`
+validated the refined controller policy after the bad `...T053930Z.json`
+regression: there were no policy-induced off-target blocks on `a2`, the run
+progressed far enough that only `a3` remained pending, and the bad `a3 ->
+soviet union` bridge completion stayed gone. The remaining failure family is
+now narrower: repeated rejected `submit_answer` attempts with an unchanged
+evidence digest accumulate tool-call errors until the benchmark runner hits
+budget exhaustion and forced-finalizes anyway. The next bounded fix should
+promote unresolved-atom repair or honest termination when submit evidence has
+not changed, not revisit recovery-surface routing.
 `Config/LLMConfig.py` had `region_name: str = None`, while
 `Option/Config2.yaml` omits that field. When DIGIMON imported through fallback
 config instantiation instead of the main YAML path, Pydantic rejected

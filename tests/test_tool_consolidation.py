@@ -102,10 +102,13 @@ class _FakeDMS:
     def __init__(self) -> None:
         self.captured_payloads: list[tuple[str, str, dict[str, object]]] = []
         self.last_entity_profile_kwargs: dict[str, object] | None = None
+        self.last_entity_vdb_kwargs: dict[str, object] | None = None
         self.last_entity_resolve_kwargs: dict[str, object] | None = None
         self.last_relationship_kwargs: dict[str, object] | None = None
+        self.last_chunk_vdb_kwargs: dict[str, object] | None = None
         self.active_atom: dict[str, object] | None = None
         self.dependency_values: list[str] = []
+        self.atom_recovery_hints: dict[str, dict[str, object]] = {}
 
     async def _maybe_complete_active_atom_from_payload(
         self,
@@ -123,6 +126,13 @@ class _FakeDMS:
     def _resolved_dependency_values(self, atom):
         return list(self.dependency_values) if atom == self.active_atom else []
 
+    def _public_atom_recovery_hint(self, atom_id: str):
+        return self.atom_recovery_hints.get(atom_id)
+
+    async def entity_vdb_search(self, **kwargs: object) -> str:
+        self.last_entity_vdb_kwargs = dict(kwargs)
+        return json.dumps({"similar_entities": [{"entity_name": "ajuran empire", "score": 0.9}]})
+
     async def entity_profile(self, **kwargs: object) -> str:
         self.last_entity_profile_kwargs = dict(kwargs)
         return json.dumps({"canonical_name": "godiva", "connected_entities": ["mercia"]})
@@ -134,6 +144,10 @@ class _FakeDMS:
     async def relationship_onehop(self, **kwargs: object) -> str:
         self.last_relationship_kwargs = dict(kwargs)
         return json.dumps({"relationships": [{"src_id": "godiva", "tgt_id": "mercia"}]})
+
+    async def chunk_vdb_search(self, **kwargs: object) -> str:
+        self.last_chunk_vdb_kwargs = dict(kwargs)
+        return json.dumps({"chunks": [{"chunk_id": "chunk_217", "text": "Ajuran coinage referenced the Portuguese."}]})
 
 
 @pytest.mark.asyncio
@@ -233,6 +247,38 @@ async def test_relationship_wrapper_rewrites_scope_from_resolved_dependency() ->
     _, _, payload = dms.captured_payloads[-1]
     assert payload["entity_scope_contract"]["rewritten"] is True
     assert payload["entity_scope_contract"]["effective_entities"] == ["mercia"]
+
+
+@pytest.mark.asyncio
+async def test_chunk_retrieve_wrapper_blocks_off_target_recovery_surface() -> None:
+    """High-confidence recovery hints should block off-target retrieval surfaces before more budget is spent."""
+    dms = _FakeDMS()
+    dms.active_atom = {
+        "atom_id": "a3",
+        "sub_question": "What people were a proclamation of independence by the Somali Muslim Ajuran Empire for new coins?",
+    }
+    dms.atom_recovery_hints["a3"] = {
+        "atom_id": "a3",
+        "diagnosis": "Broad chunk retrieval is looping without grounding the Portuguese hop.",
+        "suggested_query": "Ajuran Empire new coins independence",
+        "target_tool_name": "entity_search",
+        "target_method": "string",
+        "next_action": "Execute an entity search for the Ajuran proclamation clue before more chunk retrieval.",
+        "avoid_values": ["Soviet Union"],
+        "confidence": 0.92,
+    }
+    tools = {tool.__name__: tool for tool in build_consolidated_tools(dms)}
+
+    result = await tools["chunk_retrieve"](
+        method="semantic",
+        query_text="Laos Ajuran coins independence people expelled",
+        dataset_name="MuSiQue",
+    )
+
+    assert dms.last_chunk_vdb_kwargs is None
+    assert "Blocked by controller policy" in result
+    assert "entity_search(string)" in result
+    assert "Ajuran Empire new coins independence" in result
 
 
 def test_linearize_relationship_search_graph_payload_preserves_one_hop_edges() -> None:
