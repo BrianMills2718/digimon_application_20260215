@@ -1404,6 +1404,8 @@ def _bridge_candidate_names(payload: dict[str, Any], *, current_atom: dict[str, 
 
     if matching_candidates:
         return (matching_candidates + unknown_candidates)[:_ATOM_BRIDGE_MAX_CANDIDATES]
+    if unknown_candidates:
+        return unknown_candidates[:_ATOM_BRIDGE_MAX_CANDIDATES]
     return candidates[:_ATOM_BRIDGE_MAX_CANDIDATES]
 
 
@@ -3652,6 +3654,9 @@ def _atom_requires_validated_bridge_resolution(atom: dict[str, Any] | None) -> b
     probe = str(atom.get("sub_question") or "").strip().lower()
     if not probe:
         return False
+    expected_types = _infer_expected_coarse_types(probe)
+    if "person" in expected_types:
+        return True
     if _atom_expects_place_answer(atom) and re.search(r"\b(between|border|boundary|adjacent)\b", probe):
         return True
     return bool(re.search(r"\bfrom whom\b|\bfrom which\b|\bfrom what\b", probe))
@@ -3767,7 +3772,7 @@ def _infer_expected_coarse_types(text: str) -> set[str]:
     if re.search(r"\b(birthplace|headquarter|headquarters|city|country|province|state|region|where|located)\b", probe):
         expected.add("place")
     if re.search(
-        r"\b(founder|author|actor|player|person|individual|who|performer|singer|musician|artist|designer|architect|explorer)\b",
+        r"\b(founder|author|actor|player|person|people|persons|individual|individuals|citizen|citizens|resident|residents|tribe|tribes|who|performer|singer|musician|artist|designer|architect|explorer)\b",
         probe,
     ):
         expected.add("person")

@@ -46,6 +46,12 @@ This plan assumes all work happens in worktrees with frequent verified commits.
     and `first_terminal_failure_event_code='REQUIRED_SUBMIT_NOT_ACCEPTED'`.
     The remaining blocker is upstream controller reasoning: `a3` resolves to
     `soviet union`, then `a4` stays pending and submit retries churn.
+  - `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T053035Z.json` is the
+    post-bridge-hardening artifact: the bad `a3 -> soviet union` completion is
+    gone, but the controller still fails to ground the Portuguese hop. The run
+    leaves `a3` and `a4` pending, burns the full 20-call tool budget, and then
+    forced-finalizes `communist takeover` with
+    `forced_terminal_accept_reason='budget_exhaustion'`.
 - This shell has `LLM_CLIENT_TIMEOUT_POLICY=ban`, so benchmark output must
   distinguish planned per-turn timeout from runtime-enforced timeout.
 - A new runtime clue emerged during the same probes:
@@ -142,11 +148,13 @@ This plan assumes all work happens in worktrees with frequent verified commits.
   the recovery hint, not just emitting another trace event.
 
 **Current frontier**
-- The latest `754156` probe already shows a changed next step, but not the
-  right one. `a2` is now stable; the remaining failure is that `a3` resolves to
-  `soviet union`, then `a4` inherits the wrong chain. The next slice should
-  tighten relation-specific recovery on `a3/a4`, not revisit done-atom
-  revalidation.
+- The latest `754156` probe shows the right first change: the false
+  `soviet union` bridge path is gone. The remaining failure is now controller
+  follow-through: `a3` stays unresolved, the run does not capitalize on the
+  Portuguese clue, and broad retrieval loops consume the full tool budget
+  before forced-finalization. The next slice should strengthen reflected
+  recovery routing and loop suppression on unresolved atoms, not revisit bridge
+  validation.
 
 ### Phase 4 — Targeted Tranche Verification
 

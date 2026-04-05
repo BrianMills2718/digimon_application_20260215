@@ -26,18 +26,20 @@ Keep the maintained DIGIMON benchmark lane truthful overnight by:
 
 ## Current Verified Blocker
 
-- Artifact `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T051256Z.json`
-  now fails honestly with `predicted=''`,
-  `submit_completion_mode='missing_required_submit'`, and one pending atom
-  (`A4`) still blocking a grounded submit.
+- Artifact `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T053035Z.json`
+  is the latest truthful controller probe. It no longer takes the bad
+  `a3 -> soviet union` bridge path, but it still exhausts the 20-call budget
+  and ends in forced-final acceptance with `predicted='communist takeover'`,
+  `submit_completion_mode='missing_required_submit'`, and two pending atoms
+  (`A3`, `A4`).
 - The earlier repeated `todo_write` runtime-error loop is gone. The same probe
   shows `atom_manual_reused` events for completed atoms (`a2`, later `a3`)
   instead of repeated `atom_manual_rejected` failures, so unchanged done atoms
   now survive full-list `todo_write` rewrites idempotently.
-- The next blocker is upstream controller reasoning, not done-atom
-  revalidation: `a3` still resolves incorrectly (`soviet union`) and the loop
-  then thrashes on `a4` plus repeated rejected submits until the run ends as
-  `REQUIRED_SUBMIT_NOT_ACCEPTED`.
+- The next blocker is now post-reflection controller routing, not bad bridge
+  acceptance: `a3` stays unresolved, the run never grounds the Portuguese hop,
+  and the controller drifts through broad retrieval loops until
+  `budget_exhaustion` forced-finalization preserves an ungrounded answer.
 - New runtime clue from `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T035805Z.json`:
   `chunk_retrieve(method=by_ids)` can emit `LINEARIZATION_DATA_LOSS` warnings
   when raw tool content exists but the linearized summary says empty. This is a
@@ -51,5 +53,5 @@ Keep the maintained DIGIMON benchmark lane truthful overnight by:
   proceeding.
 - Verification restored for this slice:
   - `pytest -q tests/unit/test_semantic_plan_query_contract.py tests/unit/test_benchmark_tool_modes.py`
-  - `81 passed`
+  - `83 passed`
   - `make truth-check` clean

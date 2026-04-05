@@ -673,6 +673,19 @@ and repeated submit attempts are rejected under the shared TODO/evidence
 progress gates. This means the next bounded fix should target relation-specific
 recovery or bridge validation on `a3/a4`, not done-atom idempotence.
 
+### 2026-04-04 — codex — bug-pattern
+**The `754156` wrong-bridge completion is gone, but the controller still fails to follow through on the reflected recovery path.**
+Probe `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T053035Z.json`
+removed the earlier `a3 -> soviet union` bridge error: the latest run leaves
+`a3`/`a4` unresolved instead of accepting the wrong bridge candidate. But the
+controller still does not ground the Portuguese hop. It accumulates broad
+retrieval loops, never converts the reflection hint into a decisive recovery
+path, exhausts the 20-call budget, and then forced-finalizes `communist
+takeover` under `budget_exhaustion` with `submit_completion_mode =
+missing_required_submit`. The next bounded fix should target recovery-hint
+follow-through and loop suppression on unresolved atoms, not bridge
+validation.
+
 ### 2026-04-04 — codex — integration-issue
 **The focused unit ladder was briefly blocked by a config bootstrap defect, now fixed by making `LLMConfig.region_name` nullable again.**
 `Config/LLMConfig.py` had `region_name: str = None`, while

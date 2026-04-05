@@ -121,7 +121,7 @@ remaining check: empty-answer rejection.
 | 820301 | 22 | "1" | IEE — wrong answer, retrieval finds wrong chain |
 | 354635 | Time Warner Cable | "Adelphia" or "Comcast" | Close IEE — finds neighbor not target |
 | 71753 | 1930 | "1961" or "1921" | Wrong year — poor entity disambiguation |
-| 754156 | The dynasty regrouped and defeated the Portuguese | "Laos" / "Myanmar" / "expelled by the Portuguese" / "by airplanes" / "" | Multi-stage controller failure: `A2` idempotence bug is fixed, but `A3` can still resolve to the wrong bridge (`soviet union`) and `A4` then stays pending until submit retries fail honestly |
+| 754156 | The dynasty regrouped and defeated the Portuguese | "Laos" / "Myanmar" / "expelled by the Portuguese" / "by airplanes" / "" / "communist takeover" | Multi-stage controller failure: `A2` idempotence bug and bad `soviet union` bridge path are fixed, but `A3/A4` still stay unresolved and the controller can drift into budget-exhaustion forced-finalization with an ungrounded answer |
 
 ### Remaining failure families
 
@@ -217,7 +217,7 @@ Total per question: ~6s operators + 58-82s LLM (47-48 turns sequential).
 
 ## Next Actions
 
-1. **Repair wrong-bridge propagation on `754156` after `a2`** — the latest truthful probe `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T051256Z.json` shows `a2` is stable (`Myanmar`) and no longer causes runtime errors, but `a3` can still resolve to `soviet union`, poisoning `a4` and ending in `REQUIRED_SUBMIT_NOT_ACCEPTED`. The next slice should target relation-specific recovery on `a3/a4`.
+1. **Repair unresolved-hop routing on `754156` after the bridge fix** — the latest truthful probe `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T053035Z.json` removed the bad `soviet union` bridge completion, but `a3` and `a4` still remain pending while the controller burns the full tool budget and ends in `budget_exhaustion` forced-final acceptance of `communist takeover`. The next slice should force more truthful reflection follow-through on `a3/a4`, not revisit bridge validation.
 2. **Investigate `LINEARIZATION_DATA_LOSS` in `chunk_retrieve(method=by_ids)`** — probe `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T035805Z.json` surfaced a warning that raw chunk content existed while the linearized summary appeared empty. This may be hiding exactly the evidence the controller needs on unresolved-hop questions.
 3. **Keep timeout provenance truthful while `LLM_CLIENT_TIMEOUT_POLICY=ban` remains active** — this shell disables per-call timeouts globally, so benchmark artifacts must continue surfacing requested/planned timeout separately from `turn_timeout_runtime_enforced` instead of pretending `auto:60s` is active.
 4. **Validate helper fallback quality + observability before spending on the 19q gate** — helper calls now follow configured `llm_client` fallbacks, but the earlier smoke run `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T133705Z.json` still regressed `619265` to `10`, and nested helper fallback usage is not yet fully surfaced in benchmark provenance.

@@ -2065,6 +2065,120 @@ async def test_relation_sensitive_bridge_candidate_is_accepted_after_focused_val
     assert dms._todo_item_by_id("a1")["status"] == "done"
 
 
+def test_person_answer_atoms_require_validated_bridge_resolution() -> None:
+    """Person-seeking entity atoms should not accept provisional bridge jumps without focused validation."""
+    assert dms._atom_requires_validated_bridge_resolution(
+        {
+            "answer_kind": "entity",
+            "sub_question": "What people were a proclamation of independence by the Somali Muslim Ajuran Empire for new coins?",
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_person_bridge_candidate_must_match_focused_validation_without_from_whom(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Human-answer bridge guesses should be validated even when the atom lacks an explicit 'from whom' phrase."""
+    dms._current_question = (
+        "How were the people from whom new coins were a proclamation of independence by the Somali Muslim "
+        "Ajuran Empire expelled from the country between Thailand and A Lim's country?"
+    )
+    dms._current_semantic_plan.clear()
+    dms._current_semantic_plan.update(
+        {
+            "atoms": [
+                {
+                    "atom_id": "a3",
+                    "sub_question": "What people were a proclamation of independence by the Somali Muslim Ajuran Empire for new coins?",
+                    "depends_on": [],
+                    "operation": "relation",
+                    "answer_kind": "entity",
+                },
+                {
+                    "atom_id": "a4",
+                    "sub_question": "How were those people expelled?",
+                    "depends_on": ["a3"],
+                    "operation": "lookup",
+                    "answer_kind": "text",
+                },
+            ]
+        }
+    )
+    dms._todos.clear()
+    dms._todos.extend(
+        [
+            {"id": "a3", "content": "Resolve the people tied to the Ajuran proclamation.", "status": "in_progress"},
+            {"id": "a4", "content": "How were those people expelled?", "status": "pending"},
+        ]
+    )
+
+    async def _fake_completion(atom, todo, payload, *, tool_name: str, method: str):
+        effective_query = str((payload.get("query_contract") or {}).get("effective_query") or "")
+        if effective_query:
+            return {
+                "event": "atom_autocomplete",
+                "atom_id": "a3",
+                "resolved_value": "Portuguese",
+                "confidence": 0.93,
+                "evidence_refs": ["chunk_217"],
+                "rationale": "The focused chunk directly ties the Ajuran independence claim to the Portuguese.",
+                "tool_name": tool_name,
+                "method": method,
+            }
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": "a3",
+            "confidence": 0.18,
+            "rationale": "Profile alone is too indirect.",
+            "tool_name": tool_name,
+            "method": method,
+        }
+
+    async def _fake_bridge(atom, todo, payload, *, tool_name: str, method: str):
+        return {
+            "event": "atom_autocomplete",
+            "atom_id": "a3",
+            "resolved_value": "Soviet Union",
+            "confidence": 0.86,
+            "evidence_refs": ["chunk_999"],
+            "rationale": "Soviet Union looked like the best downstream bridge candidate.",
+            "tool_name": tool_name,
+            "method": method,
+            "resolution_mode": "bridge_probe",
+        }
+
+    async def _fake_chunk_text_search(*, query_text: str, dataset_name: str, top_k: int = 2, entity_names=None):
+        lowered = query_text.lower()
+        assert "soviet union" in lowered
+        assert "people" in lowered
+        assert "ajuran" in lowered
+        return (
+            '{"chunks":[{"chunk_id":"chunk_217","text":"The Ajuran Empire adopted new coinage as a proclamation of economic independence in regard to the Portuguese."}]}'
+        )
+
+    monkeypatch.setattr(dms, "_infer_atom_completion_with_llm", _fake_completion)
+    monkeypatch.setattr(dms, "_infer_bridge_candidate_with_llm", _fake_bridge)
+    monkeypatch.setattr(dms, "chunk_text_search", _fake_chunk_text_search)
+
+    update = await dms._maybe_complete_active_atom_from_payload(
+        {
+            "entity_id": "ajuran empire",
+            "canonical_name": "Ajuran Empire",
+            "resolved_dataset_name": "MuSiQue",
+            "resolved_graph_reference_id": "MuSiQue_ERGraph",
+            "connected_entities": ["Soviet Union", "Portuguese"],
+        },
+        tool_name="entity_info",
+        method="profile",
+    )
+
+    assert update is not None
+    assert update["event"] == "atom_judged_unresolved"
+    assert "supports 'Portuguese' rather than bridge candidate 'Soviet Union'" in update["rationale"]
+    assert dms._todo_item_by_id("a3")["status"] == "in_progress"
+
+
 @pytest.mark.asyncio
 async def test_validate_manual_todo_completion_rejects_mismatched_value(monkeypatch: pytest.MonkeyPatch) -> None:
     """Manual done states should be rejected when cached evidence supports a different answer."""
