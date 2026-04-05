@@ -12,6 +12,7 @@ Add to ~/.claude/mcp_servers.json to use with Claude Code.
 """
 
 import asyncio
+from collections import Counter
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -23,7 +24,7 @@ import re
 import sys
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 # === MCP STDIO SAFETY: prevent ALL non-JSONRPC stdout writes ===
 # litellm prints colored INFO/WARNING/ERROR to stdout via Python logging,
@@ -1129,6 +1130,50 @@ def _resolved_dependency_values(atom: dict[str, Any] | None) -> list[str]:
     return values
 
 
+def _resolved_dependency_value_map(atom: dict[str, Any] | None) -> dict[str, str]:
+    """Map dependency atom IDs to their resolved TODO answers."""
+    if not isinstance(atom, dict):
+        return {}
+    resolved: dict[str, str] = {}
+    for dep_id in atom.get("depends_on") or []:
+        dep_key = str(dep_id).strip()
+        if not dep_key:
+            continue
+        todo = _todo_item_by_id(dep_key)
+        if not todo or todo.get("status") != "done":
+            continue
+        value = _extract_todo_result_value(todo)
+        if value:
+            resolved[dep_key] = value
+    return resolved
+
+
+def _render_atom_query_with_dependency_values(
+    text: str,
+    *,
+    atom: dict[str, Any] | None,
+) -> str:
+    """Replace planner dependency-ID placeholders like ``people identified in a1`` with resolved values."""
+    rendered = str(text or "").strip()
+    if not rendered or not isinstance(atom, dict):
+        return rendered
+    dependency_map = _resolved_dependency_value_map(atom)
+    if not dependency_map:
+        return rendered
+    for dep_id, value in dependency_map.items():
+        replacement = str(value).strip()
+        if not replacement:
+            continue
+        noun_phrase_patterns = (
+            rf"\b(?:the\s+)?(?:entity|person|people|group|country|place|city|state|region|series|episode|number|date|year|method|answer)\s+identified\s+in\s+{re.escape(dep_id)}\b",
+            rf"\bidentified\s+in\s+{re.escape(dep_id)}\b",
+        )
+        for pattern in noun_phrase_patterns:
+            rendered = re.sub(pattern, replacement, rendered, flags=re.IGNORECASE)
+    rendered = re.sub(r"\s+", " ", rendered).strip()
+    return rendered
+
+
 def _normalize_resolved_value(value: Any) -> str:
     """Normalize short factual spans for equality checks."""
     cleaned = re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold())
@@ -1607,6 +1652,27 @@ def _query_targets_cached_alias(requested_query: str, *, atom_id: str) -> bool:
     return False
 
 
+def _query_looks_degenerate_for_retrieval(text: str) -> bool:
+    """Return True when a query is dominated by placeholders or repeated low-signal tokens."""
+    probe = _normalize_query_compare_text(text)
+    if not probe:
+        return False
+    if re.search(r"\((that|those|this|these|it|they)\b[^)]*\)", str(text or "").lower()):
+        return True
+
+    tokens = [token for token in probe.split() if token not in _QUERY_STOPWORDS]
+    if len(tokens) < 4:
+        return False
+    duplicate_count = sum(count - 1 for count in Counter(tokens).values() if count > 1)
+    if duplicate_count >= 2:
+        return True
+    repeated_bigrams = {
+        " ".join(tokens[index:index + 2])
+        for index in range(len(tokens) - 1)
+    }
+    return len(repeated_bigrams) < max(len(tokens) // 2, 2)
+
+
 def _build_retrieval_query_contract(
     requested_query: str,
     *,
@@ -1636,7 +1702,10 @@ def _build_retrieval_query_contract(
         return requested, contract
 
     atom_id = str(atom.get("atom_id") or "").strip()
-    atom_query = str(atom.get("sub_question") or "").strip()
+    atom_query = _render_atom_query_with_dependency_values(
+        str(atom.get("sub_question") or "").strip(),
+        atom=atom,
+    )
     active_status = str((todo or {}).get("status") or "").strip()
     dependency_values = _resolved_dependency_values(atom)
     contract.update(
@@ -1691,6 +1760,8 @@ def _build_retrieval_query_contract(
             not requested
             or _query_token_overlap(requested, _current_question) >= 0.75
             or (atom_query and _query_token_overlap(requested, atom_query) >= 0.65)
+            or _query_looks_degenerate_for_retrieval(requested)
+            or _query_looks_degenerate_for_retrieval(effective)
         )
         if should_apply_recovery_hint and (
             _normalize_query_compare_text(suggested_query)
@@ -1836,11 +1907,39 @@ def _public_atom_recovery_hint(atom_id: str) -> dict[str, Any] | None:
     raw_hint = _atom_recovery_hints.get(atom_id)
     if not isinstance(raw_hint, dict):
         return None
-    return {
+    hint = {
         key: value
         for key, value in raw_hint.items()
         if key not in {"fingerprint"}
     }
+    atom = _semantic_plan_atom_by_id(atom_id)
+    if isinstance(atom, dict):
+        hint = _normalize_recovery_hint_surface(atom, hint)
+    return hint
+
+
+def _normalize_recovery_hint_surface(
+    atom: dict[str, Any],
+    hint: dict[str, Any],
+) -> dict[str, Any]:
+    """Normalize recovery hints onto supported consolidated tool surfaces."""
+    normalized = dict(hint)
+    target_tool = str(normalized.get("target_tool_name") or "").strip()
+    target_method = str(normalized.get("target_method") or "").strip()
+    probe = str(atom.get("sub_question") or "").strip().lower()
+
+    if target_tool == "relationship_search":
+        if _atom_expects_place_answer(atom) and "between" in probe:
+            endpoints = _between_place_endpoint_aliases(atom)[:2]
+            endpoint_text = " and ".join(endpoints) if endpoints else "both endpoints"
+            normalized["target_method"] = "graph"
+            normalized["next_action"] = (
+                "Use relationship_search(method='graph') on the resolved endpoints to inspect direct border "
+                f"relationships for {endpoint_text} before more semantic retrieval."
+            )
+        elif target_method not in {"graph", "semantic", "score", "agent"}:
+            normalized["target_method"] = "graph"
+    return normalized
 
 
 def _recovery_hint_should_force_surface_pivot(
@@ -1997,6 +2096,7 @@ async def _maybe_generate_atom_recovery_hint(
             "entity_search(method='string'), then inspect entity_info(profile) "
             "or relationship_search(graph). Do not guess a bridge entity yet."
         )
+    hint = _normalize_recovery_hint_surface(atom, hint)
     _atom_recovery_hints[atom_id] = hint
     _record_atom_lifecycle_event(
         {
@@ -2466,6 +2566,19 @@ async def _infer_atom_completion_with_llm(
                 f"'between' relation, so it cannot itself be the between-country answer."
             ),
         }
+    if not _between_place_candidate_has_explicit_support(atom, resolved_value, payload):
+        endpoint_text = " and ".join(_between_place_endpoint_aliases(atom)[:2]) or "both endpoints"
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": str(atom.get("atom_id") or ""),
+            "tool_name": tool_name,
+            "method": method,
+            "confidence": float(decision.confidence or 0.0),
+            "rationale": (
+                f"The proposed place '{resolved_value}' is mentioned near one endpoint, but the evidence does not "
+                f"directly show it as the distinct country between {endpoint_text} or as bordering both endpoints."
+            ),
+        }
 
     return {
         "event": "atom_autocomplete",
@@ -2588,6 +2701,19 @@ async def _infer_contextual_place_completion_with_llm(
             "rationale": (
                 f"The proposed place '{resolved_value}' is one of the endpoint countries in a "
                 f"'between' relation, so it cannot itself be the between-country answer."
+            ),
+        }
+    if not _between_place_candidate_has_explicit_support(atom, resolved_value, payload):
+        endpoint_text = " and ".join(_between_place_endpoint_aliases(atom)[:2]) or "both endpoints"
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": str(atom.get("atom_id") or ""),
+            "tool_name": tool_name,
+            "method": method,
+            "confidence": confidence,
+            "rationale": (
+                f"The proposed place '{resolved_value}' is mentioned near one endpoint, but the evidence does not "
+                f"directly show it as the distinct country between {endpoint_text} or as bordering both endpoints."
             ),
         }
 
@@ -2752,6 +2878,7 @@ async def _validate_manual_todo_completion(
         )
 
     mismatch_update: dict[str, Any] | None = None
+    mismatch_payload: dict[str, Any] | None = None
     last_unresolved: dict[str, Any] | None = None
     validation_todo = previous_todo or todo_item
 
@@ -2775,6 +2902,7 @@ async def _validate_manual_todo_completion(
         judged_norm = _normalize_resolved_value(judged_value)
         if judged_norm != proposed_norm:
             mismatch_update = update
+            mismatch_payload = payload
             continue
 
         merged_refs: list[str] = []
@@ -2807,6 +2935,33 @@ async def _validate_manual_todo_completion(
 
     if mismatch_update:
         supported_value = str(mismatch_update.get("resolved_value") or "").strip()
+        if _manual_text_answer_can_canonicalize_to_supported(atom, proposed_value, supported_value):
+            merged_refs: list[str] = []
+            for ref in (
+                list(todo_item.get("evidence_refs") or [])
+                + list(mismatch_update.get("evidence_refs") or [])
+                + list((mismatch_payload or {}).get("evidence_refs") or [])
+            ):
+                ref_text = str(ref or "").strip()
+                if ref_text and ref_text not in merged_refs:
+                    merged_refs.append(ref_text)
+
+            normalized_item = dict(todo_item)
+            normalized_item["answer"] = supported_value
+            if merged_refs:
+                normalized_item["evidence_refs"] = merged_refs
+            _record_atom_lifecycle_event(
+                {
+                    "event": "atom_manual_canonicalized",
+                    "atom_id": atom_id,
+                    "sub_question": atom.get("sub_question"),
+                    "proposed_value": proposed_value,
+                    "supported_value": supported_value,
+                    "evidence_refs": merged_refs,
+                    "rationale": str(mismatch_update.get("rationale") or ""),
+                }
+            )
+            return normalized_item
         _record_atom_lifecycle_event(
             {
                 "event": "atom_manual_rejected",
@@ -2838,6 +2993,29 @@ async def _validate_manual_todo_completion(
         f"TODO '{atom_id}' cannot be marked done yet because the current evidence does not directly resolve it."
         + (f" {unresolved_reason}" if unresolved_reason else ""),
     )
+
+
+def _manual_text_answer_can_canonicalize_to_supported(
+    atom: dict[str, Any] | None,
+    proposed_value: str,
+    supported_value: str,
+) -> bool:
+    """Allow text-answer TODO writes to snap to the exact supported phrase when semantically narrower."""
+    if not isinstance(atom, dict):
+        return False
+    if _normalize_answer_kind(str(atom.get("answer_kind") or "")) != "text":
+        return False
+    proposed_norm = _normalize_resolved_value(proposed_value)
+    supported_norm = _normalize_resolved_value(supported_value)
+    if not proposed_norm or not supported_norm:
+        return False
+    if proposed_norm in supported_norm or supported_norm in proposed_norm:
+        return True
+    proposed_tokens = _signal_tokens(proposed_value)
+    supported_tokens = _signal_tokens(supported_value)
+    if not proposed_tokens or not supported_tokens:
+        return False
+    return proposed_tokens <= supported_tokens
 
 
 async def _probe_bridge_candidates_with_text(
@@ -3544,6 +3722,16 @@ async def _maybe_complete_active_atom_from_payload(
     if tool_name not in {"chunk_retrieve", "relationship_search", "entity_info"}:
         return None
 
+    deterministic_place_update = _deterministic_between_place_candidate_update(
+        atom,
+        todo,
+        payload,
+        tool_name=tool_name,
+        method=method,
+    )
+    if deterministic_place_update and deterministic_place_update.get("event") == "atom_autocomplete":
+        return _apply_atom_completion_update(atom, todo, deterministic_place_update)
+
     update = await _infer_atom_completion_with_llm(
         atom,
         todo,
@@ -3707,6 +3895,8 @@ def _atom_requires_subject_chunk_probe(atom: dict[str, Any] | None) -> bool:
     probe = str(atom.get("sub_question") or "").strip().lower()
     if not probe:
         return False
+    if _atom_requires_subject_location_probe(atom):
+        return True
     return bool(re.search(r"\b(named after|namesake|meaning)\b", probe))
 
 
@@ -3719,6 +3909,8 @@ def _atom_disallows_bridge_autocomplete(atom: dict[str, Any] | None) -> bool:
     probe = str(atom.get("sub_question") or "").strip().lower()
     if not probe:
         return False
+    if _atom_requires_subject_location_probe(atom):
+        return True
     structural_markers = (
         "season",
         "episode",
@@ -3730,6 +3922,29 @@ def _atom_disallows_bridge_autocomplete(atom: dict[str, Any] | None) -> bool:
         "installment",
     )
     return any(marker in probe for marker in structural_markers)
+
+
+def _atom_requires_subject_location_probe(atom: dict[str, Any] | None) -> bool:
+    """Return True when a place-answer atom should stay anchored on the resolved subject entity."""
+    if not isinstance(atom, dict):
+        return False
+    if not _atom_expects_place_answer(atom):
+        return False
+    probe = str(atom.get("sub_question") or "").strip().lower()
+    if not probe:
+        return False
+    if "between" in probe or "border" in probe or "boundary" in probe or "adjacent" in probe:
+        return False
+    location_patterns = (
+        r"\bwhat is [^?]+ country\b",
+        r"\bwhich country is [^?]+ in\b",
+        r"\bwhat country is [^?]+ in\b",
+        r"\bcountry of\b",
+        r"'s country\b",
+        r"\blocated in\b",
+        r"\bsituated in\b",
+    )
+    return any(re.search(pattern, probe) for pattern in location_patterns)
 
 
 def _atom_requires_validated_bridge_resolution(atom: dict[str, Any] | None) -> bool:
@@ -3767,6 +3982,17 @@ _TEXT_HINT_RE = re.compile(
 )
 _YESNO_HINT_RE = re.compile(r"^\s*(is|are|was|were|do|does|did|can|could|will|has|have|had)\b")
 _CAPITALIZED_MENTION_RE = re.compile(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b")
+_BETWEEN_ENDPOINT_MENTION_STOPWORDS = {
+    "what",
+    "which",
+    "who",
+    "where",
+    "when",
+    "identify",
+    "determine",
+    "country",
+    "place",
+}
 
 
 def _answer_matches_between_endpoint(atom: dict[str, Any] | None, resolved_value: str) -> bool:
@@ -3796,6 +4022,257 @@ def _answer_matches_between_endpoint(atom: dict[str, Any] | None, resolved_value
         for alias in endpoint_aliases
         if alias
     )
+
+
+def _between_place_possessive_subject_aliases(atom: dict[str, Any] | None) -> list[str]:
+    """Return subject aliases from possessive place prompts like ``A Lim's country``."""
+    if not isinstance(atom, dict):
+        return []
+    probe = str(atom.get("sub_question") or "").strip()
+    if not probe:
+        return []
+    aliases: list[str] = []
+    seen: set[str] = set()
+    for raw in re.findall(
+        r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})'s\s+(?:country|place|region|state|city)\b",
+        probe,
+    ):
+        normalized = _normalize_resolved_value(raw)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            aliases.append(normalized)
+    return aliases
+
+
+def _infer_between_place_subject_container_aliases(
+    atom: dict[str, Any] | None,
+    payload: dict[str, Any] | None,
+) -> list[str]:
+    """Infer the container place for a possessive subject endpoint from current evidence."""
+    if not isinstance(atom, dict) or not isinstance(payload, dict):
+        return []
+    subject_aliases = _between_place_possessive_subject_aliases(atom)
+    if not subject_aliases:
+        return []
+    inferred: list[str] = []
+    seen: set[str] = set()
+    for text in _iter_between_place_support_text(payload):
+        for sentence in re.split(r"(?<=[.!?;])\s+|\n+", text):
+            lowered = sentence.lower()
+            ordered_mentions: list[tuple[int, str]] = []
+            for mention in _extract_context_entity_mentions(sentence, limit=12):
+                normalized = _normalize_resolved_value(mention)
+                if not normalized:
+                    continue
+                pos = lowered.find(normalized)
+                if pos == -1:
+                    continue
+                ordered_mentions.append((pos, normalized))
+            ordered_mentions.sort()
+            for subject_alias in subject_aliases:
+                subject_pos = lowered.find(subject_alias)
+                if subject_pos == -1:
+                    continue
+                for pos, normalized in ordered_mentions:
+                    if pos <= subject_pos:
+                        continue
+                    if normalized == subject_alias or normalized in _BETWEEN_ENDPOINT_MENTION_STOPWORDS:
+                        continue
+                    if normalized not in seen:
+                        seen.add(normalized)
+                        inferred.append(normalized)
+                if inferred:
+                    return inferred
+    return inferred
+
+
+def _between_place_endpoint_aliases(
+    atom: dict[str, Any] | None,
+    payload: dict[str, Any] | None = None,
+) -> list[str]:
+    """Return normalized endpoint aliases for place-between atoms."""
+    if not isinstance(atom, dict):
+        return []
+    endpoint_aliases: list[str] = []
+    seen: set[str] = set()
+    subject_aliases = set(_between_place_possessive_subject_aliases(atom))
+    for value in _resolved_dependency_values(atom):
+        normalized = _normalize_resolved_value(value)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            endpoint_aliases.append(normalized)
+    probe = str(atom.get("sub_question") or "").strip()
+    for mention in _CAPITALIZED_MENTION_RE.findall(probe):
+        normalized = _normalize_resolved_value(mention)
+        if normalized in _BETWEEN_ENDPOINT_MENTION_STOPWORDS:
+            continue
+        if normalized in subject_aliases:
+            continue
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            endpoint_aliases.append(normalized)
+    for normalized in _infer_between_place_subject_container_aliases(atom, payload):
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            endpoint_aliases.append(normalized)
+    for normalized in subject_aliases:
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            endpoint_aliases.append(normalized)
+    return endpoint_aliases
+
+
+def _iter_between_place_support_text(payload: dict[str, Any]) -> Iterable[str]:
+    """Yield compact evidence strings that can support a between-place candidate."""
+    chunks = payload.get("chunks")
+    if isinstance(chunks, list):
+        for chunk in chunks:
+            if not isinstance(chunk, dict):
+                continue
+            text = str(chunk.get("text") or chunk.get("text_content") or chunk.get("content") or "").strip()
+            if text:
+                yield text
+
+    relationships = payload.get("relationships")
+    if not isinstance(relationships, list):
+        relationships = payload.get("one_hop_relationships")
+    if isinstance(relationships, list):
+        for rel in relationships:
+            if not isinstance(rel, dict):
+                continue
+            src = str(rel.get("src_id") or rel.get("source") or rel.get("source_id") or "").strip()
+            tgt = str(rel.get("tgt_id") or rel.get("target") or rel.get("target_id") or "").strip()
+            desc = str(
+                rel.get("description")
+                or rel.get("relationship_description")
+                or rel.get("text")
+                or rel.get("predicate")
+                or ""
+            ).strip()
+            parts = [part for part in (src, desc, tgt) if part]
+            if parts:
+                yield " ".join(parts)
+
+
+def _between_place_candidate_has_explicit_support(
+    atom: dict[str, Any] | None,
+    resolved_value: str,
+    payload: dict[str, Any],
+) -> bool:
+    """Require direct evidence that the candidate is the distinct place between both endpoints."""
+    if not isinstance(atom, dict) or not isinstance(payload, dict):
+        return True
+    if not _atom_expects_place_answer(atom):
+        return True
+    probe = str(atom.get("sub_question") or "").strip().lower()
+    if "between" not in probe:
+        return True
+
+    candidate_norm = _normalize_resolved_value(resolved_value)
+    if not candidate_norm:
+        return False
+    endpoint_aliases = _between_place_endpoint_aliases(atom, payload)
+    if len(endpoint_aliases) < 2:
+        return True
+    endpoints = endpoint_aliases[:2]
+    border_pattern = re.compile(
+        r"\b(border|borders|bordered|bordering|adjacent|adjoins?|adjoined|neighbor(?:s|ed|ing)?|neighbour(?:s|ed|ing)?)\b"
+    )
+    between_pattern = re.compile(r"\bbetween\b")
+
+    for text in _iter_between_place_support_text(payload):
+        for sentence in re.split(r"(?<=[.!?;])\s+|\n+", text):
+            lowered = sentence.lower()
+            normalized = _normalize_resolved_value(sentence)
+            if candidate_norm not in normalized:
+                continue
+            if any(endpoint not in normalized for endpoint in endpoints):
+                continue
+            if between_pattern.search(lowered):
+                return True
+            border_match = border_pattern.search(lowered)
+            if border_match is None:
+                continue
+            if lowered.find(candidate_norm) < border_match.start():
+                return True
+    return False
+
+
+def _deterministic_between_place_candidate_update(
+    atom: dict[str, Any] | None,
+    todo: dict[str, Any] | None,
+    payload: dict[str, Any],
+    *,
+    tool_name: str,
+    method: str,
+) -> dict[str, Any] | None:
+    """Promote an explicit non-endpoint bridge country before asking the helper to guess."""
+    if not isinstance(atom, dict) or not isinstance(todo, dict) or not isinstance(payload, dict):
+        return None
+    if not _atom_expects_place_answer(atom):
+        return None
+    probe = str(atom.get("sub_question") or "").strip().lower()
+    if "between" not in probe:
+        return None
+    endpoint_aliases = _between_place_endpoint_aliases(atom, payload)
+    if len(endpoint_aliases) < 2:
+        return None
+    endpoints = endpoint_aliases[:2]
+    border_pattern = re.compile(
+        r"\b(border|borders|bordered|bordering|adjacent|adjoins?|adjoined|neighbor(?:s|ed|ing)?|neighbour(?:s|ed|ing)?)\b"
+    )
+
+    for text in _iter_between_place_support_text(payload):
+        for sentence in re.split(r"(?<=[.!?;])\s+|\n+", text):
+            lowered = sentence.lower()
+            normalized_sentence = _normalize_resolved_value(sentence)
+            if any(endpoint not in normalized_sentence for endpoint in endpoints):
+                continue
+            border_match = border_pattern.search(lowered)
+            if border_match is None:
+                continue
+            mentions = _extract_context_entity_mentions(sentence, limit=12)
+            ranked_candidates: list[tuple[int, int, str]] = []
+            for mention in mentions:
+                candidate_norm = _normalize_resolved_value(mention)
+                if not candidate_norm or candidate_norm in endpoints:
+                    continue
+                mention_pos = lowered.find(candidate_norm)
+                if mention_pos == -1:
+                    continue
+                ranked_candidates.append(
+                    (
+                        0 if mention_pos < border_match.start() else 1,
+                        mention_pos,
+                        mention.strip(),
+                    )
+                )
+            ranked_candidates.sort()
+            for _, _, candidate in ranked_candidates:
+                if not _between_place_candidate_has_explicit_support(atom, candidate, payload):
+                    continue
+                evidence_refs = list(payload.get("evidence_refs") or [])
+                if not evidence_refs:
+                    for chunk in payload.get("chunks") or []:
+                        if isinstance(chunk, dict):
+                            chunk_id = str(chunk.get("chunk_id") or "").strip()
+                            if chunk_id:
+                                evidence_refs.append(chunk_id)
+                return {
+                    "event": "atom_autocomplete",
+                    "atom_id": str(atom.get("atom_id") or ""),
+                    "resolved_value": candidate,
+                    "confidence": 1.0,
+                    "evidence_refs": evidence_refs,
+                    "rationale": (
+                        f"The evidence explicitly names '{candidate}' before the border relation and mentions both "
+                        f"{endpoints[0]} and {endpoints[1]}, so it is the distinct between-country."
+                    ),
+                    "tool_name": tool_name,
+                    "method": method,
+                    "resolution_mode": "deterministic_between_place_support",
+                }
+    return None
 
 
 def _infer_answer_kind(text: str) -> str:

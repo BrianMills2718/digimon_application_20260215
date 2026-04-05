@@ -105,9 +105,11 @@ class _FakeDMS:
         self.last_entity_vdb_kwargs: dict[str, object] | None = None
         self.last_entity_resolve_kwargs: dict[str, object] | None = None
         self.last_relationship_kwargs: dict[str, object] | None = None
+        self.last_chunk_text_kwargs: dict[str, object] | None = None
         self.last_chunk_vdb_kwargs: dict[str, object] | None = None
         self.active_atom: dict[str, object] | None = None
         self.dependency_values: list[str] = []
+        self.endpoint_aliases: list[str] = []
         self.atom_recovery_hints: dict[str, dict[str, object]] = {}
 
     async def _maybe_complete_active_atom_from_payload(
@@ -125,6 +127,9 @@ class _FakeDMS:
 
     def _resolved_dependency_values(self, atom):
         return list(self.dependency_values) if atom == self.active_atom else []
+
+    def _between_place_endpoint_aliases(self, atom):
+        return list(self.endpoint_aliases) if atom == self.active_atom else []
 
     def _public_atom_recovery_hint(self, atom_id: str):
         return self.atom_recovery_hints.get(atom_id)
@@ -144,6 +149,10 @@ class _FakeDMS:
     async def relationship_onehop(self, **kwargs: object) -> str:
         self.last_relationship_kwargs = dict(kwargs)
         return json.dumps({"relationships": [{"src_id": "godiva", "tgt_id": "mercia"}]})
+
+    async def chunk_text_search(self, **kwargs: object) -> str:
+        self.last_chunk_text_kwargs = dict(kwargs)
+        return json.dumps({"chunks": [{"chunk_id": "chunk_225", "text": "The dynasty regrouped and defeated the Portuguese in 1613."}]})
 
     async def chunk_vdb_search(self, **kwargs: object) -> str:
         self.last_chunk_vdb_kwargs = dict(kwargs)
@@ -250,6 +259,32 @@ async def test_relationship_wrapper_rewrites_scope_from_resolved_dependency() ->
 
 
 @pytest.mark.asyncio
+async def test_relationship_wrapper_for_between_place_atom_forwards_both_endpoints() -> None:
+    """Between-place atoms should forward the dependency country plus the explicit endpoint mention."""
+    dms = _FakeDMS()
+    dms.active_atom = {
+        "atom_id": "a2",
+        "sub_question": "What country is geographically located between Thailand and A Lim's country?",
+    }
+    dms.dependency_values = ["laos"]
+    dms.endpoint_aliases = ["laos", "thailand"]
+    tools = {tool.__name__: tool for tool in build_consolidated_tools(dms)}
+
+    await tools["relationship_search"](
+        method="graph",
+        entity_ids=["a lim"],
+        graph_reference_id="MuSiQue_ERGraph",
+    )
+
+    assert dms.last_relationship_kwargs is not None
+    assert dms.last_relationship_kwargs["entity_ids"] == ["laos", "thailand"]
+    _, _, payload = dms.captured_payloads[-1]
+    assert payload["entity_scope_contract"]["rewritten"] is True
+    assert payload["entity_scope_contract"]["effective_entities"] == ["laos", "thailand"]
+    assert "between_place_endpoint_scope_forwarded" in payload["entity_scope_contract"]["rewrite_reason"]
+
+
+@pytest.mark.asyncio
 async def test_chunk_retrieve_wrapper_blocks_off_target_recovery_surface() -> None:
     """High-confidence recovery hints should block off-target retrieval surfaces before more budget is spent."""
     dms = _FakeDMS()
@@ -279,6 +314,60 @@ async def test_chunk_retrieve_wrapper_blocks_off_target_recovery_surface() -> No
     assert "Blocked by controller policy" in result
     assert "entity_search(string)" in result
     assert "Ajuran Empire new coins independence" in result
+
+
+@pytest.mark.asyncio
+async def test_relationship_wrapper_blocks_wrong_method_when_recovery_hint_requires_graph() -> None:
+    """High-confidence recovery hints should also block same-tool calls with the wrong method."""
+    dms = _FakeDMS()
+    dms.active_atom = {
+        "atom_id": "a2",
+        "sub_question": "What country is geographically located between Thailand and A Lim's country?",
+    }
+    dms.atom_recovery_hints["a2"] = {
+        "atom_id": "a2",
+        "diagnosis": "Need graph edges from both endpoints, not semantic relationship VDB search.",
+        "suggested_query": "country between Thailand and Laos",
+        "target_tool_name": "relationship_search",
+        "target_method": "graph",
+        "next_action": "Use relationship_search(method='graph') on the resolved endpoints.",
+        "avoid_values": ["Laos"],
+        "confidence": 0.95,
+    }
+    tools = {tool.__name__: tool for tool in build_consolidated_tools(dms)}
+
+    result = await tools["relationship_search"](
+        method="semantic",
+        query_text="country between Thailand and Laos",
+        vdb_reference_id="",
+    )
+
+    assert dms.last_relationship_kwargs is None
+    assert "Blocked by controller policy" in result
+    assert "relationship_search(graph)" in result
+
+
+@pytest.mark.asyncio
+async def test_chunk_retrieve_semantic_pivots_to_text_for_how_text_atom() -> None:
+    """How/why text atoms with resolved dependencies should prefer lexical chunk search."""
+    dms = _FakeDMS()
+    dms.active_atom = {
+        "atom_id": "a3",
+        "sub_question": "How were the Portuguese expelled from Myanmar?",
+        "answer_kind": "text",
+    }
+    dms.dependency_values = ["Portuguese", "Myanmar"]
+    tools = {tool.__name__: tool for tool in build_consolidated_tools(dms)}
+
+    result = await tools["chunk_retrieve"](
+        method="semantic",
+        query_text="Portuguese expelled Myanmar how",
+        dataset_name="MuSiQue",
+    )
+
+    assert dms.last_chunk_text_kwargs is not None
+    assert dms.last_chunk_vdb_kwargs is None
+    assert "chunk_retrieve(text)" in result
 
 
 def test_linearize_relationship_search_graph_payload_preserves_one_hop_edges() -> None:

@@ -110,6 +110,84 @@ def test_query_contract_applies_atom_recovery_hint_to_active_atom() -> None:
     assert "atom_reflection_query_override" in contract["rewrite_reason"]
 
 
+def test_query_contract_applies_recovery_hint_to_degenerate_placeholder_query() -> None:
+    """Reflection hints should override placeholder-heavy repeated queries for the active atom."""
+    dms._current_question = (
+        "How were the people from whom new coins were a proclamation of independence by the Somali Muslim "
+        "Ajuran Empire expelled from the country between Thailand and A Lim's country?"
+    )
+    dms._current_semantic_plan.clear()
+    dms._current_semantic_plan.update(
+        {
+            "atoms": [
+                {
+                    "atom_id": "a1",
+                    "sub_question": "What country is A Lim in?",
+                    "depends_on": [],
+                    "operation": "lookup",
+                    "answer_kind": "entity",
+                },
+                {
+                    "atom_id": "a2",
+                    "sub_question": "What country is between Thailand and A Lim's country?",
+                    "depends_on": ["a1"],
+                    "operation": "relation",
+                    "answer_kind": "entity",
+                },
+                {
+                    "atom_id": "a3",
+                    "sub_question": "Who were the people expelled from that country?",
+                    "depends_on": ["a2"],
+                    "operation": "relation",
+                    "answer_kind": "entity",
+                },
+                {
+                    "atom_id": "a4",
+                    "sub_question": "Find how the people (that expelled people) were expelled from the country (that country between)",
+                    "depends_on": ["a2", "a3"],
+                    "operation": "relation",
+                    "answer_kind": "phrase",
+                },
+            ]
+        }
+    )
+    dms._todos.clear()
+    dms._todos.extend(
+        [
+            {"id": "a1", "content": "What country is A Lim in?", "status": "done", "answer": "China"},
+            {"id": "a2", "content": "What country is between Thailand and A Lim's country?", "status": "done", "answer": "Myanmar"},
+            {"id": "a3", "content": "Who were the people expelled from that country?", "status": "done", "answer": "Portuguese"},
+            {
+                "id": "a4",
+                "content": "Find how the people (that expelled people) were expelled from the country (that country between)",
+                "status": "in_progress",
+            },
+        ]
+    )
+    dms._atom_recovery_hints["a4"] = {
+        "atom_id": "a4",
+        "diagnosis": "The repeated placeholder query is too degenerate to retrieve the expulsion mechanism.",
+        "suggested_query": "Portuguese presence in Myanmar 16th century",
+        "target_tool_name": "chunk_retrieve",
+        "target_method": "semantic",
+        "next_action": "Search focused evidence about Portuguese expulsion from Myanmar.",
+        "avoid_values": ["by airplanes"],
+        "confidence": 0.91,
+        "fingerprint": "demo-a4",
+    }
+
+    effective, contract = dms._build_retrieval_query_contract(
+        "Myanmar Portuguese people expelled people expelled country country between",
+        tool_name="chunk_retrieve",
+    )
+
+    assert effective == "Portuguese presence Myanmar 16th century"
+    assert contract["active_atom_id"] == "a4"
+    assert contract["dependency_values_used"] == ["Myanmar", "Portuguese"]
+    assert contract["recovery_hint"]["suggested_query"] == "Portuguese presence in Myanmar 16th century"
+    assert "atom_reflection_query_override" in contract["rewrite_reason"]
+
+
 def test_extracts_done_atom_value_from_content_arrow_notation() -> None:
     """TODO content should still be usable when agent encodes result inline."""
     _prime_lady_godiva_plan()
@@ -127,6 +205,80 @@ def test_extracts_done_atom_value_from_content_arrow_notation() -> None:
 
     assert contract["dependency_values_used"] == ["Mercia"]
     assert effective.startswith("Mercia")
+
+
+def test_query_contract_renders_dependency_id_placeholders_to_resolved_values() -> None:
+    """Active-atom query text should substitute resolved dependency IDs before retrieval."""
+    dms._current_question = (
+        "How were the people from whom new coins were a proclamation of independence by the Somali Muslim "
+        "Ajuran Empire expelled from the country between Thailand and A Lim's country?"
+    )
+    dms._current_semantic_plan.clear()
+    dms._current_semantic_plan.update(
+        {
+            "atoms": [
+                {
+                    "atom_id": "a1",
+                    "sub_question": "Who were the people expelled from that country?",
+                    "depends_on": [],
+                    "operation": "relation",
+                    "answer_kind": "entity",
+                },
+                {
+                    "atom_id": "a2",
+                    "sub_question": "What country is between Thailand and A Lim's country?",
+                    "depends_on": [],
+                    "operation": "relation",
+                    "answer_kind": "entity",
+                },
+                {
+                    "atom_id": "a3",
+                    "sub_question": "How were the people identified in a1 expelled from the country identified in a2?",
+                    "depends_on": ["a1", "a2"],
+                    "operation": "relation",
+                    "answer_kind": "text",
+                },
+            ]
+        }
+    )
+    dms._todos.clear()
+    dms._todos.extend(
+        [
+            {
+                "id": "a1",
+                "content": "Who were the people expelled from that country?",
+                "status": "done",
+                "answer": "Portuguese",
+            },
+            {
+                "id": "a2",
+                "content": "What country is between Thailand and A Lim's country?",
+                "status": "done",
+                "answer": "Myanmar",
+            },
+            {
+                "id": "a3",
+                "content": "How were the people identified in a1 expelled from the country identified in a2?",
+                "status": "in_progress",
+            },
+        ]
+    )
+
+    effective, contract = dms._build_retrieval_query_contract(
+        "Portuguese Myanmar people identified a1 expelled country identified a2",
+        tool_name="chunk_retrieve",
+    )
+
+    assert contract["active_atom_id"] == "a3"
+    assert contract["dependency_values_used"] == ["Portuguese", "Myanmar"]
+    assert "identified in a1" not in contract["active_atom_sub_question"]
+    assert "identified in a2" not in contract["active_atom_sub_question"]
+    assert "Portuguese" in contract["active_atom_sub_question"]
+    assert "Myanmar" in contract["active_atom_sub_question"]
+    assert "identified a1" not in effective
+    assert "identified a2" not in effective
+    assert "Portuguese" in effective
+    assert "Myanmar" in effective
 
 
 def test_extract_todo_result_value_prefers_structured_answer_field() -> None:
@@ -278,6 +430,151 @@ def test_between_endpoint_guard_rejects_endpoint_answers() -> None:
     assert dms._answer_matches_between_endpoint(atom, "Laos") is True
     assert dms._answer_matches_between_endpoint(atom, "Thailand") is True
     assert dms._answer_matches_between_endpoint(atom, "Myanmar") is False
+
+
+def test_between_place_support_requires_candidate_to_connect_both_endpoints() -> None:
+    """One-sided adjacency evidence must not satisfy a between-country atom."""
+    atom = {
+        "atom_id": "a2",
+        "sub_question": "What is the country between Thailand and A Lim's country?",
+        "answer_kind": "entity",
+        "depends_on": ["a1"],
+    }
+    dms._current_semantic_plan.clear()
+    dms._current_semantic_plan.update({"atoms": [atom]})
+    dms._todos.clear()
+    dms._todos.extend(
+        [
+            {"id": "a1", "content": "Resolve A Lim's country", "status": "done", "answer": "Laos"},
+            {"id": "a2", "content": "Resolve the between-country", "status": "in_progress"},
+        ]
+    )
+
+    assert (
+        dms._between_place_candidate_has_explicit_support(
+            atom,
+            "Cambodia",
+            {
+                "chunks": [
+                    {
+                        "chunk_id": "chunk_1",
+                        "text": "Thailand is bordered to the east by Laos and Cambodia.",
+                    }
+                ]
+            },
+        )
+        is False
+    )
+    assert (
+        dms._between_place_candidate_has_explicit_support(
+            atom,
+            "Myanmar",
+            {
+                "chunks": [
+                    {
+                        "chunk_id": "chunk_2",
+                        "text": "Myanmar borders China, Thailand and Laos.",
+                    }
+                ]
+            },
+        )
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_chunk_retrieve_between_place_deterministically_selects_supported_bridge_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A chunk that explicitly names a non-endpoint country bordering both endpoints should win immediately."""
+    atom = {
+        "atom_id": "a2",
+        "sub_question": "What is the country between Thailand and A Lim's country?",
+        "answer_kind": "entity",
+        "depends_on": ["a1"],
+    }
+    dms._current_semantic_plan.clear()
+    dms._current_semantic_plan.update({"atoms": [atom]})
+    dms._todos.clear()
+    dms._todos.extend(
+        [
+            {"id": "a1", "content": "What is A Lim's country?", "status": "done", "answer": "Laos"},
+            {"id": "a2", "content": "What is the country between Thailand and A Lim's country?", "status": "in_progress"},
+        ]
+    )
+
+    async def _should_not_run(*args, **kwargs):
+        raise AssertionError("LLM completion should not run when deterministic between-country support is present")
+
+    monkeypatch.setattr(dms, "_infer_atom_completion_with_llm", _should_not_run)
+
+    update = await dms._maybe_complete_active_atom_from_payload(
+        {
+            "chunks": [
+                {
+                    "chunk_id": "chunk_235",
+                    "text": "Myanmar (also known as Burma) is the northwestern-most country of mainland Southeast Asia, bordering China, India, Bangladesh, Thailand and Laos.",
+                }
+            ],
+            "evidence_refs": ["chunk_235"],
+        },
+        tool_name="chunk_retrieve",
+        method="semantic",
+    )
+
+    assert update is not None
+    assert update["resolved_value"] == "Myanmar"
+    assert update["resolution_mode"] == "deterministic_between_place_support"
+    assert dms._todo_item_by_id("a2")["answer"] == "Myanmar"
+
+
+@pytest.mark.asyncio
+async def test_chunk_retrieve_between_place_infers_possessive_subject_country_from_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A possessive place endpoint like ``A Lim's country`` should infer Laos before choosing Myanmar."""
+    atom = {
+        "atom_id": "a1",
+        "sub_question": "What country is between Thailand and A Lim's country?",
+        "answer_kind": "entity",
+        "depends_on": [],
+    }
+    dms._current_semantic_plan.clear()
+    dms._current_semantic_plan.update({"atoms": [atom]})
+    dms._todos.clear()
+    dms._todos.extend(
+        [
+            {"id": "a1", "content": "What country is between Thailand and A Lim's country?", "status": "in_progress"},
+        ]
+    )
+
+    async def _should_not_run(*args, **kwargs):
+        raise AssertionError("LLM completion should not run when possessive endpoint evidence is sufficient")
+
+    monkeypatch.setattr(dms, "_infer_atom_completion_with_llm", _should_not_run)
+
+    update = await dms._maybe_complete_active_atom_from_payload(
+        {
+            "chunks": [
+                {
+                    "chunk_id": "chunk_220",
+                    "text": "A Lim is a village in south-eastern Laos near the border with Vietnam.",
+                },
+                {
+                    "chunk_id": "chunk_235",
+                    "text": "Myanmar is bordered by Thailand and Laos.",
+                },
+            ],
+            "evidence_refs": ["chunk_220", "chunk_235"],
+        },
+        tool_name="chunk_retrieve",
+        method="text",
+    )
+
+    assert update is not None
+    assert update["resolved_value"] == "Myanmar"
+    assert update["resolution_mode"] == "deterministic_between_place_support"
+    assert dms._todo_item_by_id("a1")["answer"] == "Myanmar"
 
 
 def test_pending_todo_ids_for_submit_reports_unfinished_atoms() -> None:
@@ -1572,6 +1869,136 @@ async def test_entity_search_string_preserves_subject_anchor_over_bridge_neighbo
 
 
 @pytest.mark.asyncio
+async def test_entity_search_string_uses_subject_chunk_probe_for_location_atom(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Direct subject-location atoms must prefer subject chunks over downstream bridge neighbors."""
+    dms._current_question = (
+        "How were the people from whom new coins were a proclamation of independence by the Somali Muslim "
+        "Ajuran Empire expelled from the country between Thailand and A Lim's country?"
+    )
+    dms._current_semantic_plan.clear()
+    dms._current_semantic_plan.update(
+        {
+            "atoms": [
+                {
+                    "atom_id": "a1",
+                    "sub_question": "What is A Lim's country?",
+                    "depends_on": [],
+                    "operation": "lookup",
+                    "answer_kind": "entity",
+                },
+                {
+                    "atom_id": "a2",
+                    "sub_question": "What country is located between Thailand and that a lims country?",
+                    "depends_on": ["a1"],
+                    "operation": "relation",
+                    "answer_kind": "entity",
+                },
+            ]
+        }
+    )
+    dms._todos.clear()
+    dms._todos.extend(
+        [
+            {"id": "a1", "content": "What is A Lim's country?", "status": "in_progress"},
+            {"id": "a2", "content": "What country is located between Thailand and that a lims country?", "status": "pending"},
+        ]
+    )
+
+    observed_calls: list[tuple[str, str]] = []
+
+    async def _fake_entity_profile(*, entity_name: str, graph_reference_id: str, dataset_name: str = ""):
+        observed_calls.append(("profile", entity_name))
+        return (
+            '{"entity_id":"a lim","canonical_name":"A Lim",'
+            '"connected_entities":["Vietnam"],'
+            '"evidence_refs":["entity:a_lim"]}'
+        )
+
+    async def _fake_relationship_onehop(*, entity_ids, graph_reference_id: str):
+        observed_calls.append(("relationship", ",".join(entity_ids)))
+        return (
+            '{"one_hop_relationships":['
+            '{"src_id":"a lim","tgt_id":"vietnam","description":"near the border with Vietnam"}'
+            '], "evidence_refs":["rel:a_lim:vietnam"]}'
+        )
+
+    async def _fake_chunk_get_text(*, mode: str, entity_ids, dataset_name: str, graph_reference_id: str, max_chunks_per_entity: int = 6):
+        observed_calls.append(("chunk_get_text", ",".join(entity_ids)))
+        return (
+            '{"retrieved_chunks":['
+            '{"chunk_id":"chunk_220","text_content":"A Lim is a village in south-eastern Laos near the border with Vietnam."}'
+            ']}'
+        )
+
+    async def _fake_completion(atom, todo, payload, *, tool_name: str, method: str):
+        if tool_name == "chunk_retrieve" and method == "by_entities":
+            return {
+                "event": "atom_autocomplete",
+                "atom_id": "a1",
+                "resolved_value": "Laos",
+                "confidence": 0.92,
+                "evidence_refs": ["chunk_220"],
+                "rationale": "The subject chunk explicitly locates A Lim in Laos.",
+                "tool_name": tool_name,
+                "method": method,
+                "resolution_mode": "subject_chunk_probe",
+            }
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": "a1",
+            "confidence": 0.11,
+            "rationale": "Profile/relationship evidence alone does not directly resolve the country.",
+            "tool_name": tool_name,
+            "method": method,
+        }
+
+    async def _fake_bridge(atom, todo, payload, *, tool_name: str, method: str):
+        return {
+            "event": "atom_autocomplete",
+            "atom_id": "a1",
+            "resolved_value": "Vietnam",
+            "confidence": 0.9,
+            "evidence_refs": ["chunk_563"],
+            "rationale": "Vietnam fits the downstream between-country clue.",
+            "tool_name": tool_name,
+            "method": method,
+            "resolution_mode": "bridge_probe",
+        }
+
+    monkeypatch.setattr(dms, "entity_profile", _fake_entity_profile)
+    monkeypatch.setattr(dms, "relationship_onehop", _fake_relationship_onehop)
+    monkeypatch.setattr(dms, "chunk_get_text", _fake_chunk_get_text)
+    monkeypatch.setattr(dms, "_infer_atom_completion_with_llm", _fake_completion)
+    monkeypatch.setattr(dms, "_infer_bridge_candidate_with_llm", _fake_bridge)
+
+    update = await dms._maybe_complete_active_atom_from_payload(
+        {
+            "matches": [
+                {
+                    "entity_name": "a lim",
+                    "canonical_name": "A Lim",
+                    "entity_id": "a lim",
+                    "match_score": 99,
+                    "description": "A Lim is a village in south-eastern Laos near the border with Vietnam.",
+                }
+            ],
+            "resolved_graph_reference_id": "MuSiQue_ERGraph",
+            "dataset_name": "MuSiQue",
+        },
+        tool_name="entity_search",
+        method="string",
+    )
+
+    assert update is not None
+    assert update["resolved_value"] == "Laos"
+    assert update["resolution_mode"] == "subject_chunk_probe"
+    assert dms._todo_item_by_id("a1")["answer"] == "Laos"
+    assert ("chunk_get_text", "a lim") in observed_calls
+
+
+@pytest.mark.asyncio
 async def test_bridge_probe_uses_downstream_discriminant_not_subject_tokens(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2316,6 +2743,148 @@ async def test_validate_manual_todo_completion_rejects_mismatched_value(monkeypa
             previous_todo=dms._todo_item_by_id("a2"),
         )
 
+
+@pytest.mark.asyncio
+async def test_validate_manual_todo_completion_canonicalizes_text_subset_to_supported_phrase(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Text answers may snap to the exact supported phrase when the proposal is a narrower subset."""
+    atom = {
+        "atom_id": "a4",
+        "sub_question": "How were the Portuguese expelled from Myanmar?",
+        "depends_on": ["a2", "a3"],
+        "operation": "relation",
+        "answer_kind": "text",
+    }
+    dms._current_semantic_plan.clear()
+    dms._current_semantic_plan.update({"atoms": [atom]})
+    dms._todos.clear()
+    dms._todos.extend(
+        [
+            {"id": "a2", "content": "Resolve the country", "status": "done", "answer": "Myanmar"},
+            {"id": "a3", "content": "Resolve the people", "status": "done", "answer": "Portuguese"},
+            {"id": "a4", "content": "Resolve how they were expelled", "status": "in_progress"},
+        ]
+    )
+    dms._atom_validation_payloads.clear()
+    dms._atom_validation_payloads["a4"] = [
+        {
+            "tool_name": "chunk_retrieve",
+            "method": "text",
+            "chunks": [
+                {
+                    "chunk_id": "chunk_225",
+                    "text": "The dynasty regrouped and defeated the Portuguese in 1613 and Siam in 1614.",
+                }
+            ],
+            "evidence_refs": ["chunk_225"],
+        }
+    ]
+
+    async def _fake_infer(atom, todo, payload, *, tool_name: str, method: str):
+        return {
+            "event": "atom_autocomplete",
+            "atom_id": "a4",
+            "resolved_value": "The dynasty regrouped and defeated the Portuguese in 1613",
+            "confidence": 0.96,
+            "evidence_refs": ["chunk_225"],
+            "rationale": "The chunk directly states how the Portuguese were defeated.",
+            "tool_name": tool_name,
+            "method": method,
+        }
+
+    monkeypatch.setattr(dms, "_infer_atom_completion_with_llm", _fake_infer)
+
+    normalized = await dms._validate_manual_todo_completion(
+        atom,
+        {
+            "id": "a4",
+            "content": "Resolve how they were expelled",
+            "status": "done",
+            "answer": "defeated the Portuguese in 1613",
+        },
+        previous_todo=dms._todo_item_by_id("a4"),
+    )
+
+    assert normalized["answer"] == "The dynasty regrouped and defeated the Portuguese in 1613"
+    assert normalized["evidence_refs"] == ["chunk_225"]
+
+
+@pytest.mark.asyncio
+async def test_between_country_manual_validation_rejects_one_sided_border_guess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Manual validation must not turn one-sided border evidence into a between-country answer."""
+    atom = {
+        "atom_id": "a3",
+        "sub_question": "Identify the country located between Thailand and that a lims country",
+        "depends_on": ["a2"],
+        "operation": "relation",
+        "answer_kind": "entity",
+    }
+    dms._current_question = (
+        "How were the people from whom new coins were a proclamation of independence by the Somali Muslim "
+        "Ajuran Empire expelled from the country between Thailand and A Lim's country?"
+    )
+    dms._current_semantic_plan.clear()
+    dms._current_semantic_plan.update({"atoms": [atom]})
+    dms._todos.clear()
+    dms._todos.extend(
+        [
+            {"id": "a2", "content": "Identify A Lim's country", "status": "done", "answer": "Laos"},
+            {"id": "a3", "content": "Identify the between-country", "status": "in_progress"},
+        ]
+    )
+    dms._atom_validation_payloads.clear()
+    dms._atom_validation_payloads["a3"] = [
+        {
+            "tool_name": "chunk_retrieve",
+            "method": "text",
+            "chunks": [
+                {
+                    "chunk_id": "chunk_42",
+                    "text": "Thailand is bordered to the east by Laos and Cambodia.",
+                }
+            ],
+            "evidence_refs": ["chunk_42"],
+        }
+    ]
+
+    async def _fake_helper_call(model, messages, response_model, **kwargs):
+        return (
+            response_model(
+                should_mark_done=True,
+                resolved_value="Cambodia",
+                confidence=0.93,
+                evidence_refs=["chunk_42"],
+                rationale="Cambodia looks like the other bordering country in the sentence.",
+            ),
+            SimpleNamespace(),
+        )
+
+    monkeypatch.setattr(dms, "_call_helper_structured", _fake_helper_call)
+    monkeypatch.setattr(
+        dms,
+        "_helper_structured_llm_policy",
+        lambda num_retries=2: ("openrouter/openai/gpt-5.4-mini", {"num_retries": num_retries}),
+    )
+    monkeypatch.setattr(
+        llm_client,
+        "render_prompt",
+        lambda *args, **kwargs: [{"role": "user", "content": "judge"}],
+    )
+
+    with pytest.raises(ValueError, match="does not directly resolve it.*Cambodia"):
+        await dms._validate_manual_todo_completion(
+            atom,
+            {
+                "id": "a3",
+                "content": "Identify the between-country",
+                "status": "done",
+                "answer": "Vietnam",
+            },
+            previous_todo=dms._todo_item_by_id("a3"),
+        )
 
 @pytest.mark.asyncio
 async def test_cached_atom_validation_payload_drives_manual_done_rejection(monkeypatch: pytest.MonkeyPatch) -> None:
