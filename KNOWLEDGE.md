@@ -505,3 +505,36 @@ persistence, and rendering; DIGIMON should only declare its own decision
 points and extractors. `onto-canon6` identity/canonicalization is most
 promising as an offline trace-normalization adapter, not as a default
 benchmark hot-path dependency.
+
+### 2026-04-04 — codex — bug-pattern
+**Plan #28 observability now exposes both helper decisions and atom lifecycle mutations per benchmark question.**
+`digimon_mcp_stdio_server.py` now writes helper structured-call events to
+`results/.helper_decision_trace.jsonl` and atom lifecycle events to
+`results/.atom_lifecycle_events.jsonl`, both tagged with the active
+`benchmark_trace_id` when available. `eval/run_agent_benchmark.py` harvests
+those sidecars into per-question result artifacts as `helper_decision_trace`
+and `atom_lifecycle_trace`, so first-bad-turn diagnosis no longer depends on
+manually reconstructing state from conversation text.
+
+### 2026-04-04 — codex — bug-pattern
+**The 619265-family regression was a structural bridge-autocomplete bug after a correct anchor, not a helper fallback bug.**
+With the new traces, the failing `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T010651Z.json`
+run showed `a1 -> Ray Donovan`, then `a2 -> showtime` via
+`resolution_mode=bridge_probe` on `entity_info(profile)`, which poisoned the
+downstream episode-count atom. The fix was to disallow bridge-style
+entity-profile autocomplete for structural relation targets like seasons,
+episodes, chapters, volumes, parts, and installments. After that guard, the
+bounded rerun `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T011403Z.json`
+removed the `showtime` mutation entirely and restored the correct final answer.
+
+### 2026-04-04 — codex — integration-issue
+**Normal `submit_answer` still accepts evidence-exhausted guesses with pending semantic-plan atoms.**
+The same successful rerun `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T011403Z.json`
+shows `A2` remained unresolved in both helper and atom lifecycle traces, yet
+`submit_answer` returned `{"status":"submitted","answer":"12"}` and the run
+scored as a pass. This is no longer hidden: use `atom_lifecycle_trace` plus
+`submit_answer_succeeded` to distinguish grounded completions from partial
+best-guess submissions. Any future tightening of this policy should be done
+carefully, because restoring a hard pending-atom submit gate will materially
+change benchmark behavior unless the forced-final path is redesigned at the
+same time.

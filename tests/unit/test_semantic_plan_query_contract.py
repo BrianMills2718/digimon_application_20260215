@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import llm_client
 import pytest
+from pydantic import BaseModel
 
 import digimon_mcp_stdio_server as dms
 
@@ -181,6 +182,38 @@ def test_normalize_semantic_plan_language_rewrites_dollar_placeholder() -> None:
 
     assert normalized["atoms"][1]["sub_question"] == "When was that birthplace abolished?"
     assert normalized["atoms"][1]["done_criteria"] == "Find when that birthplace was abolished."
+
+
+def test_normalize_semantic_plan_language_maps_output_var_dependency_ids() -> None:
+    """Planner dependencies should reference atom IDs even when the model emits output vars."""
+    plan = {
+        "final_answer_kind": "number",
+        "atoms": [
+            {
+                "atom_id": "a1",
+                "sub_question": "What series has an episode titled 'The Bag or the Bat'?",
+                "operation": "lookup",
+                "answer_kind": "entity",
+                "output_var": "series_with_episode",
+                "depends_on": [],
+                "done_criteria": "Resolve the series.",
+            },
+            {
+                "atom_id": "a2",
+                "sub_question": "How many episodes are in season 5 of the series_with_episode?",
+                "operation": "relation",
+                "answer_kind": "number",
+                "output_var": "episode_count_s5",
+                "depends_on": ["series_with_episode"],
+                "done_criteria": "Count episodes for season 5 of the series_with_episode.",
+            },
+        ],
+    }
+
+    normalized = dms._normalize_semantic_plan_language(plan)
+
+    assert normalized["atoms"][1]["depends_on"] == ["a1"]
+    assert "series_with_episode" not in normalized["atoms"][1]["sub_question"]
 
 
 def test_pending_todo_ids_for_submit_reports_unfinished_atoms() -> None:
@@ -756,6 +789,116 @@ async def test_entity_search_string_auto_profiles_subject(monkeypatch: pytest.Mo
     assert dms._todo_item_by_id("a2")["status"] == "in_progress"
     assert captured_events[0]["event"] == "atom_completed"
     assert call_order == ["profile", "relationship"]
+
+
+@pytest.mark.asyncio
+async def test_entity_search_string_blocks_bridge_autocomplete_for_structural_relation_atoms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Structural relation atoms like 'season 5 of X' should not collapse to loose graph neighbors."""
+    dms._current_question = "How many episodes are in season 5 of the series with The Bag or the Bat?"
+    dms._current_semantic_plan.clear()
+    dms._current_semantic_plan.update(
+        {
+            "atoms": [
+                {
+                    "atom_id": "a1",
+                    "sub_question": "What is the series that contains an episode titled 'The Bag or the Bat'?",
+                    "depends_on": [],
+                    "operation": "lookup",
+                    "answer_kind": "entity",
+                },
+                {
+                    "atom_id": "a2",
+                    "sub_question": "What is season 5 of the series (from a1)?",
+                    "depends_on": ["a1"],
+                    "operation": "relation",
+                    "answer_kind": "entity",
+                },
+                {
+                    "atom_id": "a3",
+                    "sub_question": "How many episodes are in that season 5 (from a2)?",
+                    "depends_on": ["a2"],
+                    "operation": "lookup",
+                    "answer_kind": "number",
+                },
+            ]
+        }
+    )
+    dms._todos.clear()
+    dms._todos.extend(
+        [
+            {"id": "a1", "content": "Identify the series", "status": "done", "answer": "Ray Donovan"},
+            {"id": "a2", "content": "Identify season 5 of that series.", "status": "in_progress"},
+            {"id": "a3", "content": "Find how many episodes are in season 5.", "status": "pending"},
+        ]
+    )
+
+    bridge_calls: list[tuple[str, str]] = []
+
+    async def _fake_entity_profile(*, entity_name: str, graph_reference_id: str, dataset_name: str = ""):
+        return (
+            '{"entity_id":"ray donovan","canonical_name":"Ray Donovan",'
+            '"connected_entities":["showtime","ann biderman"],'
+            '"evidence_refs":["chunk_200"]}'
+        )
+
+    async def _fake_relationship_onehop(*, entity_ids, graph_reference_id: str):
+        return (
+            '{"one_hop_relationships":['
+            '{"src_id":"ray donovan","tgt_id":"showtime","description":"aired on Showtime"}'
+            ']}'
+        )
+
+    async def _fake_completion(atom, todo, payload, *, tool_name: str, method: str):
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": "a2",
+            "confidence": 0.0,
+            "rationale": "No direct season-5 entity is present.",
+            "tool_name": tool_name,
+            "method": method,
+        }
+
+    async def _fake_bridge(atom, todo, payload, *, tool_name: str, method: str):
+        bridge_calls.append((tool_name, method))
+        return {
+            "event": "atom_autocomplete",
+            "atom_id": "a2",
+            "resolved_value": "showtime",
+            "confidence": 0.9,
+            "evidence_refs": ["chunk_1877"],
+            "rationale": "showtime looks connected to the downstream season question.",
+            "tool_name": tool_name,
+            "method": method,
+            "resolution_mode": "bridge_probe",
+        }
+
+    monkeypatch.setattr(dms, "entity_profile", _fake_entity_profile)
+    monkeypatch.setattr(dms, "relationship_onehop", _fake_relationship_onehop)
+    monkeypatch.setattr(dms, "_infer_atom_completion_with_llm", _fake_completion)
+    monkeypatch.setattr(dms, "_infer_bridge_candidate_with_llm", _fake_bridge)
+
+    update = await dms._maybe_complete_active_atom_from_payload(
+        {
+            "matches": [
+                {
+                    "entity_name": "ray donovan",
+                    "canonical_name": "Ray Donovan",
+                    "match_score": 100,
+                }
+            ],
+            "resolved_graph_reference_id": "MuSiQue_ERGraph",
+            "dataset_name": "MuSiQue",
+        },
+        tool_name="entity_search",
+        method="string",
+    )
+
+    assert bridge_calls == [("entity_info", "profile"), ("relationship_search", "graph")]
+    assert update is None
+    assert dms._todo_item_by_id("a2")["status"] == "in_progress"
+    assert dms._todo_item_by_id("a2").get("answer") in {None, ""}
 
 
 @pytest.mark.asyncio
@@ -1741,3 +1884,61 @@ async def test_atom_completion_judge_forwards_helper_fallback_models(
     finally:
         dms._state.clear()
         dms._state.update(original_state)
+
+
+@pytest.mark.asyncio
+async def test_helper_structured_call_records_fallback_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Helper structured wrapper should persist routing/fallback provenance."""
+
+    class DemoDecision(BaseModel):
+        winner: str
+
+    trace_path = tmp_path / ".helper_decision_trace.jsonl"
+    monkeypatch.setattr(dms, "_helper_decision_trace_path", lambda: trace_path)
+
+    async def _fake_acall_llm_structured(model, messages, response_model, **kwargs):
+        return (
+            response_model(winner="Ray Donovan"),
+            SimpleNamespace(
+                requested_model=model,
+                resolved_model="openrouter/openai/gpt-5.4-mini",
+                execution_model="openrouter/openai/gpt-5.4-mini",
+                routing_trace={
+                    "attempted_models": ["gemini/gemini-2.5-flash", "openrouter/openai/gpt-5.4-mini"],
+                    "selected_model": "openrouter/openai/gpt-5.4-mini",
+                },
+                warnings=["FALLBACK: gemini/gemini-2.5-flash -> openrouter/openai/gpt-5.4-mini"],
+                warning_records=[{"code": "LLMC_WARN_FALLBACK", "message": "fallback"}],
+                usage={"input_tokens": 12, "output_tokens": 4},
+                cost=0.01,
+                finish_reason="stop",
+            ),
+        )
+
+    monkeypatch.setattr(llm_client, "acall_llm_structured", _fake_acall_llm_structured)
+    dms._current_question = "How many episodes were in the fifth season of the TV series in which The Bag or the Bat appeared?"
+
+    decision, _meta = await dms._call_helper_structured(
+        model="gemini/gemini-2.5-flash",
+        messages=[{"role": "user", "content": "judge"}],
+        response_model=DemoDecision,
+        task="digimon.atom_completion",
+        trace_id="digimon.atom_completion.demo",
+        input_state={"atom_id": "a2", "effective_query": "Ray Donovan season 5 episodes"},
+        fallback_models=["openrouter/openai/gpt-5.4-mini"],
+    )
+
+    assert decision.winner == "Ray Donovan"
+    assert dms._helper_decision_events
+    event = dms._helper_decision_events[-1]
+    assert event["status"] == "ok"
+    assert event["fallback_used"] is True
+    assert event["resolved_model"] == "openrouter/openai/gpt-5.4-mini"
+    assert event["input_state"]["atom_id"] == "a2"
+    assert event["decision_payload"]["winner"] == "Ray Donovan"
+    lines = trace_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert "digimon.atom_completion.demo" in lines[0]

@@ -355,6 +355,33 @@ decision:
 - Rewrote `docs/handoff_2026_04_03.md` and tightened `CURRENT_STATUS.md` until
   `python scripts/validate_status_truth.py --artifact-root <canonical-repo-root>`
   reported a clean truth surface.
+- Added benchmark-side observability harvesting for:
+  - `results/.helper_decision_trace.jsonl` → per-question `helper_decision_trace`
+  - `results/.atom_lifecycle_events.jsonl` → per-question `atom_lifecycle_trace`
+  Both are now keyed by `benchmark_trace_id` when available, so diagnosis no
+  longer depends on reconstructing state transitions from `conversation_trace`.
+- The new traces exposed a more exact controller bug on `619265`:
+  after `a1 -> Ray Donovan`, `a2` could still autocomplete to `showtime` via
+  `entity_info(profile)` bridge probing, because structural relation targets
+  like seasons were being treated like ordinary bridge entities.
+- Patched structural relation atoms to reject bridge-style autocomplete from
+  loose graph neighbors. Guarded terms currently include seasons, episodes,
+  chapters, volumes, parts, rounds, and installments.
+- Verified the new observability + controller guard with:
+  - `python -m compileall digimon_mcp_stdio_server.py eval/run_agent_benchmark.py`
+  - `/home/brian/projects/Digimon_for_KG_application/.venv/bin/pytest -q tests/unit/test_semantic_plan_query_contract.py tests/unit/test_benchmark_tool_modes.py`
+    → `59 passed`
+  - bounded live rerun:
+    `python scripts/run_with_digimon_python.py eval/run_agent_benchmark.py --agent-spec none --allow-missing-agent-spec --missing-agent-spec-reason relocated --dataset MuSiQue --data-root /home/brian/projects/Digimon_for_KG_application/Data --questions 2hop__619265_45326 --model openrouter/openai/gpt-5.4-mini --backend direct --retrieval-stagnation-turns 6 --question-delay 0 --timeout 180 --tag plan28_helper_trace_smoke_r4`
+    artifact: `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T011403Z.json`
+    outcome: `12/12`, `EM=1.0`, `LLM_EM=1.0`, helper trace attached, atom lifecycle trace attached, no `showtime` mutation
+- New explicitly documented residual issue after the successful rerun:
+  `submit_answer` still accepts best-effort partial submissions with pending
+  semantic-plan atoms. In the same `20260405T011403Z` artifact, `A2` remained
+  unresolved in both helper and atom lifecycle traces, yet submission of `12`
+  succeeded and the run passed. Treat this as the next controller-policy
+  question; do not silently tighten it without redesigning the forced-final
+  behavior at the same time.
 
 ---
 

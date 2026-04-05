@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import json
+
 from Core.Common.benchmark_tool_modes import filter_tool_names_for_benchmark_mode
 from eval.run_agent_benchmark import (
+    _atom_lifecycle_provenance,
     _conversation_trace_has_pending_todos,
     _derive_submit_observability,
+    _helper_trace_provenance,
+    _read_atom_lifecycle_events_since,
+    _read_helper_trace_events_since,
     _preserve_terminal_answer_after_submit_validation,
     _submit_tool_call_accepted,
 )
@@ -181,3 +187,99 @@ def test_conversation_trace_ignores_fully_completed_todos() -> None:
             {"role": "assistant", "content": "Nazareth"},
         ]
     )
+
+
+def test_read_helper_trace_events_since_filters_to_current_question(tmp_path) -> None:
+    """Helper trace harvesting should ignore unrelated question events."""
+    trace_path = tmp_path / "results" / ".helper_decision_trace.jsonl"
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    trace_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"question": "Question A", "status": "ok", "fallback_used": False}),
+                json.dumps({"question": "Question B", "status": "ok", "fallback_used": True}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    events = _read_helper_trace_events_since(
+        project_root=str(tmp_path),
+        offset=0,
+        question="Question B",
+    )
+
+    assert len(events) == 1
+    assert events[0]["question"] == "Question B"
+
+
+def test_helper_trace_provenance_counts_helper_fallbacks() -> None:
+    """Helper trace summary should surface nested fallback usage explicitly."""
+    provenance = _helper_trace_provenance(
+        [
+            {
+                "requested_model": "gemini/gemini-2.5-flash",
+                "resolved_model": "openrouter/openai/gpt-5.4-mini",
+                "fallback_used": True,
+                "status": "ok",
+            },
+            {
+                "requested_model": "deepseek/deepseek-chat",
+                "resolved_model": "deepseek/deepseek-chat",
+                "fallback_used": False,
+                "status": "error",
+            },
+        ]
+    )
+
+    assert provenance["helper_fallback_used"] is True
+    assert provenance["helper_fallback_event_count"] == 1
+    assert provenance["helper_error_count"] == 1
+    assert provenance["helper_models_used"] == [
+        "deepseek/deepseek-chat",
+        "gemini/gemini-2.5-flash",
+        "openrouter/openai/gpt-5.4-mini",
+    ]
+
+
+def test_read_atom_lifecycle_events_since_prefers_benchmark_trace_id(tmp_path) -> None:
+    """Atom lifecycle harvesting should use benchmark trace IDs when present."""
+    trace_path = tmp_path / "results" / ".atom_lifecycle_events.jsonl"
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    trace_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"question": "Question A", "benchmark_trace_id": "trace-a", "event": "atom_completed"}),
+                json.dumps({"question": "Question B", "benchmark_trace_id": "trace-b", "event": "atom_judged_unresolved"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    events = _read_atom_lifecycle_events_since(
+        project_root=str(tmp_path),
+        offset=0,
+        question="Question A",
+        benchmark_trace_id="trace-b",
+    )
+
+    assert len(events) == 1
+    assert events[0]["benchmark_trace_id"] == "trace-b"
+
+
+def test_atom_lifecycle_provenance_counts_mutations() -> None:
+    """Atom lifecycle summary should expose completion and unresolved counts."""
+    provenance = _atom_lifecycle_provenance(
+        [
+            {"event": "atom_completed", "atom_id": "a1"},
+            {"event": "atom_judged_unresolved", "atom_id": "a2"},
+            {"event": "atom_manual_rejected", "atom_id": "a2"},
+        ]
+    )
+
+    assert provenance["atom_lifecycle_event_count"] == 3
+    assert provenance["atom_completed_event_count"] == 1
+    assert provenance["atom_unresolved_event_count"] == 1
+    assert provenance["atom_manual_rejected_event_count"] == 1

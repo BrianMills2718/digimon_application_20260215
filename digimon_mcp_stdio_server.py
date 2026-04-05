@@ -14,6 +14,7 @@ Add to ~/.claude/mcp_servers.json to use with Claude Code.
 import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
+from datetime import datetime, timezone
 import json
 import logging
 import os
@@ -776,6 +777,7 @@ _current_semantic_plan: dict[str, Any] = {}
 _current_semantic_plan_question: str = ""
 _atom_lifecycle_events: list[dict[str, Any]] = []
 _atom_validation_payloads: dict[str, list[dict[str, Any]]] = {}
+_helper_decision_events: list[dict[str, Any]] = []
 _QUERY_LEADIN_RE = re.compile(
     r"^\s*(?:find|identify|determine|lookup|look up|resolve|show me|tell me|"
     r"what(?:'s| is| was)?|who(?:'s| is| was)?|when(?:'s| is| was| did)?|"
@@ -847,6 +849,7 @@ def _reset_todos() -> None:
     _todos.clear()
     _atom_lifecycle_events.clear()
     _atom_validation_payloads.clear()
+    _helper_decision_events.clear()
     _current_question = ""
     _current_expected_answer_kind = ""
 
@@ -1217,6 +1220,19 @@ def _rewrite_output_var_reference(text: str, *, output_var: str) -> str:
     for pattern in patterns:
         updated = re.sub(pattern, replacement, updated, flags=re.IGNORECASE)
 
+    # Planners sometimes leak raw snake_case output vars directly into the next
+    # atom's prose instead of using the explicit "$var" / "entity identified as"
+    # phrasing above. Only rewrite obviously synthetic variable tokens so we do
+    # not accidentally replace ordinary language.
+    raw_output_var = str(output_var or "").strip()
+    if raw_output_var and re.search(r"[_\-]", raw_output_var):
+        updated = re.sub(
+            rf"\b{re.escape(raw_output_var)}\b",
+            replacement,
+            updated,
+            flags=re.IGNORECASE,
+        )
+
     updated = re.sub(r"\bthat\s+that\b", "that", updated, flags=re.IGNORECASE)
     updated = re.sub(r"\bthe\s+that\b", "that", updated, flags=re.IGNORECASE)
     updated = re.sub(r"\s+\?", "?", updated)
@@ -1231,6 +1247,7 @@ def _normalize_semantic_plan_language(plan_dict: dict[str, Any]) -> dict[str, An
         return plan_dict
 
     output_vars_by_atom_id: dict[str, str] = {}
+    atom_ids_by_output_var: dict[str, str] = {}
     for atom in atoms:
         if not isinstance(atom, dict):
             continue
@@ -1238,13 +1255,25 @@ def _normalize_semantic_plan_language(plan_dict: dict[str, Any]) -> dict[str, An
         output_var = str(atom.get("output_var") or "").strip()
         if atom_id and output_var:
             output_vars_by_atom_id[atom_id] = output_var
+            atom_ids_by_output_var[output_var] = atom_id
 
     for atom in atoms:
         if not isinstance(atom, dict):
             continue
+        normalized_dep_ids: list[str] = []
+        seen_dep_ids: set[str] = set()
+        for dep in (str(dep).strip() for dep in (atom.get("depends_on") or [])):
+            if not dep:
+                continue
+            normalized_dep = atom_ids_by_output_var.get(dep, dep)
+            if normalized_dep in seen_dep_ids:
+                continue
+            seen_dep_ids.add(normalized_dep)
+            normalized_dep_ids.append(normalized_dep)
+        atom["depends_on"] = normalized_dep_ids
         dependency_vars = [
             output_vars_by_atom_id[dep_id]
-            for dep_id in (str(dep).strip() for dep in (atom.get("depends_on") or []))
+            for dep_id in normalized_dep_ids
             if dep_id in output_vars_by_atom_id
         ]
         if not dependency_vars:
@@ -1621,6 +1650,7 @@ def _record_atom_lifecycle_event(event: dict[str, Any]) -> None:
     payload = dict(event)
     payload.setdefault("question", _current_question)
     payload.setdefault("todo_status_line", _todo_status_line())
+    payload.setdefault("benchmark_trace_id", _benchmark_trace_id_for_observability())
     _atom_lifecycle_events.append(payload)
     try:
         os.makedirs("results", exist_ok=True)
@@ -1628,6 +1658,168 @@ def _record_atom_lifecycle_event(event: dict[str, Any]) -> None:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
     except OSError:
         logger.warning("Failed to persist atom lifecycle event", exc_info=True)
+
+
+def _helper_decision_trace_path() -> Path:
+    """Return the JSONL path used for helper-call observability."""
+    return Path(_get_project_root()) / "results" / ".helper_decision_trace.jsonl"
+
+
+def _truncate_observability_value(value: Any, *, max_chars: int = 4000) -> Any:
+    """Serialize nested observability payloads without unbounded prompt bloat."""
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        if isinstance(value, str) and len(value) > max_chars:
+            return value[:max_chars].rstrip() + " ... [truncated]"
+        return value
+    if hasattr(value, "model_dump"):
+        try:
+            return _truncate_observability_value(value.model_dump(), max_chars=max_chars)
+        except Exception:
+            return repr(value)
+    if isinstance(value, dict):
+        return {
+            str(key): _truncate_observability_value(item, max_chars=max_chars)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple, set)):
+        return [
+            _truncate_observability_value(item, max_chars=max_chars)
+            for item in value
+        ]
+    return repr(value)
+
+
+def _benchmark_trace_id_for_observability() -> str | None:
+    """Best-effort current benchmark trace_id, available for direct-backend runs."""
+    try:
+        from Core.MCP.tool_consolidation import CURRENT_TRACE_ID
+
+        trace_id = str(CURRENT_TRACE_ID.get() or "").strip()
+        return trace_id or None
+    except Exception:
+        return None
+
+
+def _serialize_helper_result_meta(meta: Any) -> dict[str, Any]:
+    """Extract stable routing/fallback metadata from llm_client structured calls."""
+    warnings = [str(item) for item in (getattr(meta, "warnings", None) or []) if str(item).strip()]
+    warning_records = _truncate_observability_value(
+        getattr(meta, "warning_records", None) or []
+    )
+    routing_trace_raw = getattr(meta, "routing_trace", None)
+    routing_trace = (
+        _truncate_observability_value(routing_trace_raw)
+        if isinstance(routing_trace_raw, dict)
+        else None
+    )
+    attempted_models = []
+    if isinstance(routing_trace, dict):
+        attempted_models = [
+            str(model).strip()
+            for model in (routing_trace.get("attempted_models") or [])
+            if str(model).strip()
+        ]
+    selected_model = ""
+    if isinstance(routing_trace, dict):
+        selected_model = str(routing_trace.get("selected_model") or "").strip()
+    fallback_used = any(
+        warning.startswith(("FALLBACK:", "STICKY_FALLBACK:"))
+        for warning in warnings
+    ) or (len(attempted_models) > 1 and bool(selected_model) and selected_model != attempted_models[0])
+
+    usage = getattr(meta, "usage", None)
+    return {
+        "requested_model": str(getattr(meta, "requested_model", "") or "").strip() or None,
+        "resolved_model": str(getattr(meta, "resolved_model", "") or "").strip() or None,
+        "execution_model": str(getattr(meta, "execution_model", "") or "").strip() or None,
+        "routing_trace": routing_trace,
+        "warnings": warnings,
+        "warning_records": warning_records,
+        "fallback_used": bool(fallback_used),
+        "usage": _truncate_observability_value(usage) if isinstance(usage, dict) else None,
+        "cost": getattr(meta, "cost", None),
+        "finish_reason": str(getattr(meta, "finish_reason", "") or "").strip() or None,
+    }
+
+
+def _record_helper_decision_event(event: dict[str, Any]) -> None:
+    """Persist one helper decision event for benchmark diagnosis."""
+    payload = dict(event)
+    payload.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+    payload.setdefault("question", _current_question or _current_semantic_plan_question or "")
+    payload.setdefault("todo_status_line", _todo_status_line())
+    payload.setdefault("benchmark_trace_id", _benchmark_trace_id_for_observability())
+    _helper_decision_events.append(payload)
+    try:
+        trace_path = _helper_decision_trace_path()
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        with trace_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError:
+        logger.warning("Failed to persist helper decision event", exc_info=True)
+
+
+async def _call_helper_structured(
+    *,
+    model: str,
+    messages: list[dict[str, Any]],
+    response_model: Any,
+    task: str,
+    trace_id: str,
+    input_state: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> tuple[Any, Any]:
+    """Run one structured helper LLM call and persist diagnostic provenance."""
+    from llm_client import acall_llm_structured
+
+    base_event = {
+        "event_type": "helper_structured_call",
+        "task": task,
+        "helper_trace_id": trace_id,
+        "requested_model": model,
+        "question": str(
+            (input_state or {}).get("question")
+            or _current_question
+            or _current_semantic_plan_question
+            or ""
+        ).strip(),
+        "configured_fallback_models": [
+            str(name).strip()
+            for name in (kwargs.get("fallback_models") or [])
+            if str(name).strip()
+        ],
+        "input_state": _truncate_observability_value(input_state or {}),
+        "messages": _truncate_observability_value(messages),
+    }
+    try:
+        parsed, meta = await acall_llm_structured(
+            model,
+            messages,
+            response_model=response_model,
+            task=task,
+            trace_id=trace_id,
+            max_budget=0,
+            **kwargs,
+        )
+    except Exception as exc:
+        _record_helper_decision_event(
+            {
+                **base_event,
+                "status": "error",
+                "error": str(exc),
+            }
+        )
+        raise
+
+    _record_helper_decision_event(
+        {
+            **base_event,
+            "status": "ok",
+            "decision_payload": _truncate_observability_value(parsed),
+            **_serialize_helper_result_meta(meta),
+        }
+    )
+    return parsed, meta
 
 
 def _todo_dependencies_satisfied(atom: dict[str, Any] | None) -> bool:
@@ -1823,7 +2015,7 @@ async def _infer_atom_completion_with_llm(
 ) -> dict[str, Any] | None:
     """Ask a small internal judge whether the current atom is fully resolved."""
     from pydantic import BaseModel, Field
-    from llm_client import acall_llm_structured, render_prompt
+    from llm_client import render_prompt
 
     class AtomCompletionDecision(BaseModel):
         should_mark_done: bool = Field(
@@ -1877,13 +2069,21 @@ async def _infer_atom_completion_with_llm(
     model, helper_kwargs = _helper_structured_llm_policy(num_retries=2)
     trace_id = f"digimon.atom_completion.{tool_name}.{uuid.uuid4().hex[:8]}"
     try:
-        decision, _meta = await acall_llm_structured(
-            model,
-            messages,
+        decision, _meta = await _call_helper_structured(
+            model=model,
+            messages=messages,
             response_model=AtomCompletionDecision,
             task="digimon.atom_completion",
             trace_id=trace_id,
-            max_budget=0,
+            input_state={
+                "tool_name": tool_name,
+                "method": method,
+                "atom_id": str(atom.get("atom_id") or ""),
+                "atom_sub_question": str(atom.get("sub_question") or ""),
+                "todo_content": str(todo.get("content") or ""),
+                "effective_query": effective_query,
+                "dependency_values": dependency_values,
+            },
             **helper_kwargs,
         )
     except Exception as exc:
@@ -1923,7 +2123,7 @@ async def _infer_contextual_place_completion_with_llm(
 ) -> dict[str, Any] | None:
     """Judge whether indirect but focused text evidence is enough to resolve a place relation atom."""
     from pydantic import BaseModel, Field
-    from llm_client import acall_llm_structured, render_prompt
+    from llm_client import render_prompt
 
     class PlaceCompletionDecision(BaseModel):
         should_mark_done: bool = Field(
@@ -1979,13 +2179,21 @@ async def _infer_contextual_place_completion_with_llm(
     model, helper_kwargs = _helper_structured_llm_policy(num_retries=2)
     trace_id = f"digimon.atom_place_completion.{tool_name}.{uuid.uuid4().hex[:8]}"
     try:
-        decision, _meta = await acall_llm_structured(
-            model,
-            messages,
+        decision, _meta = await _call_helper_structured(
+            model=model,
+            messages=messages,
             response_model=PlaceCompletionDecision,
             task="digimon.atom_place_completion",
             trace_id=trace_id,
-            max_budget=0,
+            input_state={
+                "tool_name": tool_name,
+                "method": method,
+                "atom_id": str(atom.get("atom_id") or ""),
+                "atom_sub_question": str(atom.get("sub_question") or ""),
+                "todo_content": str(todo.get("content") or ""),
+                "effective_query": effective_query,
+                "dependency_values": dependency_values,
+            },
             **helper_kwargs,
         )
     except Exception as exc:
@@ -2462,7 +2670,7 @@ async def _infer_bridge_candidate_with_llm(
             }
 
     from pydantic import BaseModel, Field
-    from llm_client import acall_llm_structured, render_prompt
+    from llm_client import render_prompt
 
     class BridgeDecision(BaseModel):
         should_advance: bool = Field(
@@ -2499,13 +2707,20 @@ async def _infer_bridge_candidate_with_llm(
     model, helper_kwargs = _helper_structured_llm_policy(num_retries=2)
     trace_id = f"digimon.atom_bridge.{tool_name}.{uuid.uuid4().hex[:8]}"
     try:
-        decision, _meta = await acall_llm_structured(
-            model,
-            messages,
+        decision, _meta = await _call_helper_structured(
+            model=model,
+            messages=messages,
             response_model=BridgeDecision,
             task="digimon.atom_bridge",
             trace_id=trace_id,
-            max_budget=0,
+            input_state={
+                "tool_name": tool_name,
+                "method": method,
+                "atom_id": str(atom.get("atom_id") or ""),
+                "downstream_atom_id": str(downstream_atom.get("atom_id") or ""),
+                "source_entity": str(payload.get("canonical_name") or payload.get("entity_id") or ""),
+                "candidate_names": [str(c.get("value") or "") for c in candidates if isinstance(c, dict)],
+            },
             **helper_kwargs,
         )
     except Exception as exc:
@@ -2732,6 +2947,7 @@ async def _maybe_complete_active_atom_from_payload(
                     for update in direct_candidate_updates
                     if _update_matches_subject_anchor(update, subject_aliases)
                 ]
+                allow_bridge_autocomplete = not _atom_disallows_bridge_autocomplete(atom)
                 if anchored_direct_updates:
                     best_update = _best_atom_autocomplete_update(
                         anchored_direct_updates,
@@ -2739,7 +2955,8 @@ async def _maybe_complete_active_atom_from_payload(
                     )
                 else:
                     best_update = _best_atom_autocomplete_update(
-                        bridge_candidate_updates or direct_candidate_updates,
+                        direct_candidate_updates
+                        or (bridge_candidate_updates if allow_bridge_autocomplete else []),
                         answer_kind=answer_kind,
                     )
                 if best_update:
@@ -2903,6 +3120,28 @@ def _atom_requires_subject_chunk_probe(atom: dict[str, Any] | None) -> bool:
     if not probe:
         return False
     return bool(re.search(r"\b(named after|namesake|meaning)\b", probe))
+
+
+def _atom_disallows_bridge_autocomplete(atom: dict[str, Any] | None) -> bool:
+    """Return True when bridge-style graph jumps are too lossy for the current atom."""
+    if not isinstance(atom, dict):
+        return False
+    if _normalize_answer_kind(str(atom.get("answer_kind") or "")) != "entity":
+        return False
+    probe = str(atom.get("sub_question") or "").strip().lower()
+    if not probe:
+        return False
+    structural_markers = (
+        "season",
+        "episode",
+        "chapter",
+        "volume",
+        "part ",
+        "round",
+        "book ",
+        "installment",
+    )
+    return any(marker in probe for marker in structural_markers)
 
 
 _ENTITY_HINT_RE = re.compile(
@@ -8164,7 +8403,7 @@ async def select_analysis_mode(
     """
     await _ensure_initialized()
 
-    from llm_client import render_prompt, acall_llm_structured
+    from llm_client import render_prompt
     from pydantic import BaseModel, Field
 
     class AnalysisModeDecision(BaseModel):
@@ -8199,11 +8438,17 @@ async def select_analysis_mode(
 
     try:
         _sam_trace = f"digimon.select_analysis_mode.{dataset_name or 'none'}.{uuid.uuid4().hex[:8]}"
-        decision, meta = await acall_llm_structured(
-            model, messages, response_model=AnalysisModeDecision,
+        decision, meta = await _call_helper_structured(
+            model=model,
+            messages=messages,
+            response_model=AnalysisModeDecision,
             task="digimon.select_analysis_mode",
             trace_id=_sam_trace,
-            max_budget=0,
+            input_state={
+                "dataset_name": dataset_name,
+                "target_analysis": target_analysis,
+                "available_resources_count": len(resources),
+            },
             **helper_kwargs,
         )
         logger.info(
@@ -8254,7 +8499,6 @@ if BENCHMARK_MODE:
         global _current_semantic_plan_question
         await _ensure_initialized()
 
-        from llm_client import acall_llm_structured
         from pydantic import BaseModel, Field
         from typing import Literal
 
@@ -8356,13 +8600,13 @@ if BENCHMARK_MODE:
         )[1]
         revise_model, revise_call_kwargs = _helper_structured_llm_policy(num_retries=2)
         try:
-            plan, _meta = await acall_llm_structured(
-                plan_model,
-                messages,
+            plan, _meta = await _call_helper_structured(
+                model=plan_model,
+                messages=messages,
                 response_model=SemanticPlan,
                 task="digimon.semantic_plan",
                 trace_id=trace_id,
-                max_budget=0,
+                input_state={"question": question, "phase": "draft"},
                 **plan_call_kwargs,
             )
 
@@ -8402,13 +8646,13 @@ if BENCHMARK_MODE:
 
             revised_trace_id = f"digimon.semantic_plan.revise.{uuid.uuid4().hex[:8]}"
             try:
-                revised_plan, _rev_meta = await acall_llm_structured(
-                    revise_model,
-                    critique_messages,
+                revised_plan, _rev_meta = await _call_helper_structured(
+                    model=revise_model,
+                    messages=critique_messages,
                     response_model=SemanticPlan,
                     task="digimon.semantic_plan.revise",
                     trace_id=revised_trace_id,
-                    max_budget=0,
+                    input_state={"question": question, "phase": "revise", "draft_plan": plan.model_dump()},
                     **revise_call_kwargs,
                 )
                 plan = revised_plan
@@ -8435,13 +8679,13 @@ if BENCHMARK_MODE:
                 ]
                 repair_trace_id = f"digimon.semantic_plan.scope_repair.{uuid.uuid4().hex[:8]}"
                 try:
-                    repaired_plan, _repair_meta = await acall_llm_structured(
-                        revise_model,
-                        repair_messages,
+                    repaired_plan, _repair_meta = await _call_helper_structured(
+                        model=revise_model,
+                        messages=repair_messages,
                         response_model=SemanticPlan,
                         task="digimon.semantic_plan.scope_repair",
                         trace_id=repair_trace_id,
-                        max_budget=0,
+                        input_state={"question": question, "phase": "scope_repair", "prior_plan": plan.model_dump()},
                         **revise_call_kwargs,
                     )
                     plan = repaired_plan
@@ -8577,7 +8821,6 @@ if BENCHMARK_MODE:
         """
         await _ensure_initialized()
 
-        from llm_client import acall_llm_structured
         from pydantic import BaseModel, Field
 
         class BridgeDecision(BaseModel):
@@ -8629,13 +8872,17 @@ if BENCHMARK_MODE:
         trace_id = f"digimon.bridge_disambiguate.{uuid.uuid4().hex[:8]}"
 
         try:
-            decision, _meta = await acall_llm_structured(
-                model,
-                messages,
+            decision, _meta = await _call_helper_structured(
+                model=model,
+                messages=messages,
                 response_model=BridgeDecision,
                 task="digimon.bridge_disambiguate",
                 trace_id=trace_id,
-                max_budget=0,
+                input_state={
+                    "question": question,
+                    "downstream_clue": downstream_clue,
+                    "candidate_names": [c["candidate"] for c in candidates],
+                },
                 **helper_kwargs,
             )
             # Ensure winner is one of provided candidates
