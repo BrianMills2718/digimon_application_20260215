@@ -180,8 +180,10 @@ single-run reruns on subsets, not a full 50q confirmation.
 - Prompt v3.6: Answer granularity, verification step, flexible relationships, short queries, quoted-anchor preservation
 - STAG_TURNS=6 default (configurable via Makefile, proven better than 4)
 - entity_search top_k=5 default (`10` was tested, worsened noise, and was reverted)
-- Plan #28 continuation: worktree artifact auto-detection + direct runtime-python wrapper + post-anchor bridge guard for anchored string entity hits
-- Bounded verification: `2hop__619265_45326` passed live after the bridge guard (`12/12`, 11 tool calls, `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T130547Z.json`)
+- Plan #28 continuation: worktree artifact auto-detection + direct runtime-python wrapper + post-anchor bridge guard for anchored string entity hits + helper/atom lifecycle traces + restored normal submit gate
+- Bounded verification: `2hop__619265_45326` now has two important live proofs:
+  - post-anchor bridge guard removed the `showtime` drift and restored a correct `12` answer in `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T011403Z.json`
+  - after restoring the normal pending-atom submit gate, the same question still ends only via forced-terminal acceptance in `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T012611Z.json`, so it is correct-but-not-grounded
 
 ## Active Work
 
@@ -208,8 +210,8 @@ Total per question: ~6s operators + 58-82s LLM (47-48 turns sequential).
 
 ## Next Actions
 
-1. **Validate helper fallback quality + observability before spending on the 19q gate** — the attempted fixed-setting run `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T131543Z.json` was aborted at `7/19` completed because semantic-plan / atom-completion helpers hit pervasive Gemini `429 RESOURCE_EXHAUSTED` failures. Plan #28 now routes those helper calls through configured `llm_client` fallbacks, but the follow-up smoke run `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T133705Z.json` regressed `619265` to predicted answer `10`, and the benchmark artifact still reported `fallback_used_any=false` despite live helper fallback warnings. Another triple-run now would still mix controller behavior with unresolved helper-fallback quality/observability drift.
-2. **Reclassify from artifacts after every change** — rerun `make truth-check` and regenerate the iteration report before updating narrative docs.
-3. **IEE family fix after the bridge guard** — 199513 / 354635 / 820301 remain the clearest stable-fail IEE cases.
-4. **Worktree dataset portability** — benchmark reruns from fresh worktrees may still need `--data-root <canonical-checkout>/Data` until the MuSiQue dataset is provisioned locally.
+1. **Reduce post-rejection control churn before spending on the 19q gate** — `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T012611Z.json` proves the bridge-drift bug is fixed, but the controller still burns the full 20-call budget after three `pending_atoms` submit rejections and only scores through forced-terminal acceptance. The next controller fix should help the agent either finish the remaining atom or terminate honestly much earlier.
+2. **Preserve rejected-submit provenance in top-level result fields** — the latest artifact records `submit_validation_reason_counts.pending_atoms=3`, but `submit_pending_atom_ids` is still empty because no successful submit occurred. The benchmark summary surface should retain the last rejected-submit payload.
+3. **Validate helper fallback quality + observability before spending on the 19q gate** — helper calls now follow configured `llm_client` fallbacks, but the earlier smoke run `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T133705Z.json` still regressed `619265` to `10`, and nested helper fallback usage is not yet fully surfaced in benchmark provenance.
+4. **Reclassify from artifacts after every change** — rerun `make truth-check` and regenerate the iteration report before updating narrative docs.
 5. **50q confirmatory run only after the 19q ladder clears** — no decision-grade rerun before the fixed-setting 19q baseline exists.

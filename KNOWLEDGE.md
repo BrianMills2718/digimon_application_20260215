@@ -538,3 +538,29 @@ best-guess submissions. Any future tightening of this policy should be done
 carefully, because restoring a hard pending-atom submit gate will materially
 change benchmark behavior unless the forced-final path is redesigned at the
 same time.
+
+### 2026-04-04 — codex — bug-pattern
+**Restoring the normal pending-atom submit gate turns `619265` into an honest forced-terminal success, not a grounded controller pass.**
+After restoring strict rejection for normal `submit_answer` calls with pending
+atoms, the bounded rerun
+`results/MuSiQue_gpt-5-4-mini_consolidated_20260405T012611Z.json` still ended
+at the correct answer `12`, but only because the benchmark runner forced final
+acceptance after exhausting the 20-call retrieval budget. The artifact now
+records `submit_completion_mode=missing_required_submit`,
+`submit_forced_accept_on_budget_exhaustion=true`,
+`submit_validation_reason_counts.pending_atoms=3`,
+`primary_failure_class=control_churn`, and
+`secondary_failure_classes=["required_submit_missing"]`. Treat this as the
+current truthful diagnosis: the bridge-drift bug is fixed, but DIGIMON still
+cannot reliably convert that evidence into a grounded submit on this question.
+
+### 2026-04-04 — codex — integration-issue
+**Top-level benchmark result fields still lose pending-atom identity when a run ends via forced terminalization instead of a successful submit.**
+In `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T012611Z.json`, the
+result correctly exposes `submit_validation_reason_counts.pending_atoms=3`, but
+top-level fields such as `submit_pending_atom_ids` and
+`submit_pending_atom_count` are empty because no successful `submit_answer`
+payload survived into final result harvesting. The detailed evidence still
+exists in `tool_calls`, `helper_decision_trace`, and `atom_lifecycle_trace`,
+but the summary surface is incomplete. The next observability repair should
+preserve the last rejected-submit payload in the final per-question result.

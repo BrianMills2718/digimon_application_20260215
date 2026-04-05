@@ -1528,15 +1528,44 @@ def _submit_tool_call_accepted(tool_call: dict[str, Any]) -> bool:
     return False
 
 
+def _parse_submit_result_preview(tool_call: dict[str, Any]) -> dict[str, Any] | None:
+    """Parse submit_answer JSON payloads from tool result previews when present."""
+    result_preview = tool_call.get("result_preview")
+    if not isinstance(result_preview, str) or not result_preview.strip():
+        return None
+    try:
+        payload = json.loads(result_preview)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def _derive_submit_observability(tool_calls: list[dict[str, Any]]) -> dict[str, Any]:
     """Derive submit-answer observability directly from observed tool calls."""
     submit_events: list[dict[str, Any]] = []
     successful_submit = False
+    last_pending_ids: list[str] = []
+    last_pending_atoms: int | None = None
+    last_todo_status_line: str | None = None
     for tool_call in tool_calls:
         tool_name = str(tool_call.get("tool", "")).strip()
         if not tool_name.endswith("submit_answer"):
             continue
         submit_events.append(tool_call)
+        parsed = _parse_submit_result_preview(tool_call)
+        if isinstance(parsed, dict):
+            raw_pending_ids = parsed.get("pending_ids")
+            if isinstance(raw_pending_ids, list):
+                last_pending_ids = [str(item).strip() for item in raw_pending_ids if str(item).strip()]
+            raw_pending_atoms = parsed.get("pending_atoms")
+            if raw_pending_atoms is not None:
+                try:
+                    last_pending_atoms = int(raw_pending_atoms)
+                except (TypeError, ValueError):
+                    last_pending_atoms = None
+            todo_status_line = parsed.get("todo_status_line")
+            if isinstance(todo_status_line, str) and todo_status_line.strip():
+                last_todo_status_line = todo_status_line.strip()
         if _submit_tool_call_accepted(tool_call):
             successful_submit = True
 
@@ -1548,6 +1577,11 @@ def _derive_submit_observability(tool_calls: list[dict[str, Any]]) -> dict[str, 
         "submit_answer_succeeded": successful_submit,
         "submit_validator_accepted": successful_submit,
         "required_submit_missing": bool(submit_events) and not successful_submit,
+        "submit_pending_atom_ids": last_pending_ids,
+        "submit_pending_atom_count": (
+            last_pending_atoms if last_pending_atoms is not None else len(last_pending_ids)
+        ),
+        "submit_todo_status_line": last_todo_status_line,
         "submit_completion_mode": (
             "grounded_submit"
             if successful_submit
@@ -2317,6 +2351,9 @@ async def run_agent(
             "submit_answer_succeeded": submit_answer_succeeded,
             "submit_validator_accepted": submit_validator_accepted,
             "required_submit_missing": required_submit_missing,
+            "submit_pending_atom_ids": derived_submit.get("submit_pending_atom_ids"),
+            "submit_pending_atom_count": derived_submit.get("submit_pending_atom_count"),
+            "submit_todo_status_line": derived_submit.get("submit_todo_status_line"),
             "submit_forced_retry_on_budget_exhaustion": submit_forced_retry_on_budget_exhaustion,
             "submit_forced_accept_on_budget_exhaustion": submit_forced_accept_on_budget_exhaustion,
             "submit_completion_mode": submit_completion_mode,
@@ -3242,6 +3279,9 @@ async def main() -> None:
             "submit_answer_succeeded": agent_result.get("submit_answer_succeeded"),
             "submit_validator_accepted": agent_result.get("submit_validator_accepted"),
             "required_submit_missing": agent_result.get("required_submit_missing"),
+            "submit_pending_atom_ids": agent_result.get("submit_pending_atom_ids"),
+            "submit_pending_atom_count": agent_result.get("submit_pending_atom_count"),
+            "submit_todo_status_line": agent_result.get("submit_todo_status_line"),
             "submit_forced_retry_on_budget_exhaustion": agent_result.get("submit_forced_retry_on_budget_exhaustion"),
             "submit_forced_accept_on_budget_exhaustion": agent_result.get("submit_forced_accept_on_budget_exhaustion"),
             "submit_completion_mode": agent_result.get("submit_completion_mode"),
@@ -3376,6 +3416,12 @@ async def main() -> None:
             lines.append(
                 "  HelperModels: "
                 + ", ".join(str(model_name) for model_name in (record.get("helper_models_used") or []))
+            )
+        if int(record.get("submit_pending_atom_count") or 0) > 0:
+            lines.append(
+                "  SubmitPending: "
+                f"{int(record.get('submit_pending_atom_count') or 0)} "
+                + ", ".join(str(item) for item in (record.get("submit_pending_atom_ids") or []))
             )
         atom_trace_events = int(record.get("atom_lifecycle_event_count") or 0)
         if atom_trace_events:

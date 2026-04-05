@@ -382,6 +382,36 @@ decision:
   succeeded and the run passed. Treat this as the next controller-policy
   question; do not silently tighten it without redesigning the forced-final
   behavior at the same time.
+- Implemented the controller-policy tightening as a bounded slice:
+  normal `submit_answer` now rejects pending semantic-plan atoms again, while
+  the benchmark runner records pending-submit provenance fields and still
+  preserves the forced-terminal acceptance path when the tool budget is
+  exhausted.
+- Verified the tightened gate deterministically with:
+  - `python -m compileall digimon_mcp_stdio_server.py eval/run_agent_benchmark.py`
+  - `/home/brian/projects/Digimon_for_KG_application/.venv/bin/pytest -q tests/unit/test_semantic_plan_query_contract.py tests/unit/test_benchmark_tool_modes.py`
+    → `62 passed`
+- Verified the tightened gate in a bounded live rerun:
+  - command:
+    `python scripts/run_with_digimon_python.py eval/run_agent_benchmark.py --agent-spec none --allow-missing-agent-spec --missing-agent-spec-reason relocated --dataset MuSiQue --data-root /home/brian/projects/Digimon_for_KG_application/Data --questions 2hop__619265_45326 --model openrouter/openai/gpt-5.4-mini --backend direct --retrieval-stagnation-turns 6 --question-delay 0 --timeout 180 --tag plan28_submit_gate_smoke_r1`
+  - artifact: `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T012611Z.json`
+  - outcome: still `12/12`, but no grounded submit occurred
+  - truthful interpretation:
+    - `submit_answer` was rejected three times for `pending_atoms`
+    - the agent then churned through the remaining budget
+    - benchmark finalization forced acceptance after budget exhaustion
+    - result classification became
+      `submit_completion_mode=missing_required_submit`,
+      `submit_forced_accept_on_budget_exhaustion=true`,
+      `primary_failure_class=control_churn`,
+      `secondary_failure_classes=["required_submit_missing"]`
+- New blocker after the tightened gate:
+  the bridge-drift class is fixed, but `619265` still reaches a correct answer
+  only through forced-terminal acceptance. The next work should focus on
+  reducing post-rejection control churn and preserving the last rejected-submit
+  payload in top-level benchmark result fields, because
+  `submit_pending_atom_ids` is still empty in the final artifact when no
+  successful submit occurs.
 
 ---
 

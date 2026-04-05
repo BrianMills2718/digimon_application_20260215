@@ -243,6 +243,31 @@ def test_helper_trace_provenance_counts_helper_fallbacks() -> None:
     ]
 
 
+def test_derive_submit_observability_surfaces_pending_atoms() -> None:
+    """Submit observability should retain pending atom IDs from validator rejections."""
+    derived = _derive_submit_observability(
+        [
+            {
+                "tool": "submit_answer",
+                "result_preview": json.dumps(
+                    {
+                        "status": "rejected",
+                        "pending_atoms": 2,
+                        "pending_ids": ["A1", "A2"],
+                        "todo_status_line": "[TODO: 0/2 done] [ ] A1 | [ ] A2",
+                        "validation_error": {"reason_code": "pending_atoms"},
+                    }
+                ),
+            }
+        ]
+    )
+
+    assert derived["submit_answer_succeeded"] is False
+    assert derived["submit_pending_atom_count"] == 2
+    assert derived["submit_pending_atom_ids"] == ["A1", "A2"]
+    assert derived["submit_todo_status_line"] == "[TODO: 0/2 done] [ ] A1 | [ ] A2"
+
+
 def test_read_atom_lifecycle_events_since_prefers_benchmark_trace_id(tmp_path) -> None:
     """Atom lifecycle harvesting should use benchmark trace IDs when present."""
     trace_path = tmp_path / "results" / ".atom_lifecycle_events.jsonl"

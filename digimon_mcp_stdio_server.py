@@ -886,6 +886,31 @@ def _pending_todo_ids_for_submit() -> list[str]:
     return pending_ids
 
 
+def _pending_submit_validation_payload() -> dict[str, Any] | None:
+    """Return a structured submit rejection payload when semantic-plan atoms remain."""
+    pending_ids = _pending_todo_ids_for_submit()
+    if not pending_ids:
+        return None
+    return {
+        "status": "rejected",
+        "error": "Cannot submit while semantic-plan atoms remain unresolved.",
+        "pending_atoms": len(pending_ids),
+        "pending_ids": pending_ids,
+        "todo_status_line": _todo_status_line(),
+        "validation_error": {
+            "reason_code": "pending_atoms",
+            "message": (
+                "Resolve or explicitly exhaust the remaining semantic-plan atoms "
+                "before normal submission."
+            ),
+        },
+        "recovery_policy": {
+            "new_evidence_required_before_retry": True,
+            "requires_forced_terminal_path": True,
+        },
+    }
+
+
 def _semantic_plan_atom_by_id(atom_id: str) -> dict[str, Any] | None:
     """Lookup semantic-plan atom by atom_id."""
     aid = (atom_id or "").strip()
@@ -9048,9 +9073,9 @@ if BENCHMARK_MODE:
                 "Reasoning cannot be empty. Provide a concise evidence-grounded justification.",
             )
 
-        # Atom-completion gate removed: allow partial submission when evidence is exhausted.
-        # An imperfect answer scores better via LLM-judge than no answer (missing_required_submit).
-        # Agents are instructed via prompt to aim for complete atoms, but not blocked from submitting.
+        pending_validation = _pending_submit_validation_payload()
+        if pending_validation is not None:
+            return json.dumps(pending_validation)
 
         _reset_chunk_dedup()  # reset seen chunks for next question
         return json.dumps(
@@ -9058,6 +9083,9 @@ if BENCHMARK_MODE:
                 "status": "submitted",
                 "answer": normalized_answer,
                 "expected_answer_kind": _current_expected_answer_kind or None,
+                "pending_atoms": 0,
+                "pending_ids": [],
+                "todo_status_line": _todo_status_line(),
             }
         )
 

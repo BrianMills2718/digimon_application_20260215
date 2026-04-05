@@ -1,7 +1,6 @@
 """Unit tests for semantic-plan query rewriting in benchmark mode."""
 
 from __future__ import annotations
-
 from types import SimpleNamespace
 
 import llm_client
@@ -223,6 +222,31 @@ def test_pending_todo_ids_for_submit_reports_unfinished_atoms() -> None:
     dms._todos[1]["status"] = "in_progress"
 
     assert dms._pending_todo_ids_for_submit() == ["a2"]
+
+
+def test_pending_submit_validation_payload_reports_unfinished_atoms() -> None:
+    """Normal submit guard should report unresolved semantic-plan atoms structurally."""
+    _prime_lady_godiva_plan()
+    dms._todos[0].update({"status": "done", "answer": "Mercia"})
+    dms._todos[1]["status"] = "in_progress"
+
+    payload = dms._pending_submit_validation_payload()
+
+    assert payload is not None
+    assert payload["status"] == "rejected"
+    assert payload["pending_atoms"] == 1
+    assert payload["pending_ids"] == ["a2"]
+    assert payload["validation_error"]["reason_code"] == "pending_atoms"
+    assert payload["recovery_policy"]["new_evidence_required_before_retry"] is True
+
+
+def test_pending_submit_validation_payload_allows_completed_plans() -> None:
+    """Submit guard should clear once all semantic-plan atoms are complete."""
+    _prime_lady_godiva_plan()
+    dms._todos[0].update({"status": "done", "answer": "Mercia"})
+    dms._todos[1].update({"status": "done", "answer": "918"})
+
+    assert dms._pending_submit_validation_payload() is None
 
 
 def test_rewrites_off_atom_query_back_to_active_atom() -> None:
