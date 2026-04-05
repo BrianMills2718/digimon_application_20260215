@@ -85,6 +85,31 @@ def test_forwards_done_atom_answer_into_dependent_query() -> None:
     assert "abolished" in effective.lower()
 
 
+def test_query_contract_applies_atom_recovery_hint_to_active_atom() -> None:
+    """Active-atom retrieval should reuse the latest recovery hint when the query is still generic."""
+    _prime_lady_godiva_plan()
+    dms._atom_recovery_hints["a1"] = {
+        "atom_id": "a1",
+        "diagnosis": "Graph profile alone does not resolve the birthplace.",
+        "suggested_query": "Lady Godiva Mercia birthplace",
+        "target_tool_name": "chunk_retrieve",
+        "target_method": "semantic",
+        "next_action": "Search source chunks linking Lady Godiva directly to Mercia.",
+        "avoid_values": ["England"],
+        "confidence": 0.88,
+        "fingerprint": "demo",
+    }
+
+    effective, contract = dms._build_retrieval_query_contract(
+        "When was Lady Godiva's birthplace abolished?",
+        tool_name="chunk_text_search",
+    )
+
+    assert effective == "Lady Godiva Mercia birthplace"
+    assert contract["recovery_hint"]["suggested_query"] == "Lady Godiva Mercia birthplace"
+    assert "atom_reflection_query_override" in contract["rewrite_reason"]
+
+
 def test_extracts_done_atom_value_from_content_arrow_notation() -> None:
     """TODO content should still be usable when agent encodes result inline."""
     _prime_lady_godiva_plan()
@@ -213,6 +238,46 @@ def test_normalize_semantic_plan_language_maps_output_var_dependency_ids() -> No
 
     assert normalized["atoms"][1]["depends_on"] == ["a1"]
     assert "series_with_episode" not in normalized["atoms"][1]["sub_question"]
+
+
+def test_infer_answer_kind_uses_text_for_how_were_questions() -> None:
+    """Method/action questions should infer text rather than entity/number."""
+    assert (
+        dms._infer_answer_kind(
+            "How were the people from whom new coins were a proclamation of independence expelled?"
+        )
+        == "text"
+    )
+
+
+def test_normalize_answer_kind_supports_text_aliases() -> None:
+    """Semantic-plan normalization should preserve phrase-style answer kinds."""
+    assert dms._normalize_answer_kind("text") == "text"
+    assert dms._normalize_answer_kind("phrase") == "text"
+    assert dms._normalize_answer_kind("method") == "text"
+
+
+def test_between_endpoint_guard_rejects_endpoint_answers() -> None:
+    """A between-country atom must not accept either endpoint itself."""
+    atom = {
+        "atom_id": "a2",
+        "sub_question": "What is the country between Thailand and A Lim's country?",
+        "answer_kind": "entity",
+        "depends_on": ["a1"],
+    }
+    dms._current_semantic_plan.clear()
+    dms._current_semantic_plan.update({"atoms": [atom]})
+    dms._todos.clear()
+    dms._todos.extend(
+        [
+            {"id": "a1", "content": "Resolve A Lim's country", "status": "done", "answer": "Laos"},
+            {"id": "a2", "content": "Resolve the between-country", "status": "in_progress"},
+        ]
+    )
+
+    assert dms._answer_matches_between_endpoint(atom, "Laos") is True
+    assert dms._answer_matches_between_endpoint(atom, "Thailand") is True
+    assert dms._answer_matches_between_endpoint(atom, "Myanmar") is False
 
 
 def test_pending_todo_ids_for_submit_reports_unfinished_atoms() -> None:
@@ -613,7 +678,12 @@ async def test_maybe_complete_active_atom_from_payload_updates_todos(monkeypatch
         }
 
     monkeypatch.setattr(dms, "_infer_atom_completion_with_llm", _fake_infer)
-    monkeypatch.setattr(dms, "_record_atom_lifecycle_event", lambda event: captured_events.append(dict(event)))
+    def _capture_event(event):
+        payload = dict(event)
+        captured_events.append(payload)
+        dms._atom_lifecycle_events.append(payload)
+
+    monkeypatch.setattr(dms, "_record_atom_lifecycle_event", _capture_event)
 
     update = await dms._maybe_complete_active_atom_from_payload(
         {
@@ -1540,6 +1610,98 @@ async def test_bridge_probe_uses_downstream_discriminant_not_subject_tokens(
 
 
 @pytest.mark.asyncio
+async def test_repeated_unresolved_atom_generates_recovery_reflection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated unresolved attempts should produce a structured recovery hint."""
+    _prime_lady_godiva_plan()
+
+    captured_events: list[dict[str, object]] = []
+
+    async def _fake_completion(atom, todo, payload, *, tool_name: str, method: str):
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": "a1",
+            "confidence": 0.28,
+            "rationale": "The chunk mentions England broadly but does not directly answer Lady Godiva's birthplace.",
+            "tool_name": tool_name,
+            "method": method,
+        }
+
+    async def _fake_helper_call(model, messages, response_model, **kwargs):
+        return (
+            response_model(
+                diagnosis="The controller is repeating broad birthplace queries instead of probing the supported bridge entity.",
+                suggested_query="Lady Godiva Mercia birthplace",
+                target_tool_name="chunk_retrieve",
+                target_method="semantic",
+                next_action="Search source chunks that mention Lady Godiva together with Mercia before trying to submit again.",
+                avoid_values=["England"],
+                confidence=0.91,
+            ),
+            SimpleNamespace(),
+        )
+
+    monkeypatch.setattr(dms, "_infer_atom_completion_with_llm", _fake_completion)
+    monkeypatch.setattr(dms, "_call_helper_structured", _fake_helper_call)
+    monkeypatch.setattr(
+        dms,
+        "_helper_structured_llm_policy",
+        lambda num_retries=2: ("openrouter/openai/gpt-5.4-mini", {"num_retries": num_retries}),
+    )
+    monkeypatch.setattr(
+        llm_client,
+        "render_prompt",
+        lambda *args, **kwargs: [{"role": "user", "content": "reflect"}],
+    )
+
+    def _capture_event(event):
+        payload = dict(event)
+        captured_events.append(payload)
+        dms._atom_lifecycle_events.append(payload)
+
+    monkeypatch.setattr(dms, "_record_atom_lifecycle_event", _capture_event)
+
+    payload = {
+        "chunks": [
+            {
+                "chunk_id": "chunk_84",
+                "text": "Lady Godiva was associated with England, but this does not directly resolve her birthplace.",
+            }
+        ],
+        "query_contract": {
+            "effective_query": "Lady Godiva birthplace",
+        },
+    }
+
+    first_update = await dms._maybe_complete_active_atom_from_payload(
+        payload,
+        tool_name="chunk_retrieve",
+        method="semantic",
+    )
+    second_update = await dms._maybe_complete_active_atom_from_payload(
+        payload,
+        tool_name="chunk_retrieve",
+        method="semantic",
+    )
+
+    assert first_update is not None
+    assert "reflection_hint" not in first_update
+    assert second_update is not None
+    assert second_update["event"] == "atom_judged_unresolved"
+    assert second_update["reflection_hint"]["suggested_query"] == "Lady Godiva Mercia birthplace"
+    assert second_update["next_action"].startswith("Search source chunks")
+    assert any(event["event"] == "atom_reflection_generated" for event in captured_events)
+
+    effective, contract = dms._build_retrieval_query_contract(
+        "When was Lady Godiva's birthplace abolished?",
+        tool_name="chunk_text_search",
+    )
+    assert effective == "Lady Godiva Mercia birthplace"
+    assert contract["recovery_hint"]["target_tool_name"] == "chunk_retrieve"
+
+
+@pytest.mark.asyncio
 async def test_bridge_probe_strips_output_var_placeholders_from_query(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1689,6 +1851,218 @@ async def test_bridge_inference_accepts_probe_winner_at_configured_gap(
     assert update["event"] == "atom_autocomplete"
     assert update["resolved_value"] == "Mercia"
     assert update["resolution_mode"] == "bridge_probe"
+
+
+@pytest.mark.asyncio
+async def test_relation_sensitive_bridge_candidate_must_match_focused_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """High-risk relation atoms should reject bridge candidates when focused evidence supports another value."""
+    dms._current_question = (
+        "How were the people from whom new coins were a proclamation of independence by the Somali Muslim "
+        "Ajuran Empire expelled from the country between Thailand and A Lim's country?"
+    )
+    dms._current_semantic_plan.clear()
+    dms._current_semantic_plan.update(
+        {
+            "atoms": [
+                {
+                    "atom_id": "a1",
+                    "sub_question": "What is the country between Thailand and A Lim's country?",
+                    "depends_on": [],
+                    "operation": "relation",
+                    "answer_kind": "entity",
+                },
+                {
+                    "atom_id": "a2",
+                    "sub_question": "How were the people (from a1) expelled?",
+                    "depends_on": ["a1"],
+                    "operation": "lookup",
+                    "answer_kind": "text",
+                },
+            ]
+        }
+    )
+    dms._todos.clear()
+    dms._todos.extend(
+        [
+            {"id": "a1", "content": "Resolve the country between Thailand and A Lim's country.", "status": "in_progress"},
+            {"id": "a2", "content": "How were the people expelled?", "status": "pending"},
+        ]
+    )
+
+    async def _fake_completion(atom, todo, payload, *, tool_name: str, method: str):
+        effective_query = str((payload.get("query_contract") or {}).get("effective_query") or "")
+        if effective_query:
+            return {
+                "event": "atom_autocomplete",
+                "atom_id": "a1",
+                "resolved_value": "Myanmar",
+                "confidence": 0.94,
+                "evidence_refs": ["chunk_225"],
+                "rationale": "The focused chunk explicitly identifies Myanmar as the country bordering Thailand and Laos.",
+                "tool_name": tool_name,
+                "method": method,
+            }
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": "a1",
+            "confidence": 0.18,
+            "rationale": "No direct answer yet.",
+            "tool_name": tool_name,
+            "method": method,
+        }
+
+    async def _fake_bridge(atom, todo, payload, *, tool_name: str, method: str):
+        return {
+            "event": "atom_autocomplete",
+            "atom_id": "a1",
+            "resolved_value": "China",
+            "confidence": 0.88,
+            "evidence_refs": ["chunk_7829"],
+            "rationale": "China looked like the best downstream bridge.",
+            "tool_name": tool_name,
+            "method": method,
+            "resolution_mode": "bridge_probe",
+        }
+
+    async def _fake_chunk_text_search(*, query_text: str, dataset_name: str, top_k: int = 2, entity_names=None):
+        lowered = query_text.lower()
+        assert "china" in lowered
+        assert "country" in lowered
+        assert "between" in lowered
+        assert "thailand" in lowered
+        return (
+            '{"chunks":[{"chunk_id":"chunk_225","text":"Myanmar borders China, Thailand and Laos."}]}'
+        )
+
+    monkeypatch.setattr(dms, "_infer_atom_completion_with_llm", _fake_completion)
+    monkeypatch.setattr(dms, "_infer_bridge_candidate_with_llm", _fake_bridge)
+    monkeypatch.setattr(dms, "chunk_text_search", _fake_chunk_text_search)
+
+    update = await dms._maybe_complete_active_atom_from_payload(
+        {
+            "entity_id": "a lim",
+            "canonical_name": "A Lim",
+            "resolved_dataset_name": "MuSiQue",
+            "resolved_graph_reference_id": "MuSiQue_ERGraph",
+            "connected_entities": ["China", "Myanmar"],
+        },
+        tool_name="entity_info",
+        method="profile",
+    )
+
+    assert update is not None
+    assert update["event"] == "atom_judged_unresolved"
+    assert "supports 'Myanmar' rather than bridge candidate 'China'" in update["rationale"]
+    assert dms._todo_item_by_id("a1")["status"] == "in_progress"
+
+
+@pytest.mark.asyncio
+async def test_relation_sensitive_bridge_candidate_is_accepted_after_focused_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """High-risk relation atoms may still autocomplete when focused evidence confirms the bridge value."""
+    dms._current_question = (
+        "How were the people from whom new coins were a proclamation of independence by the Somali Muslim "
+        "Ajuran Empire expelled from the country between Thailand and A Lim's country?"
+    )
+    dms._current_semantic_plan.clear()
+    dms._current_semantic_plan.update(
+        {
+            "atoms": [
+                {
+                    "atom_id": "a1",
+                    "sub_question": "Who were the people from whom new coins were a proclamation of independence by the Somali Muslim Ajuran Empire?",
+                    "depends_on": [],
+                    "operation": "relation",
+                    "answer_kind": "entity",
+                },
+                {
+                    "atom_id": "a2",
+                    "sub_question": "How were those people expelled?",
+                    "depends_on": ["a1"],
+                    "operation": "lookup",
+                    "answer_kind": "text",
+                },
+            ]
+        }
+    )
+    dms._todos.clear()
+    dms._todos.extend(
+        [
+            {"id": "a1", "content": "Resolve the people from whom the Ajuran Empire declared independence.", "status": "in_progress"},
+            {"id": "a2", "content": "How were those people expelled?", "status": "pending"},
+        ]
+    )
+
+    async def _fake_completion(atom, todo, payload, *, tool_name: str, method: str):
+        effective_query = str((payload.get("query_contract") or {}).get("effective_query") or "")
+        if effective_query:
+            return {
+                "event": "atom_autocomplete",
+                "atom_id": "a1",
+                "resolved_value": "the Portuguese",
+                "confidence": 0.93,
+                "evidence_refs": ["chunk_0"],
+                "rationale": "The focused Ottoman Empire evidence directly names the Portuguese.",
+                "tool_name": tool_name,
+                "method": method,
+            }
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": "a1",
+            "confidence": 0.15,
+            "rationale": "Profile alone is too indirect.",
+            "tool_name": tool_name,
+            "method": method,
+        }
+
+    async def _fake_bridge(atom, todo, payload, *, tool_name: str, method: str):
+        return {
+            "event": "atom_autocomplete",
+            "atom_id": "a1",
+            "resolved_value": "the Portuguese",
+            "confidence": 0.84,
+            "evidence_refs": ["entity:ajuran empire"],
+            "rationale": "The Portuguese are the only candidate that fit the downstream expulsion clue.",
+            "tool_name": tool_name,
+            "method": method,
+            "resolution_mode": "bridge_inference",
+        }
+
+    async def _fake_chunk_text_search(*, query_text: str, dataset_name: str, top_k: int = 2, entity_names=None):
+        lowered = query_text.lower()
+        assert "portuguese" in lowered
+        assert "people" in lowered
+        assert "coins" in lowered
+        assert "independence" in lowered
+        assert "ajuran" in lowered
+        return (
+            '{"chunks":[{"chunk_id":"chunk_0","text":"The Somali Muslim Ajuran Empire proclaimed economic independence in regard to the Portuguese."}]}'
+        )
+
+    monkeypatch.setattr(dms, "_infer_atom_completion_with_llm", _fake_completion)
+    monkeypatch.setattr(dms, "_infer_bridge_candidate_with_llm", _fake_bridge)
+    monkeypatch.setattr(dms, "chunk_text_search", _fake_chunk_text_search)
+
+    update = await dms._maybe_complete_active_atom_from_payload(
+        {
+            "entity_id": "ajuran empire",
+            "canonical_name": "Ajuran Empire",
+            "resolved_dataset_name": "MuSiQue",
+            "resolved_graph_reference_id": "MuSiQue_ERGraph",
+            "connected_entities": ["Somalia", "the Portuguese"],
+        },
+        tool_name="entity_info",
+        method="profile",
+    )
+
+    assert update is not None
+    assert update["event"] == "atom_completed"
+    assert update["resolved_value"] == "the Portuguese"
+    assert update["resolution_mode"] == "bridge_inference_validated"
+    assert dms._todo_item_by_id("a1")["status"] == "done"
 
 
 @pytest.mark.asyncio

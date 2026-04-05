@@ -584,3 +584,23 @@ Outcome: `619265` still answered `12`, but now in `13` tool calls instead of
 `submit_completion_mode=grounded_submit`, `submit_forced_accept_on_budget_exhaustion=false`,
 and no remaining failure event codes. The first submit was rejected on `a2`,
 the loop pivoted once, then completed the atom and submitted cleanly.
+
+### 2026-04-04 — codex — best-practice
+**Repeated unresolved atom judgments should feed a typed recovery hint back into query rewriting, not just sit in traces.**
+Plan #28 now turns repeated `atom_judged_unresolved` events on the same active
+atom into an `atom_reflection_generated` lifecycle event plus a stored
+recovery hint (`suggested_query`, target surface, avoid-values, next action).
+The query-contract layer consumes that hint when the agent is still issuing a
+generic active-atom query, so the next retrieval step can materially change
+instead of repeating the same broad search. This keeps "reflection" bounded
+and controller-visible rather than inflating helper prompts.
+
+### 2026-04-04 — codex — integration-issue
+**The first live reflection probe on `754156` was inconclusive because the question timed out before any tool call.**
+The smoke run
+`results/MuSiQue_gpt-5-4-mini_consolidated_20260405T024436Z.json` ended with
+`QUESTION_TIMEOUT`, `n_tool_calls=0`, empty helper/atom traces, and no
+provider failure. Treat this as a harness/runtime issue, not evidence for or
+against the new reflection loop. The next live validation step should rerun
+the same question once first-turn timeout behavior is understood, because this
+artifact contains no controller signal.

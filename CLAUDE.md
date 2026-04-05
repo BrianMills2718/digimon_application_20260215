@@ -159,6 +159,11 @@ single benchmark answer path.
   improve more than the currently failing question.
 - If a candidate fix would only make one benchmark case pass without improving
   the underlying retrieval system, reject it and keep investigating.
+- Do not encode benchmark-shaped semantic traps as helper-prompt rules. If a
+  fix is real, it should live in controller policy, tool contracts, validation,
+  ranking/disambiguation logic, or typed post-checks. Prompt clauses such as
+  "for this kind of country question, don't answer with the endpoint" are not
+  acceptable benchmark fixes even if they sound superficially general.
 
 ## Core Architecture
 

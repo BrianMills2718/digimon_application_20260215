@@ -437,6 +437,35 @@ decision:
   `619265` is now a genuinely grounded pass under the current controller stack.
   The next diagnostic target should be another premature-submit family question
   such as `754156` or `199513`, not more churn on `619265`.
+- Implemented a bounded reflection loop for stalled atoms:
+  - repeated `atom_judged_unresolved` events on the same active atom now
+    trigger a typed recovery helper that emits `diagnosis`, `suggested_query`,
+    target surface/method, avoid-values, and one concrete next action
+  - the resulting `atom_reflection_generated` event is persisted into atom
+    lifecycle traces
+  - the active-atom query-contract layer consumes the recovery hint when the
+    agent is still issuing a generic atom query, so the next retrieval step can
+    materially change instead of replaying the same broad search
+- Verified the reflection slice with:
+  - `python -m compileall digimon_mcp_stdio_server.py`
+  - `/home/brian/projects/Digimon_for_KG_application/.venv/bin/pytest -q tests/unit/test_semantic_plan_query_contract.py tests/unit/test_benchmark_tool_modes.py`
+    → `71 passed`
+- First live reflection probe status:
+  - command:
+    `python scripts/run_with_digimon_python.py eval/run_agent_benchmark.py --agent-spec none --allow-missing-agent-spec --missing-agent-spec-reason relocated --dataset MuSiQue --data-root /home/brian/projects/Digimon_for_KG_application/Data --questions 4hop3__754156_88460_30152_20999 --model openrouter/openai/gpt-5.4-mini --backend direct --retrieval-stagnation-turns 6 --question-delay 0 --timeout 180 --tag plan28_atom_reflection_smoke_q754156_r6`
+  - artifact: `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T024436Z.json`
+  - outcome: inconclusive runtime timeout before first tool call
+  - truthful interpretation:
+    - `QUESTION_TIMEOUT`
+    - `n_tool_calls=0`
+    - no helper decision trace
+    - no atom lifecycle trace
+    - this artifact does not validate or invalidate the new reflection logic
+      because controller execution never actually started
+  - next step:
+    understand the first-turn timeout on this question, then rerun the same
+    probe to evaluate whether the stored recovery hint changes the controller's
+    next retrieval query in a live trace
 
 ---
 
