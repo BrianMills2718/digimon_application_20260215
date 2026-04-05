@@ -648,3 +648,36 @@ That means the controller may be seeing an effectively empty summary even when
 the raw chunk payload contains answer-bearing evidence. This is a high-value
 Phase #30 follow-up because controller anti-churn and recovery quality both
 depend on truthful tool linearization.
+
+### 2026-04-04 — codex — bug-pattern
+**Repeated full-list `todo_write` calls were revalidating already-completed atoms against stale unresolved payloads, which created fake controller churn.**
+Probe `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T041229Z.json`
+showed `a2` being correctly completed as `Myanmar`, then repeatedly failing
+again through `todo_write` because the full TODO list kept resubmitting the
+same done atom and `_validate_manual_todo_completion` re-ran against older
+unresolved evidence. After the idempotence repair, probe
+`results/MuSiQue_gpt-5-4-mini_consolidated_20260405T051256Z.json` records
+`atom_manual_reused` events for `a2`/`a3` instead of repeated
+`atom_manual_rejected` failures. Treat unchanged done-atom rewrites as
+state-preservation, not a fresh validation opportunity.
+
+### 2026-04-04 — codex — bug-pattern
+**`754156` no longer burns budget on repeated `todo_write` failures; the next blocker is wrong bridge propagation into `a3/a4`.**
+In the post-idempotence probe
+`results/MuSiQue_gpt-5-4-mini_consolidated_20260405T051256Z.json`, the run now
+fails honestly with `predicted=''`,
+`submit_completion_mode=missing_required_submit`, and pending atom `a4`, but
+there are no `atom_manual_rejected` events for completed `a2`. Instead, the
+controller resolves `a3` to `soviet union`, then `a4` inherits the wrong chain
+and repeated submit attempts are rejected under the shared TODO/evidence
+progress gates. This means the next bounded fix should target relation-specific
+recovery or bridge validation on `a3/a4`, not done-atom idempotence.
+
+### 2026-04-04 — codex — integration-issue
+**The focused unit ladder was briefly blocked by a config bootstrap defect, now fixed by making `LLMConfig.region_name` nullable again.**
+`Config/LLMConfig.py` had `region_name: str = None`, while
+`Option/Config2.yaml` omits that field. When DIGIMON imported through fallback
+config instantiation instead of the main YAML path, Pydantic rejected
+`llm.region_name=None` during test collection. Making the field
+`Optional[str]` restored the focused suite (`81 passed`) without changing any
+controller policy.

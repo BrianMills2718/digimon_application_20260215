@@ -2158,6 +2158,42 @@ async def test_cached_atom_validation_payload_drives_manual_done_rejection(monke
         )
 
 
+@pytest.mark.asyncio
+async def test_validate_manual_todo_completion_reuses_identical_done_atom(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Rewriting an already-completed atom with the same answer should be idempotent."""
+    _prime_lady_godiva_plan()
+    dms._todos[0].update(
+        {
+            "status": "done",
+            "answer": "Mercia",
+            "evidence_refs": ["chunk_84"],
+            "resolution_mode": "bridge_inference_validated",
+        }
+    )
+
+    async def _fail_if_called(*args, **kwargs):
+        raise AssertionError("validator should not rerun for identical done atoms")
+
+    monkeypatch.setattr(dms, "_infer_atom_completion_with_llm", _fail_if_called)
+
+    normalized = await dms._validate_manual_todo_completion(
+        dms._semantic_plan_atom_by_id("a1"),
+        {
+            "id": "a1",
+            "content": "What was Lady Godiva's birthplace?",
+            "status": "done",
+            "answer": "Mercia",
+            "evidence_refs": ["chunk_84"],
+        },
+        previous_todo=dms._todo_item_by_id("a1"),
+    )
+
+    assert normalized["answer"] == "Mercia"
+    assert normalized["status"] == "done"
+    assert normalized["evidence_refs"] == ["chunk_84"]
+    assert normalized["resolution_mode"] == "bridge_inference_validated"
+
+
 def test_helper_structured_llm_policy_uses_agentic_fallback_chain() -> None:
     """Helper structured calls should inherit fallback routing instead of hard-pinning one model."""
     original_state = dict(dms._state)

@@ -121,7 +121,7 @@ remaining check: empty-answer rejection.
 | 820301 | 22 | "1" | IEE — wrong answer, retrieval finds wrong chain |
 | 354635 | Time Warner Cable | "Adelphia" or "Comcast" | Close IEE — finds neighbor not target |
 | 71753 | 1930 | "1961" or "1921" | Wrong year — poor entity disambiguation |
-| 754156 | The dynasty regrouped and defeated the Portuguese | "Laos" / "Myanmar" / "expelled by the Portuguese" / "by airplanes" | Unresolved-hop control churn: `A1 -> Myanmar`, then `A2/A3/A4` stay pending and the controller forced-finalizes an ungrounded answer |
+| 754156 | The dynasty regrouped and defeated the Portuguese | "Laos" / "Myanmar" / "expelled by the Portuguese" / "by airplanes" / "" | Multi-stage controller failure: `A2` idempotence bug is fixed, but `A3` can still resolve to the wrong bridge (`soviet union`) and `A4` then stays pending until submit retries fail honestly |
 
 ### Remaining failure families
 
@@ -139,6 +139,10 @@ remaining check: empty-answer rejection.
 agents from marking atoms done if proposed value doesn't match cached evidence. This may
 contribute to CONTROL_FLOW failures and some stochastic misses but was NOT removed in this
 session — it requires careful evaluation to avoid regression on correct evidence-gating.
+What changed in Plan #30 is narrower and intentional: if an atom was already
+completed with the same answer, full-list `todo_write` rewrites now preserve
+that validated state instead of re-running the manual validator and regressing
+against stale unresolved payloads.
 
 ### Process Controls
 
@@ -182,6 +186,7 @@ single-run reruns on subsets, not a full 50q confirmation.
 - entity_search top_k=5 default (`10` was tested, worsened noise, and was reverted)
 - Plan #28 continuation: worktree artifact auto-detection + direct runtime-python wrapper + post-anchor bridge guard for anchored string entity hits + helper/atom lifecycle traces + restored normal submit gate + early shared submit-breaker path
 - Plan #30 Phase 1: truthful terminal-answer scoring in the benchmark lane. Control-churn forced-final answers with pending atoms are now suppressed from `predicted`, and per-question artifacts expose `forced_terminal_accept_reason` so forced-terminal acceptance is no longer mislabeled as budget exhaustion by default.
+- Plan #30 Phase 2 continuation: shared submit-churn gating plus idempotent done-atom preservation. Pending-atom submit churn now requires real TODO progress, and unchanged completed atoms survive repeated full-list `todo_write` rewrites via `atom_manual_reused` instead of burning budget on repeated manual rejections.
 - Bounded verification: `2hop__619265_45326` now has two important live proofs:
   - post-anchor bridge guard removed the `showtime` drift and restored a correct `12` answer in `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T011403Z.json`
   - after restoring the normal pending-atom submit gate, the intermediate smoke run `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T012611Z.json` exposed honest forced-terminal fallback
@@ -212,8 +217,7 @@ Total per question: ~6s operators + 58-82s LLM (47-48 turns sequential).
 
 ## Next Actions
 
-1. **Repair unresolved-hop submit churn on `754156`-style questions** — after Phase 1, the latest truthful probe `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T040232Z.json` no longer scores the forced-final path, but the controller still ends in `forced_terminal_accept_reason='control_churn'` with pending atom `A4`. The next slice should change controller behavior, not just scorekeeping.
+1. **Repair wrong-bridge propagation on `754156` after `a2`** — the latest truthful probe `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T051256Z.json` shows `a2` is stable (`Myanmar`) and no longer causes runtime errors, but `a3` can still resolve to `soviet union`, poisoning `a4` and ending in `REQUIRED_SUBMIT_NOT_ACCEPTED`. The next slice should target relation-specific recovery on `a3/a4`.
 2. **Investigate `LINEARIZATION_DATA_LOSS` in `chunk_retrieve(method=by_ids)`** — probe `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T035805Z.json` surfaced a warning that raw chunk content existed while the linearized summary appeared empty. This may be hiding exactly the evidence the controller needs on unresolved-hop questions.
 3. **Keep timeout provenance truthful while `LLM_CLIENT_TIMEOUT_POLICY=ban` remains active** — this shell disables per-call timeouts globally, so benchmark artifacts must continue surfacing requested/planned timeout separately from `turn_timeout_runtime_enforced` instead of pretending `auto:60s` is active.
 4. **Validate helper fallback quality + observability before spending on the 19q gate** — helper calls now follow configured `llm_client` fallbacks, but the earlier smoke run `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T133705Z.json` still regressed `619265` to `10`, and nested helper fallback usage is not yet fully surfaced in benchmark provenance.
-5. **50q confirmatory run only after the 19q ladder clears** — no decision-grade rerun before the fixed-setting 19q baseline exists.

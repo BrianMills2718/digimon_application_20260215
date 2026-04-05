@@ -75,7 +75,7 @@ class LLMConfig(YamlModel):
     context_length: Optional[int] = None  # Max input tokens
 
     # For Amazon Bedrock
-    region_name: str = None
+    region_name: Optional[str] = None
 
     # For Network
     proxy: Optional[str] = None

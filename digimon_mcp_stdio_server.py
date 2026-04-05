@@ -2607,6 +2607,42 @@ async def _validate_manual_todo_completion(
             f"TODO '{atom_id}' cannot be marked done before dependencies are done: {', '.join(missing)}.",
         )
 
+    proposed_norm = _normalize_resolved_value(proposed_value)
+    previous_value = _extract_todo_result_value(previous_todo or {})
+    previous_norm = _normalize_resolved_value(previous_value)
+    if (
+        isinstance(previous_todo, dict)
+        and str(previous_todo.get("status") or "").strip().lower() == "done"
+        and previous_norm
+        and proposed_norm == previous_norm
+    ):
+        merged_refs: list[str] = []
+        for ref in (
+            list(previous_todo.get("evidence_refs") or [])
+            + list(todo_item.get("evidence_refs") or [])
+        ):
+            ref_text = str(ref or "").strip()
+            if ref_text and ref_text not in merged_refs:
+                merged_refs.append(ref_text)
+        normalized_item = dict(previous_todo)
+        normalized_item["id"] = str(todo_item.get("id") or atom_id or normalized_item.get("id") or "").strip()
+        normalized_item["content"] = str(todo_item.get("content") or normalized_item.get("content") or "").strip()
+        normalized_item["status"] = "done"
+        normalized_item["answer"] = proposed_value
+        if merged_refs:
+            normalized_item["evidence_refs"] = merged_refs
+        _record_atom_lifecycle_event(
+            {
+                "event": "atom_manual_reused",
+                "atom_id": atom_id,
+                "sub_question": atom.get("sub_question"),
+                "proposed_value": proposed_value,
+                "reason": "idempotent_done_rewrite",
+                "evidence_refs": merged_refs,
+            }
+        )
+        return normalized_item
+
     validation_payloads = list(_atom_validation_payloads.get(atom_id) or [])
     fallback_payload = _fallback_manual_validation_payload(atom)
     if fallback_payload:
@@ -2626,7 +2662,6 @@ async def _validate_manual_todo_completion(
             "Retrieve supporting evidence first, then include the answer and evidence_refs.",
         )
 
-    proposed_norm = _normalize_resolved_value(proposed_value)
     mismatch_update: dict[str, Any] | None = None
     last_unresolved: dict[str, Any] | None = None
     validation_todo = previous_todo or todo_item

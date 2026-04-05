@@ -29,7 +29,7 @@ This plan assumes all work happens in worktrees with frequent verified commits.
 - `619265` is no longer the main blocker. The current lane can answer it with a
   grounded submit after the submit-breaker repair.
 - `754156` is currently the clearest live controller failure family.
-  Artifact history now shows two distinct truths:
+  Artifact history now shows three distinct truths:
   - `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T032944Z.json` was the
     pre-repair failure: `A1 -> Myanmar`, `A2/A3/A4` pending, repeated submit
     rejections, `CONTROL_CHURN_THRESHOLD_EXCEEDED`, forced-final answer
@@ -38,6 +38,14 @@ This plan assumes all work happens in worktrees with frequent verified commits.
     post-repair truthful artifact: still unresolved, but now
     `predicted=''`, `submit_completion_mode=missing_required_submit`, and
     `forced_terminal_accept_reason='control_churn'`
+  - `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T051256Z.json` is the
+    post-idempotence artifact: still unresolved, but now the repeated
+    `todo_write` runtime-error loop on completed atom `a2` is gone. The run
+    records `atom_manual_reused` events instead of `atom_manual_rejected`,
+    ends with `predicted=''`, `submit_completion_mode=missing_required_submit`,
+    and `first_terminal_failure_event_code='REQUIRED_SUBMIT_NOT_ACCEPTED'`.
+    The remaining blocker is upstream controller reasoning: `a3` resolves to
+    `soviet union`, then `a4` stays pending and submit retries churn.
 - This shell has `LLM_CLIENT_TIMEOUT_POLICY=ban`, so benchmark output must
   distinguish planned per-turn timeout from runtime-enforced timeout.
 - A new runtime clue emerged during the same probes:
@@ -45,6 +53,9 @@ This plan assumes all work happens in worktrees with frequent verified commits.
   `LINEARIZATION_DATA_LOSS` for `chunk_retrieve(method=by_ids)`, meaning raw
   evidence existed but the controller-facing linearized summary collapsed to an
   effectively empty message.
+- The focused unit ladder is restored after making `Config/LLMConfig.region_name`
+  nullable again. This was a harness defect, not a controller defect, but it
+  needed to be repaired so the verification ladder stayed trustworthy.
 
 ---
 
@@ -103,6 +114,17 @@ This plan assumes all work happens in worktrees with frequent verified commits.
   answer while pending atoms remain.
 - Unit/integration coverage exists for the repaired policy.
 
+**Status**
+- Complete on the shared/runtime boundary plus DIGIMON state boundary.
+  - Shared `llm_client` worktree commit `0fda376` replaced pending-atom
+    submit-churn forced-finalization with a TODO-progress gate.
+  - DIGIMON artifact `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T041229Z.json`
+    proved the failure moved from `control_churn` forced-finalization to a more
+    truthful `budget_exhaustion` / runtime-error path.
+  - DIGIMON artifact `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T051256Z.json`
+    then proved unchanged completed atoms are now idempotent under
+    full-list `todo_write`, removing the repeated `a2` manual-rejection loop.
+
 ### Phase 3 — Recovery Loop Strengthening
 
 **Tasks**
@@ -118,6 +140,13 @@ This plan assumes all work happens in worktrees with frequent verified commits.
 **Acceptance**
 - A focused probe shows the controller taking a changed next step because of
   the recovery hint, not just emitting another trace event.
+
+**Current frontier**
+- The latest `754156` probe already shows a changed next step, but not the
+  right one. `a2` is now stable; the remaining failure is that `a3` resolves to
+  `soviet union`, then `a4` inherits the wrong chain. The next slice should
+  tighten relation-specific recovery on `a3/a4`, not revisit done-atom
+  revalidation.
 
 ### Phase 4 — Targeted Tranche Verification
 
