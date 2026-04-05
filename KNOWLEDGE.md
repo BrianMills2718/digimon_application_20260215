@@ -707,3 +707,13 @@ config instantiation instead of the main YAML path, Pydantic rejected
 `llm.region_name=None` during test collection. Making the field
 `Optional[str]` restored the focused suite (`81 passed`) without changing any
 controller policy.
+
+### 2026-04-04 — codex — best-practice
+**Once DIGIMON can surface the blocked atom and repair hint, repeated suppressed submits should terminate early under `control_churn` rather than consuming the full tool budget.**
+Probe `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T060338Z.json`
+validated the shared breaker added in `llm_client` after the guidance path was
+still being ignored in `...T055724Z.json`. The run still failed, but it failed
+more truthfully: `forced_terminal_accept_reason` became `control_churn`
+instead of `budget_exhaustion`, tool calls dropped from `32` to `28`, and cost
+dropped from `$0.46` to `$0.41`. That means the next phase should focus on the
+remaining unresolved-hop reasoning itself, not on more submit-loop hygiene.

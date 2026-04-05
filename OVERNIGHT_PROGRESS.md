@@ -26,21 +26,21 @@ Keep the maintained DIGIMON benchmark lane truthful overnight by:
 
 ## Current Verified Blocker
 
-- Artifact `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T054718Z.json`
-  is the latest truthful controller probe. It validates the narrowed
-  recovery-surface guard: the earlier `a2` mis-blocking regression from
-  `...T053930Z.json` is gone, `a4` is no longer pending, and the controller
-  reaches the Portuguese hop without policy-induced drift.
+- Artifact `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T060338Z.json`
+  is the latest truthful controller probe. It validates the early
+  unchanged-evidence breaker: the run now terminates under
+  `forced_terminal_accept_reason='control_churn'` instead of burning the full
+  budget into `budget_exhaustion`, with tool calls reduced from `32` to `28`
+  and cost reduced from `$0.46` to `$0.41`.
 - The earlier repeated `todo_write` runtime-error loop is gone. The same probe
   shows `atom_manual_reused` events for completed atoms (`a2`, later `a3`)
   instead of repeated `atom_manual_rejected` failures, so unchanged done atoms
   now survive full-list `todo_write` rewrites idempotently.
-- The next blocker is now unchanged-evidence submit churn around unresolved
-  `a3`, not bad bridge acceptance: the run still ends in
-  `submit_completion_mode='missing_required_submit'`,
-  `forced_terminal_accept_reason='budget_exhaustion'`, and seven tool-call
-  errors after repeated rejected submit attempts and broad late chunk/entity
-  loops.
+- The next blocker is now unresolved-hop reasoning itself, not submit-loop
+  hygiene: the early breaker and recovery guidance both worked, but the
+  controller still cannot ground the remaining `atom3/atom4` chain before the
+  breaker fires. This is now an honest controller/retrieval problem rather than
+  a misleading late-loop artifact.
 - New runtime clue from `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T035805Z.json`:
   `chunk_retrieve(method=by_ids)` can emit `LINEARIZATION_DATA_LOSS` warnings
   when raw tool content exists but the linearized summary says empty. This is a

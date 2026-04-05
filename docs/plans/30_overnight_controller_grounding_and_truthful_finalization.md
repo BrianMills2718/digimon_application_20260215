@@ -162,6 +162,13 @@ This plan assumes all work happens in worktrees with frequent verified commits.
   policy-induced tool runtime errors. The remaining frontier is narrower and
   more truthful: unresolved `a3` plus repeated rejected-submit churn under an
   unchanged evidence digest.
+- Follow-up probe `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T060338Z.json`
+  validates the new early breaker for repeated suppressed submits without TODO
+  progress. The controller still fails, but it now fails earlier and more
+  honestly: `forced_terminal_accept_reason='control_churn'`, tool calls drop to
+  `28` from `32`, and benchmark artifacts no longer pretend the late failure
+  was ordinary budget exhaustion. The next frontier is the unresolved-hop
+  reasoning for `atom3/atom4`, not more submit-loop hygiene.
 
 ### Phase 4 — Targeted Tranche Verification
 
