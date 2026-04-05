@@ -303,6 +303,8 @@ def test_pending_submit_validation_payload_reports_unfinished_atoms() -> None:
     assert payload["pending_ids"] == ["a2"]
     assert payload["validation_error"]["reason_code"] == "pending_atoms"
     assert payload["recovery_policy"]["new_evidence_required_before_retry"] is True
+    assert payload["recovery_policy"]["pending_atom_id"] == "a2"
+    assert "Resolve pending atom a2" in payload["validation_error"]["message"]
 
 
 def test_pending_submit_validation_payload_allows_completed_plans() -> None:

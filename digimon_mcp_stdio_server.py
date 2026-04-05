@@ -894,11 +894,56 @@ def _pending_todo_ids_for_submit() -> list[str]:
     return pending_ids
 
 
+def _pending_submit_repair_context(pending_ids: list[str]) -> dict[str, Any] | None:
+    """Return the most actionable pending-atom repair context for submit rejection payloads."""
+    for pending_id in pending_ids:
+        atom = _semantic_plan_atom_by_id(pending_id) or {}
+        todo = _todo_item_by_id(pending_id) or {}
+        recovery_hint = _public_atom_recovery_hint(pending_id) or {}
+
+        sub_question = str(atom.get("sub_question") or "").strip()
+        todo_content = str(todo.get("content") or "").strip()
+        next_action = str(recovery_hint.get("next_action") or "").strip()
+        suggested_query = str(recovery_hint.get("suggested_query") or "").strip()
+        target_tool_name = str(recovery_hint.get("target_tool_name") or "").strip()
+        target_method = str(recovery_hint.get("target_method") or "").strip()
+
+        guidance_parts = [f"Resolve pending atom {pending_id}"]
+        if sub_question:
+            guidance_parts.append(f"({sub_question})")
+        if next_action:
+            guidance_parts.append(f"Next: {next_action}")
+        elif todo_content:
+            guidance_parts.append(f"Next: {todo_content}")
+        if target_tool_name:
+            tool_display = target_tool_name
+            if target_method:
+                tool_display = f"{tool_display}({target_method})"
+            guidance_parts.append(f"Preferred tool: {tool_display}")
+        if suggested_query:
+            guidance_parts.append(f"Suggested query: {suggested_query}")
+
+        return {
+            "pending_atom_id": pending_id,
+            "pending_atom_question": sub_question or None,
+            "pending_atom_todo": todo_content or None,
+            "repair_guidance": " ".join(part.strip() for part in guidance_parts if part.strip()),
+            "target_tool_name": target_tool_name or None,
+            "target_method": target_method or None,
+            "suggested_query": suggested_query or None,
+        }
+    return None
+
+
 def _pending_submit_validation_payload() -> dict[str, Any] | None:
     """Return a structured submit rejection payload when semantic-plan atoms remain."""
     pending_ids = _pending_todo_ids_for_submit()
     if not pending_ids:
         return None
+    repair_context = _pending_submit_repair_context(pending_ids)
+    repair_guidance = ""
+    if isinstance(repair_context, dict):
+        repair_guidance = str(repair_context.get("repair_guidance") or "").strip()
     return {
         "status": "rejected",
         "error": "Cannot submit while semantic-plan atoms remain unresolved.",
@@ -908,13 +953,15 @@ def _pending_submit_validation_payload() -> dict[str, Any] | None:
         "validation_error": {
             "reason_code": "pending_atoms",
             "message": (
-                "Resolve or explicitly exhaust the remaining semantic-plan atoms "
+                repair_guidance
+                or "Resolve or explicitly exhaust the remaining semantic-plan atoms "
                 "before normal submission."
             ),
         },
         "recovery_policy": {
             "new_evidence_required_before_retry": True,
             "requires_forced_terminal_path": True,
+            **(repair_context or {}),
         },
     }
 
