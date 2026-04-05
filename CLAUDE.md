@@ -62,6 +62,22 @@ python scripts/meta/worktree-coordination/create_worktree.py --help
 - Keep `AGENTS.md` generated from this file and rerender it after governance-structure changes.
 - If a shared or upstream migration question appears, record it in the active plan instead of silently redefining DIGIMON ownership.
 
+### Worktree / commit discipline
+- **Always work in a dedicated worktree between merges/pushes.** Do not use the
+  canonical checkout as an implementation lane.
+- If a fix requires changes in another repo (for example `llm_client`), create
+  a separate worktree in that repo for the shared-infra slice. Do not mix
+  cross-repo implementation in one dirty checkout.
+- Commit every verified slice immediately. The required loop is:
+  1. implement one bounded slice,
+  2. run the targeted verification,
+  3. update plan/docs/knowledge,
+  4. commit.
+- Never let multiple unrelated fixes accumulate uncommitted overnight. If a
+  slice passes tests and is diagnostically valuable, commit it before moving on.
+- If a change later needs to be reverted, prefer reverting one narrow worktree
+  commit over editing around a large mixed diff.
+
 ## References
 
 | Doc | Purpose |
@@ -113,6 +129,12 @@ small slice, run the targeted MuSiQue batch, diagnose the remaining misses, and
 immediately start the next systemic repair until the active plan is exhausted or
 an explicit escalation criterion is hit.
 
+**WORKTREE EXECUTION RULE — ENFORCE THIS STRONGLY:** every overnight
+implementation slice must stay inside a worktree and end with a verified commit
+before the next slice begins. If shared infrastructure must change, branch into
+that repo's own worktree instead of editing shared code from the DIGIMON lane.
+The goal is easy rollback, clean blame, and no hidden mixed-state overnight.
+
 **Truthfulness gate for autonomous execution:** continuous execution does not
 mean continuing from stale or false diagnostics. If `CURRENT_STATUS.md`,
 handoff docs, or plan notes conflict with the live code, benchmark artifacts,
@@ -138,6 +160,23 @@ Do not skip phases. Commit after each verified phase.
 **Budget guardrail**: Total overnight LLM spend ≤ $15. Check with `make cost DAYS=1` after each benchmark run. If approaching $12, skip Phase 5 (50q) and proceed to Phase 6.
 
 **Stochasticity policy**: Any benchmark improvement claim requires ≥2 runs showing the same result, OR the improvement is ≥3 questions (outside stochastic noise). Single-run single-question flips are noted as "stochastic" not "fixed."
+
+### Overnight Phase Sequence (2026-04-04 → 2026-04-05)
+
+Execute these phases in order for the current sprint. Commit after each phase.
+
+| Phase | Task | Acceptance Criteria |
+|-------|------|-------------------|
+| 0 | Sprint contract and progress artifact | Active plan for the overnight sprint exists, `CLAUDE.md` reflects the stronger worktree/autonomy rule, and a progress file records mission + acceptance criteria |
+| 1 | Truthful finalization / timeout provenance | Benchmark artifacts distinguish planned vs runtime-enforced turn timeouts, and forced-final answers are no longer scored as grounded when unresolved atoms still block submission |
+| 2 | Controller anti-churn repair | `754156`-style runs stop escalating pending-atom submit loops directly into a scored forced-final answer; targeted tests cover the repaired policy |
+| 3 | Recovery-loop strengthening | Repeated unresolved-atom traces produce a materially different next controller move, not just another broad search; at least one focused probe shows the changed trajectory |
+| 4 | Targeted tranche reruns | `619265`, `754156`, and one additional unresolved-hop case are rerun under fixed settings and reclassified from artifacts |
+| 5 | Promotion gate | If the targeted tranche is cleaner, run the next bounded broader slice; if not, document blocker families and stop broad benchmark spend |
+
+**Current overnight priority order:** truthful finalization first, unresolved-hop
+control churn second, broader benchmark reruns third. Do not spend on a new
+19q/50q ladder until Phases 1-3 are complete and committed.
 
 ## Generalization Mandate
 
