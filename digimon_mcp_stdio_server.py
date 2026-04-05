@@ -1148,6 +1148,21 @@ def _resolved_dependency_value_map(atom: dict[str, Any] | None) -> dict[str, str
     return resolved
 
 
+def _resolved_dependency_output_var_map(atom: dict[str, Any] | None) -> dict[str, str]:
+    """Map dependency output vars to their resolved TODO answers."""
+    if not isinstance(atom, dict):
+        return {}
+    resolved: dict[str, str] = {}
+    for dep_id, value in _resolved_dependency_value_map(atom).items():
+        dep_atom = _semantic_plan_atom_by_id(dep_id)
+        if not isinstance(dep_atom, dict):
+            continue
+        output_var = str(dep_atom.get("output_var") or "").strip()
+        if output_var:
+            resolved[output_var] = value
+    return resolved
+
+
 def _render_atom_query_with_dependency_values(
     text: str,
     *,
@@ -1158,7 +1173,8 @@ def _render_atom_query_with_dependency_values(
     if not rendered or not isinstance(atom, dict):
         return rendered
     dependency_map = _resolved_dependency_value_map(atom)
-    if not dependency_map:
+    dependency_output_vars = _resolved_dependency_output_var_map(atom)
+    if not dependency_map and not dependency_output_vars:
         return rendered
     for dep_id, value in dependency_map.items():
         replacement = str(value).strip()
@@ -1170,6 +1186,27 @@ def _render_atom_query_with_dependency_values(
         )
         for pattern in noun_phrase_patterns:
             rendered = re.sub(pattern, replacement, rendered, flags=re.IGNORECASE)
+    for output_var, value in dependency_output_vars.items():
+        replacement = str(value).strip()
+        if not replacement:
+            continue
+        humanized = _humanize_output_var(output_var)
+        if humanized:
+            humanized_patterns = (
+                rf"\bthat\s+{re.escape(humanized)}\b",
+                rf"\bthis\s+{re.escape(humanized)}\b",
+                rf"\bthe\s+{re.escape(humanized)}\b",
+            )
+            for pattern in humanized_patterns:
+                rendered = re.sub(pattern, replacement, rendered, flags=re.IGNORECASE)
+        raw_output_var = str(output_var).strip()
+        if raw_output_var:
+            rendered = re.sub(
+                rf"\b{re.escape(raw_output_var)}\b",
+                replacement,
+                rendered,
+                flags=re.IGNORECASE,
+            )
     rendered = re.sub(r"\s+", " ", rendered).strip()
     return rendered
 
@@ -1415,6 +1452,79 @@ def _normalize_semantic_plan_language(plan_dict: dict[str, Any]) -> dict[str, An
                 )
             atom[field_name] = normalized
     return plan_dict
+
+
+_POSSESSIVE_LOCATION_RE = re.compile(
+    r"\b([A-Z][A-Za-z0-9 .'\-]{0,80}?)'s\s+"
+    r"(country|city|birthplace|state|region|province|capital|location)\b"
+)
+
+
+def _question_possessive_location_requirements(question: str) -> list[tuple[str, str]]:
+    """Extract explicit possessive-location phrases that require a root lookup atom."""
+    requirements: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for match in _POSSESSIVE_LOCATION_RE.finditer(str(question or "")):
+        subject = re.sub(r"\s+", " ", str(match.group(1) or "")).strip().strip("'\"")
+        subject = re.split(
+            r"\b(?:and|or|but|of|in|on|at|from|to|between)\b",
+            subject,
+            flags=re.IGNORECASE,
+        )[-1].strip()
+        subject = re.sub(r"^(?:the|a|an)\s+", "", subject, flags=re.IGNORECASE).strip()
+        location_kind = str(match.group(2) or "").strip().lower()
+        if not subject or not location_kind:
+            continue
+        key = (subject.casefold(), location_kind)
+        if key in seen:
+            continue
+        seen.add(key)
+        requirements.append((subject, location_kind))
+    return requirements
+
+
+def _plan_missing_possessive_location_atom(question: str, plan: Any) -> bool:
+    """Return True when a possessive-location phrase lacks its own root atom in the plan."""
+    requirements = _question_possessive_location_requirements(question)
+    if not requirements:
+        return False
+    atoms: list[Any] = []
+    if isinstance(plan, dict):
+        raw_atoms = plan.get("atoms")
+        if isinstance(raw_atoms, list):
+            atoms = raw_atoms
+    else:
+        raw_atoms = getattr(plan, "atoms", None)
+        if isinstance(raw_atoms, list):
+            atoms = raw_atoms
+    if not atoms:
+        return False
+
+    for subject, location_kind in requirements:
+        subject_norm = subject.casefold()
+        location_norm = location_kind.casefold()
+        found_root_atom = False
+        for atom in atoms:
+            if isinstance(atom, dict):
+                sub_question = str(atom.get("sub_question") or "")
+                depends_on = atom.get("depends_on") or []
+                operation = str(atom.get("operation") or "").strip().lower()
+            else:
+                sub_question = str(getattr(atom, "sub_question", "") or "")
+                depends_on = getattr(atom, "depends_on", []) or []
+                operation = str(getattr(atom, "operation", "") or "").strip().lower()
+            text = sub_question.casefold()
+            if subject_norm not in text or location_norm not in text:
+                continue
+            if depends_on:
+                continue
+            if operation and operation not in {"lookup", "relation"}:
+                continue
+            found_root_atom = True
+            break
+        if not found_root_atom:
+            return True
+    return False
 
 
 def _bridge_candidate_names(payload: dict[str, Any], *, current_atom: dict[str, Any]) -> list[str]:
@@ -9679,6 +9789,8 @@ if BENCHMARK_MODE:
             "instead of replacing them with nearest named entities. "
             "Never collapse nested clauses. For patterns like 'X where Y is located', "
             "first create an atom for Y's location, then apply X to that result. "
+            "For possessive location phrases like \"X's country\", \"X's city\", or \"X's birthplace\", "
+            "create a separate root lookup atom that resolves that location before any downstream relation uses it. "
             "For conjunctions ('A and B'), create separate atoms for A and B, then an explicit "
             "intersection/compose atom. For comparatives/uniqueness ('only', 'largest', "
             "'larger than', ordinals), create an explicit compare/rank atom before downstream lookups. "
@@ -9699,7 +9811,9 @@ if BENCHMARK_MODE:
             "5) Preserve hidden intermediate variables implied by nested wording.\n"
             "6) Use answer_kind='text' for final answers that are short method/action/event phrases "
             "(for example questions beginning with 'How did', 'How were', or 'Why').\n"
-            "7) For bridge atoms, done_criteria should mention evidence needed to disambiguate alternatives.\n\n"
+            "7) For bridge atoms, done_criteria should mention evidence needed to disambiguate alternatives.\n"
+            "8) For possessive location phrases like \"X's country\" or \"X's birthplace\", create an explicit root atom "
+            "that resolves that location before any relation/composition atom consumes it.\n\n"
             "Mini examples:\n"
             "- 'region north of the region where X is located and location of Y' => "
             "locate region(X), locate region(Y), compose/intersect, then apply north-of relation.\n"
@@ -9781,6 +9895,53 @@ if BENCHMARK_MODE:
                 plan = revised_plan
             except Exception as revise_err:
                 logger.warning("semantic_plan revise pass failed; using draft plan. err=%s", revise_err)
+
+            if _plan_missing_possessive_location_atom(question, plan):
+                location_requirements = [
+                    f"{subject}'s {location_kind}"
+                    for subject, location_kind in _question_possessive_location_requirements(question)
+                ]
+                repair_system = (
+                    "You repair multi-hop semantic plans that skipped an explicit possessive-location atom. "
+                    "When a question contains phrases like \"X's country\" or \"X's birthplace\", the corrected plan "
+                    "must include a root lookup atom that resolves that location before any downstream relation uses it."
+                )
+                repair_user = (
+                    f"Question: {question}\n\n"
+                    f"Current plan JSON:\n{json.dumps(plan.model_dump(), ensure_ascii=False, indent=2)}\n\n"
+                    f"Required possessive-location atoms missing or malformed: {location_requirements}\n"
+                    "Repair rules:\n"
+                    "1) Add or rewrite a root lookup atom that explicitly resolves each required possessive-location phrase.\n"
+                    "2) Downstream atoms may consume that result, but they must not replace the root lookup.\n"
+                    "3) Preserve any other valid atoms and composition already present.\n"
+                    "4) Return only the corrected plan in the same schema.\n"
+                )
+                repair_messages = [
+                    {"role": "system", "content": repair_system},
+                    {"role": "user", "content": repair_user},
+                ]
+                repair_trace_id = f"digimon.semantic_plan.possessive_repair.{uuid.uuid4().hex[:8]}"
+                try:
+                    repaired_plan, _repair_meta = await _call_helper_structured(
+                        model=revise_model,
+                        messages=repair_messages,
+                        response_model=SemanticPlan,
+                        task="digimon.semantic_plan.possessive_repair",
+                        trace_id=repair_trace_id,
+                        input_state={
+                            "question": question,
+                            "phase": "possessive_repair",
+                            "required_location_phrases": location_requirements,
+                            "prior_plan": plan.model_dump(),
+                        },
+                        **revise_call_kwargs,
+                    )
+                    plan = repaired_plan
+                except Exception as repair_err:
+                    logger.warning(
+                        "semantic_plan possessive-location repair failed; using prior plan. err=%s",
+                        repair_err,
+                    )
 
             if _plan_has_relation_scope_risk(question, plan):
                 repair_system = (

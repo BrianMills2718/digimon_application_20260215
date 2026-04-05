@@ -281,6 +281,96 @@ def test_query_contract_renders_dependency_id_placeholders_to_resolved_values() 
     assert "Myanmar" in effective
 
 
+def test_query_contract_renders_dependency_output_vars_to_resolved_values() -> None:
+    """Active-atom query text should substitute resolved dependency output vars before retrieval."""
+    dms._current_question = (
+        "How were the people from whom new coins were a proclamation of independence by the Somali Muslim "
+        "Ajuran Empire expelled from the country between Thailand and A Lim's country?"
+    )
+    dms._current_semantic_plan.clear()
+    dms._current_semantic_plan.update(
+        {
+            "atoms": [
+                {
+                    "atom_id": "a1",
+                    "sub_question": "Which country is A Lim's country?",
+                    "depends_on": [],
+                    "operation": "lookup",
+                    "answer_kind": "entity",
+                    "output_var": "a_lim_country",
+                },
+                {
+                    "atom_id": "a2",
+                    "sub_question": "What is the country between Thailand and that a lim country?",
+                    "depends_on": ["a1"],
+                    "operation": "relation",
+                    "answer_kind": "entity",
+                    "output_var": "target_country",
+                },
+                {
+                    "atom_id": "a3",
+                    "sub_question": "Who were the people from whom new coins were a proclamation of independence by the Somali Muslim Ajuran Empire?",
+                    "depends_on": [],
+                    "operation": "lookup",
+                    "answer_kind": "entity",
+                    "output_var": "coin_issuers",
+                },
+                {
+                    "atom_id": "a4",
+                    "sub_question": "How were that coin issuers expelled from that target country?",
+                    "depends_on": ["a2", "a3"],
+                    "operation": "relation",
+                    "answer_kind": "text",
+                    "output_var": "expulsion_method",
+                },
+            ]
+        }
+    )
+    dms._todos.clear()
+    dms._todos.extend(
+        [
+            {
+                "id": "a1",
+                "content": "Which country is A Lim's country?",
+                "status": "done",
+                "answer": "Laos",
+            },
+            {
+                "id": "a2",
+                "content": "What is the country between Thailand and that a lim country?",
+                "status": "done",
+                "answer": "Myanmar",
+            },
+            {
+                "id": "a3",
+                "content": "Who were the people from whom new coins were a proclamation of independence by the Somali Muslim Ajuran Empire?",
+                "status": "done",
+                "answer": "Portuguese",
+            },
+            {
+                "id": "a4",
+                "content": "How were that coin issuers expelled from that target country?",
+                "status": "in_progress",
+            },
+        ]
+    )
+
+    effective, contract = dms._build_retrieval_query_contract(
+        "Myanmar Portuguese coin issuers expelled target country",
+        tool_name="chunk_retrieve",
+    )
+
+    assert contract["active_atom_id"] == "a4"
+    assert "that coin issuers" not in contract["active_atom_sub_question"].lower()
+    assert "that target country" not in contract["active_atom_sub_question"].lower()
+    assert "coin issuers" not in effective.lower()
+    assert "target country" not in effective.lower()
+    assert "Portuguese" in contract["active_atom_sub_question"]
+    assert "Myanmar" in contract["active_atom_sub_question"]
+    assert "Portuguese" in effective
+    assert "Myanmar" in effective
+
+
 def test_extract_todo_result_value_prefers_structured_answer_field() -> None:
     """Resolved values should come from explicit TODO answer fields when present."""
     value = dms._extract_todo_result_value(
@@ -390,6 +480,69 @@ def test_normalize_semantic_plan_language_maps_output_var_dependency_ids() -> No
 
     assert normalized["atoms"][1]["depends_on"] == ["a1"]
     assert "series_with_episode" not in normalized["atoms"][1]["sub_question"]
+
+
+def test_plan_missing_possessive_location_atom_detects_collapsed_bridge_subject() -> None:
+    """Semantic-plan validation should reject plans that skip an explicit possessive-location root atom."""
+    question = (
+        "How were the people from whom new coins were a proclamation of independence by the Somali Muslim "
+        "Ajuran Empire expelled from the country between Thailand and A Lim's country?"
+    )
+    plan = {
+        "final_answer_kind": "text",
+        "atoms": [
+            {
+                "atom_id": "a1",
+                "sub_question": "What is the Somali Muslim Ajuran Empire?",
+                "operation": "lookup",
+                "answer_kind": "entity",
+                "output_var": "ajuran_empire",
+                "depends_on": [],
+                "done_criteria": "Identify the Ajuran Empire.",
+            },
+            {
+                "atom_id": "a2",
+                "sub_question": "What country is between Thailand and that a lim country?",
+                "operation": "relation",
+                "answer_kind": "entity",
+                "output_var": "target_country",
+                "depends_on": ["a1"],
+                "done_criteria": "Find the bridge country.",
+            },
+        ],
+    }
+
+    assert dms._plan_missing_possessive_location_atom(question, plan) is True
+
+
+def test_plan_missing_possessive_location_atom_accepts_explicit_root_location_lookup() -> None:
+    """Semantic-plan validation should allow plans with a dedicated root atom for the possessive location."""
+    question = "What country is between Thailand and A Lim's country?"
+    plan = {
+        "final_answer_kind": "entity",
+        "atoms": [
+            {
+                "atom_id": "a1",
+                "sub_question": "Which country is A Lim's country?",
+                "operation": "lookup",
+                "answer_kind": "entity",
+                "output_var": "a_lim_country",
+                "depends_on": [],
+                "done_criteria": "Resolve A Lim's country.",
+            },
+            {
+                "atom_id": "a2",
+                "sub_question": "What country is between Thailand and that a lim country?",
+                "operation": "relation",
+                "answer_kind": "entity",
+                "output_var": "target_country",
+                "depends_on": ["a1"],
+                "done_criteria": "Find the bridge country.",
+            },
+        ],
+    }
+
+    assert dms._plan_missing_possessive_location_atom(question, plan) is False
 
 
 def test_infer_answer_kind_uses_text_for_how_were_questions() -> None:
