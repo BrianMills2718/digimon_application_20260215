@@ -32,8 +32,10 @@ import logging
 import os
 import random
 import re
+import sqlite3
 import sys
 import time
+from collections import Counter, deque
 from datetime import datetime, timezone
 from hashlib import md5, sha256
 from pathlib import Path
@@ -61,6 +63,7 @@ from llm_client import (
     log_item as llm_log_item,
     start_run as llm_start_run,
 )
+from llm_client.execution.timeout_policy import timeout_policy_label, timeouts_disabled
 # Post-run eval functions — lazy-imported at call site since they may
 # have been relocated from llm_client to prompt_eval or project-meta.
 # See: llm_client commit 431404d "Delete 28 zero-importer stubs"
@@ -125,6 +128,478 @@ def extract_tool_calls(raw_response: object) -> list[dict]:
                 "result_preview": str(result_text)[:500] if result_text else None,
             })
     return calls
+
+
+def _extract_full_submit_records(
+    raw_response: object,
+    fallback_records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Recover full submit payloads from MCPAgentResult tool records when available."""
+    if not isinstance(raw_response, MCPAgentResult):
+        return fallback_records
+
+    return [
+        {
+            "server": r.server,
+            "tool": r.tool,
+            "arguments": r.arguments,
+            "tool_reasoning": getattr(r, "tool_reasoning", None),
+            "arg_coercions": getattr(r, "arg_coercions", None) or [],
+            "has_result": r.result is not None,
+            "has_error": r.error is not None,
+            "error": r.error[:500] if r.error else None,
+            "result_preview": r.result[:500] if r.result else None,
+            "result_full": r.result if r.tool == "submit_answer" else None,
+            "latency_s": getattr(r, "latency_s", None),
+        }
+        for r in raw_response.tool_calls
+    ]
+
+
+def _helper_trace_log_path(project_root: str) -> Path:
+    """Return the DIGIMON helper-decision JSONL path for this repo."""
+    return Path(project_root) / "results" / ".helper_decision_trace.jsonl"
+
+
+def _atom_lifecycle_log_path(project_root: str) -> Path:
+    """Return the DIGIMON atom-lifecycle JSONL path for this repo."""
+    return Path(project_root) / "results" / ".atom_lifecycle_events.jsonl"
+
+
+def _jsonl_log_offset(path: Path) -> int:
+    """Snapshot a JSONL log size before a question starts."""
+    if not path.exists():
+        return 0
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _helper_trace_offset(project_root: str) -> int:
+    """Snapshot the helper-decision log size before a question starts."""
+    return _jsonl_log_offset(_helper_trace_log_path(project_root))
+
+
+def _atom_lifecycle_offset(project_root: str) -> int:
+    """Snapshot the atom-lifecycle log size before a question starts."""
+    return _jsonl_log_offset(_atom_lifecycle_log_path(project_root))
+
+
+def _observability_db_path() -> Path:
+    """Return the shared llm_client observability DB path."""
+    raw = os.environ.get("LLM_CLIENT_DB_PATH", "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home() / "projects" / "data" / "llm_observability.db"
+
+
+def _observability_table_offset(db_path: Path, table: str) -> int:
+    """Snapshot the current max row id for an observability table."""
+    if not db_path.exists():
+        return 0
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            row = conn.execute(f"SELECT COALESCE(MAX(id), 0) FROM {table}").fetchone()
+    except sqlite3.Error:
+        return 0
+    if not row:
+        return 0
+    try:
+        return max(0, int(row[0] or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _foundation_event_offset(db_path: Path) -> int:
+    """Snapshot the current max foundation event row id."""
+    return _observability_table_offset(db_path, "foundation_events")
+
+
+def _llm_call_offset(db_path: Path) -> int:
+    """Snapshot the current max llm_call row id."""
+    return _observability_table_offset(db_path, "llm_calls")
+
+
+def _read_foundation_events_since(
+    *,
+    db_path: Path,
+    offset: int,
+    trace_id: str | None,
+) -> list[dict[str, object]]:
+    """Read foundation events appended since *offset* for one benchmark trace."""
+    if not trace_id or not db_path.exists():
+        return []
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT id, timestamp, event_type, payload
+                FROM foundation_events
+                WHERE id > ? AND trace_id = ?
+                ORDER BY id
+                """,
+                (max(0, int(offset)), trace_id),
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+
+    events: list[dict[str, object]] = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"])
+        except (TypeError, json.JSONDecodeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        payload.setdefault("event_type", row["event_type"])
+        payload.setdefault("timestamp", row["timestamp"])
+        payload["_db_row_id"] = row["id"]
+        events.append(payload)
+    return events
+
+
+def _read_llm_calls_since(
+    *,
+    db_path: Path,
+    offset: int,
+    trace_id: str | None,
+) -> list[dict[str, object]]:
+    """Read llm_calls appended since *offset* for one benchmark trace."""
+    if not trace_id or not db_path.exists():
+        return []
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT id, model, finish_reason, latency_s, prompt_tokens,
+                       completion_tokens, total_tokens, cost, error
+                FROM llm_calls
+                WHERE id > ? AND trace_id = ?
+                ORDER BY id
+                """,
+                (max(0, int(offset)), trace_id),
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+    return [dict(row) for row in rows]
+
+
+def _extract_foundation_operation_name(event: dict[str, object]) -> str:
+    """Extract the operation name from one foundation event."""
+    operation = event.get("operation")
+    if isinstance(operation, dict):
+        name = operation.get("name")
+        if isinstance(name, str):
+            return name.strip()
+    return ""
+
+
+def _extract_foundation_event_params(event: dict[str, object]) -> dict[str, object]:
+    """Extract input params from one foundation event."""
+    inputs = event.get("inputs")
+    if not isinstance(inputs, dict):
+        return {}
+    params = inputs.get("params")
+    if isinstance(params, dict):
+        return dict(params)
+    return {}
+
+
+def _extract_foundation_tool_calls(events: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Reconstruct attempted tool calls from foundation events when result metadata is lost."""
+    records: list[dict[str, object]] = []
+    pending_by_tool: dict[str, deque[dict[str, object]]] = {}
+
+    for event in events:
+        event_type = str(event.get("event_type") or "").strip()
+        tool_name = _extract_foundation_operation_name(event)
+        if not tool_name:
+            continue
+
+        if event_type == "ToolCalled":
+            params = _extract_foundation_event_params(event)
+            record: dict[str, object] = {
+                "tool": tool_name,
+                "arguments": params,
+                "tool_reasoning": params.get("tool_reasoning") if isinstance(params.get("tool_reasoning"), str) else None,
+                "has_result": False,
+                "has_error": False,
+                "result_preview": None,
+                "error": None,
+                "observed_via": "foundation_events",
+            }
+            records.append(record)
+            pending_by_tool.setdefault(tool_name, deque()).append(record)
+            continue
+
+        if event_type not in {"ArtifactCreated", "ToolFailed"}:
+            continue
+
+        queue = pending_by_tool.get(tool_name)
+        if not queue:
+            continue
+        record = queue.popleft()
+        if event_type == "ArtifactCreated":
+            record["has_result"] = True
+            record["result_preview"] = "[artifact-created]"
+            continue
+
+        record["has_error"] = True
+        error_text = ""
+        error_payload = event.get("error")
+        if isinstance(error_payload, dict):
+            message = error_payload.get("message")
+            if isinstance(message, str):
+                error_text = message.strip()
+        record["error"] = error_text or "[tool-failed]"
+
+    return records
+
+
+def _summarize_timeout_foundation_events(
+    events: list[dict[str, object]],
+    llm_calls: list[dict[str, object]],
+) -> dict[str, object]:
+    """Summarize timeout-stage observability from foundation events and llm-call rows."""
+    event_counts = Counter(str(event.get("event_type") or "") for event in events)
+    attempted_tools: list[str] = []
+    completed_tools: list[str] = []
+    failed_tools: list[str] = []
+    pending_counts: Counter[str] = Counter()
+
+    for event in events:
+        tool_name = _extract_foundation_operation_name(event)
+        if not tool_name:
+            continue
+        event_type = str(event.get("event_type") or "")
+        if event_type == "ToolCalled":
+            attempted_tools.append(tool_name)
+            pending_counts[tool_name] += 1
+        elif event_type == "ArtifactCreated":
+            completed_tools.append(tool_name)
+            if pending_counts[tool_name] > 0:
+                pending_counts[tool_name] -= 1
+        elif event_type == "ToolFailed":
+            failed_tools.append(tool_name)
+            if pending_counts[tool_name] > 0:
+                pending_counts[tool_name] -= 1
+
+    pending_tools = [tool for tool, count in pending_counts.items() for _ in range(max(0, count))]
+    active_tool = pending_tools[-1] if pending_tools else None
+    if active_tool:
+        timeout_stage = "tool_execution"
+    elif event_counts.get("LLMCalled", 0) > 0:
+        timeout_stage = "llm_turn"
+    else:
+        timeout_stage = "unknown"
+
+    models_used = sorted({
+        str(call.get("model") or "").strip()
+        for call in llm_calls
+        if str(call.get("model") or "").strip()
+    })
+    return {
+        "foundation_event_count": len(events),
+        "foundation_event_type_counts": dict(sorted(event_counts.items())),
+        "foundation_attempted_tools": attempted_tools,
+        "foundation_completed_tools": completed_tools,
+        "foundation_failed_tools": failed_tools,
+        "foundation_pending_tools": pending_tools,
+        "timeout_stage": timeout_stage,
+        "timeout_active_tool": active_tool,
+        "timeout_llm_call_count": len(llm_calls),
+        "timeout_models_used": models_used,
+        "timeout_last_llm_finish_reason": (
+            str(llm_calls[-1].get("finish_reason") or "").strip() if llm_calls else None
+        ),
+    }
+
+
+def _aggregate_llm_call_observability(llm_calls: list[dict[str, object]]) -> dict[str, object]:
+    """Aggregate llm_call rows into benchmark-friendly usage/cost/model provenance."""
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    saw_usage = False
+    total_cost = 0.0
+    models_used: set[str] = set()
+
+    for call in llm_calls:
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            value = call.get(key)
+            if isinstance(value, int):
+                usage[key] += value
+                saw_usage = True
+        cost_value = call.get("cost")
+        if isinstance(cost_value, (int, float)):
+            total_cost += float(cost_value)
+        model_name = str(call.get("model") or "").strip()
+        if model_name:
+            models_used.add(model_name)
+
+    return {
+        "usage": usage if saw_usage else {},
+        "cost": total_cost,
+        "models_used": sorted(models_used),
+        "llm_calls": llm_calls,
+    }
+
+
+def _resolve_effective_turn_timeout(
+    requested_turn_timeout: int | None,
+    question_timeout: int,
+) -> int:
+    """Resolve per-turn timeout using benchmark defaults when not explicitly set."""
+    if requested_turn_timeout is not None:
+        return max(0, int(requested_turn_timeout))
+    default_turn_timeout = 0 if question_timeout <= 0 else min(question_timeout, 60)
+    return max(0, int(default_turn_timeout))
+
+
+def _format_turn_timeout_label(
+    requested_turn_timeout: int | None,
+    question_timeout: int,
+) -> str:
+    """Render a truthful turn-timeout label for CLI/log output."""
+    effective = _resolve_effective_turn_timeout(requested_turn_timeout, question_timeout)
+    if requested_turn_timeout is None:
+        return "auto(off)" if effective <= 0 else f"auto:{effective}s"
+    return "off" if effective <= 0 else f"{effective}s"
+
+
+def _runtime_turn_timeout_s(
+    requested_turn_timeout: int | None,
+    question_timeout: int,
+) -> int:
+    """Return the timeout that will actually be enforced under current policy."""
+    if timeouts_disabled():
+        return 0
+    return _resolve_effective_turn_timeout(requested_turn_timeout, question_timeout)
+
+
+def _format_runtime_turn_timeout_label(
+    requested_turn_timeout: int | None,
+    question_timeout: int,
+) -> str:
+    """Render turn-timeout label including global timeout-policy effects."""
+    planned_label = _format_turn_timeout_label(requested_turn_timeout, question_timeout)
+    runtime_timeout = _runtime_turn_timeout_s(requested_turn_timeout, question_timeout)
+    if runtime_timeout <= 0 and _resolve_effective_turn_timeout(requested_turn_timeout, question_timeout) > 0:
+        return f"disabled-by-policy({planned_label})"
+    return planned_label
+
+
+def _read_jsonl_events_since(
+    *,
+    path: Path,
+    offset: int,
+    question: str | None = None,
+    benchmark_trace_id: str | None = None,
+) -> list[dict[str, object]]:
+    """Read JSONL observability events appended since *offset* for one question/run."""
+    if not path.exists():
+        return []
+    try:
+        file_size = path.stat().st_size
+        safe_offset = min(max(0, int(offset)), file_size)
+        with path.open("rb") as handle:
+            handle.seek(safe_offset)
+            raw = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return []
+
+    events: list[dict[str, object]] = []
+    for line in raw.splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if benchmark_trace_id is not None:
+            if str(payload.get("benchmark_trace_id") or "") != benchmark_trace_id:
+                continue
+            events.append(payload)
+            continue
+        if question is not None and str(payload.get("question") or "") != question:
+            continue
+        events.append(payload)
+    return events
+
+
+def _read_helper_trace_events_since(
+    *,
+    project_root: str,
+    offset: int,
+    question: str,
+    benchmark_trace_id: str | None = None,
+) -> list[dict[str, object]]:
+    """Read helper-decision events appended since *offset* for one question."""
+    return _read_jsonl_events_since(
+        path=_helper_trace_log_path(project_root),
+        offset=offset,
+        question=question,
+        benchmark_trace_id=benchmark_trace_id,
+    )
+
+
+def _helper_trace_provenance(events: list[dict[str, object]]) -> dict[str, object]:
+    """Summarize helper decision traces into benchmark-friendly provenance."""
+    helper_models: set[str] = set()
+    fallback_events = 0
+    error_events = 0
+    for event in events:
+        for key in ("requested_model", "resolved_model", "execution_model"):
+            value = str(event.get(key) or "").strip()
+            if value:
+                helper_models.add(value)
+        if bool(event.get("fallback_used")):
+            fallback_events += 1
+        if str(event.get("status") or "") == "error":
+            error_events += 1
+
+    return {
+        "helper_decision_trace": events,
+        "helper_decision_event_count": len(events),
+        "helper_fallback_used": bool(fallback_events),
+        "helper_fallback_event_count": fallback_events,
+        "helper_error_count": error_events,
+        "helper_models_used": sorted(helper_models),
+    }
+
+
+def _read_atom_lifecycle_events_since(
+    *,
+    project_root: str,
+    offset: int,
+    question: str,
+    benchmark_trace_id: str | None = None,
+) -> list[dict[str, object]]:
+    """Read atom lifecycle events appended since *offset* for one question."""
+    return _read_jsonl_events_since(
+        path=_atom_lifecycle_log_path(project_root),
+        offset=offset,
+        question=question,
+        benchmark_trace_id=benchmark_trace_id,
+    )
+
+
+def _atom_lifecycle_provenance(events: list[dict[str, object]]) -> dict[str, object]:
+    """Summarize atom lifecycle events into benchmark-friendly provenance."""
+    completed = sum(1 for event in events if str(event.get("event") or "") == "atom_completed")
+    unresolved = sum(1 for event in events if str(event.get("event") or "") == "atom_judged_unresolved")
+    rejected = sum(1 for event in events if str(event.get("event") or "") == "atom_manual_rejected")
+    return {
+        "atom_lifecycle_trace": events,
+        "atom_lifecycle_event_count": len(events),
+        "atom_completed_event_count": completed,
+        "atom_unresolved_event_count": unresolved,
+        "atom_manual_rejected_event_count": rejected,
+    }
 
 
 def _install_event_loop_exception_filter() -> None:
@@ -1386,15 +1861,47 @@ def _submit_tool_call_accepted(tool_call: dict[str, Any]) -> bool:
     return False
 
 
+def _parse_submit_result_preview(tool_call: dict[str, Any]) -> dict[str, Any] | None:
+    """Parse submit_answer JSON payloads from any preserved result text."""
+    for field_name in ("result_full", "result_preview"):
+        result_text = tool_call.get(field_name)
+        if not isinstance(result_text, str) or not result_text.strip():
+            continue
+        try:
+            payload = json.loads(result_text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
 def _derive_submit_observability(tool_calls: list[dict[str, Any]]) -> dict[str, Any]:
     """Derive submit-answer observability directly from observed tool calls."""
     submit_events: list[dict[str, Any]] = []
     successful_submit = False
+    last_pending_ids: list[str] = []
+    last_pending_atoms: int | None = None
+    last_todo_status_line: str | None = None
     for tool_call in tool_calls:
         tool_name = str(tool_call.get("tool", "")).strip()
         if not tool_name.endswith("submit_answer"):
             continue
         submit_events.append(tool_call)
+        parsed = _parse_submit_result_preview(tool_call)
+        if isinstance(parsed, dict):
+            raw_pending_ids = parsed.get("pending_ids")
+            if isinstance(raw_pending_ids, list):
+                last_pending_ids = [str(item).strip() for item in raw_pending_ids if str(item).strip()]
+            raw_pending_atoms = parsed.get("pending_atoms")
+            if raw_pending_atoms is not None:
+                try:
+                    last_pending_atoms = int(raw_pending_atoms)
+                except (TypeError, ValueError):
+                    last_pending_atoms = None
+            todo_status_line = parsed.get("todo_status_line")
+            if isinstance(todo_status_line, str) and todo_status_line.strip():
+                last_todo_status_line = todo_status_line.strip()
         if _submit_tool_call_accepted(tool_call):
             successful_submit = True
 
@@ -1406,6 +1913,11 @@ def _derive_submit_observability(tool_calls: list[dict[str, Any]]) -> dict[str, 
         "submit_answer_succeeded": successful_submit,
         "submit_validator_accepted": successful_submit,
         "required_submit_missing": bool(submit_events) and not successful_submit,
+        "submit_pending_atom_ids": last_pending_ids,
+        "submit_pending_atom_count": (
+            last_pending_atoms if last_pending_atoms is not None else len(last_pending_ids)
+        ),
+        "submit_todo_status_line": last_todo_status_line,
         "submit_completion_mode": (
             "grounded_submit"
             if successful_submit
@@ -1421,6 +1933,9 @@ def _preserve_terminal_answer_after_submit_validation(
     derived_submit: dict[str, Any],
     submit_forced_accept_on_budget_exhaustion: bool | None,
     finalization_fallback_succeeded: bool | None,
+    first_terminal_failure_event_code: str | None,
+    failure_event_codes: list[str] | None,
+    conversation_trace: Any,
 ) -> str:
     """Drop terminal answers that were not accepted through the submit contract.
 
@@ -1436,9 +1951,88 @@ def _preserve_terminal_answer_after_submit_validation(
         return answer
     if bool(derived_submit.get("submit_answer_succeeded")):
         return answer
-    if submit_forced_accept_on_budget_exhaustion or finalization_fallback_succeeded:
-        return answer
-    return ""
+    forced_reason = _derive_forced_terminal_accept_reason(
+        submit_forced_accept_on_budget_exhaustion=submit_forced_accept_on_budget_exhaustion,
+        finalization_fallback_succeeded=finalization_fallback_succeeded,
+        first_terminal_failure_event_code=first_terminal_failure_event_code,
+        failure_event_codes=failure_event_codes,
+    )
+    if forced_reason is None:
+        return ""
+    has_pending_atoms = _submit_path_has_pending_atoms(
+        derived_submit=derived_submit,
+        conversation_trace=conversation_trace,
+    )
+    if has_pending_atoms and forced_reason not in {"budget_exhaustion", "turn_exhaustion"}:
+        return ""
+    return answer
+
+
+def _derive_forced_terminal_accept_reason(
+    *,
+    submit_forced_accept_on_budget_exhaustion: bool | None,
+    finalization_fallback_succeeded: bool | None,
+    first_terminal_failure_event_code: str | None,
+    failure_event_codes: list[str] | None,
+) -> str | None:
+    """Classify the forced-terminal acceptance family for benchmark truthfulness.
+
+    The shared runtime currently exposes only the historical boolean
+    ``submit_forced_accept_on_budget_exhaustion`` even when the real forced-final
+    cause was another policy such as control churn. The benchmark lane therefore
+    derives a more truthful local reason code before deciding whether a terminal
+    answer should remain scoreable.
+    """
+    normalized_codes = {
+        str(code).strip() for code in (failure_event_codes or []) if str(code).strip()
+    }
+    first_code = str(first_terminal_failure_event_code or "").strip()
+    has_forced_accept_signal = bool(
+        submit_forced_accept_on_budget_exhaustion
+        or finalization_fallback_succeeded
+        or any(code.startswith("SUBMIT_FORCED_ACCEPT_") for code in normalized_codes)
+    )
+    if not has_forced_accept_signal:
+        return None
+    if "SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION" in normalized_codes:
+        return "budget_exhaustion"
+    if "SUBMIT_FORCED_ACCEPT_TURN_EXHAUSTION" in normalized_codes:
+        return "turn_exhaustion"
+    if "CONTROL_CHURN_THRESHOLD_EXCEEDED" in normalized_codes or first_code == "CONTROL_CHURN_THRESHOLD_EXCEEDED":
+        return "control_churn"
+    if (
+        "RETRIEVAL_STAGNATION" in normalized_codes
+        or "RETRIEVAL_STAGNATION_OBSERVED" in normalized_codes
+        or first_code in {"RETRIEVAL_STAGNATION", "RETRIEVAL_STAGNATION_OBSERVED"}
+    ):
+        return "retrieval_stagnation"
+    if first_code == "SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION":
+        return "budget_exhaustion"
+    if first_code == "SUBMIT_FORCED_ACCEPT_TURN_EXHAUSTION":
+        return "turn_exhaustion"
+    if first_code == "SUBMIT_FORCED_ACCEPT_FORCED_FINAL":
+        return "forced_final_other"
+    if "SUBMIT_FORCED_ACCEPT_FORCED_FINAL" in normalized_codes:
+        return "forced_final_other"
+    if submit_forced_accept_on_budget_exhaustion:
+        return "budget_exhaustion"
+    if finalization_fallback_succeeded:
+        return "finalization_fallback"
+    return None
+
+
+def _submit_path_has_pending_atoms(*, derived_submit: dict[str, Any], conversation_trace: Any) -> bool:
+    """Return True when submit diagnostics or trace state show unresolved atoms."""
+    pending_count = derived_submit.get("submit_pending_atom_count")
+    try:
+        if pending_count is not None and int(pending_count) > 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    pending_ids = derived_submit.get("submit_pending_atom_ids") or []
+    if isinstance(pending_ids, list) and any(str(item).strip() for item in pending_ids):
+        return True
+    return _conversation_trace_has_pending_todos(conversation_trace)
 
 
 def _conversation_trace_has_pending_todos(conversation_trace: Any) -> bool:
@@ -1613,10 +2207,15 @@ async def run_agent(
         mode=mode,
         prompt_variant=prompt_variant,
     )
+    helper_trace_start_offset = _helper_trace_offset(project_root)
+    atom_lifecycle_start_offset = _atom_lifecycle_offset(project_root)
+    observability_db = _observability_db_path()
+    foundation_event_start_offset = _foundation_event_offset(observability_db)
+    llm_call_start_offset = _llm_call_offset(observability_db)
 
     question_timeout = max(0, int(timeout))
-    default_turn_timeout = 0 if question_timeout <= 0 else min(question_timeout, 60)
-    effective_turn_timeout = max(0, int(turn_timeout if turn_timeout is not None else default_turn_timeout))
+    effective_turn_timeout = _resolve_effective_turn_timeout(turn_timeout, question_timeout)
+    runtime_turn_timeout = _runtime_turn_timeout_s(turn_timeout, question_timeout)
     t0 = time.monotonic()
     try:
         async def _invoke_agent() -> object:
@@ -1827,6 +2426,7 @@ async def run_agent(
                 }
                 for tc in result.tool_calls
             ]
+        submit_observation_records = _extract_full_submit_records(result.raw_response, tool_calls)
 
         # Extract conversation trace if available
         conversation_trace = None
@@ -2002,7 +2602,7 @@ async def run_agent(
                 lines = [l.strip() for l in answer.split("\n") if l.strip()]
                 answer = lines[-1] if lines else answer
 
-        derived_submit = _derive_submit_observability(tool_calls)
+        derived_submit = _derive_submit_observability(submit_observation_records)
         if derived_submit["submit_events"]:
             requires_submit_answer = True
             submit_answer_call_count = derived_submit["submit_answer_call_count"]
@@ -2030,6 +2630,15 @@ async def run_agent(
             derived_submit=derived_submit,
             submit_forced_accept_on_budget_exhaustion=submit_forced_accept_on_budget_exhaustion,
             finalization_fallback_succeeded=finalization_fallback_succeeded,
+            first_terminal_failure_event_code=(
+                str(first_terminal_failure_event_code) if first_terminal_failure_event_code is not None else None
+            ),
+            failure_event_codes=(
+                [str(code) for code in failure_event_codes]
+                if isinstance(failure_event_codes, list)
+                else None
+            ),
+            conversation_trace=conversation_trace,
         )
         if (
             answer
@@ -2093,6 +2702,18 @@ async def run_agent(
         submit_completion_mode = warning_derived["submit_completion_mode"]
         first_terminal_failure_event_code = warning_derived["first_terminal_failure_event_code"]
         tool_arg_validation_rejections = warning_derived["tool_arg_validation_rejections"]
+        forced_terminal_accept_reason = _derive_forced_terminal_accept_reason(
+            submit_forced_accept_on_budget_exhaustion=submit_forced_accept_on_budget_exhaustion,
+            finalization_fallback_succeeded=finalization_fallback_succeeded,
+            first_terminal_failure_event_code=(
+                str(first_terminal_failure_event_code) if first_terminal_failure_event_code is not None else None
+            ),
+            failure_event_codes=(
+                [str(code) for code in failure_event_codes]
+                if isinstance(failure_event_codes, list)
+                else None
+            ),
+        )
         models_used: list[str] = []
         if isinstance(raw_response, dict):
             raw_models_used = raw_response.get("models_used")
@@ -2104,6 +2725,22 @@ async def run_agent(
                 models_used = sorted(str(m) for m in raw_models_used if isinstance(m, str))
             elif isinstance(raw_models_used, list):
                 models_used = sorted(str(m) for m in raw_models_used if isinstance(m, str))
+        helper_trace = _helper_trace_provenance(
+            _read_helper_trace_events_since(
+                project_root=project_root,
+                offset=helper_trace_start_offset,
+                question=question,
+                benchmark_trace_id=trace_id or None,
+            )
+        )
+        atom_lifecycle = _atom_lifecycle_provenance(
+            _read_atom_lifecycle_events_since(
+                project_root=project_root,
+                offset=atom_lifecycle_start_offset,
+                question=question,
+                benchmark_trace_id=trace_id or None,
+            )
+        )
 
         return {
             "answer": answer,
@@ -2157,8 +2794,12 @@ async def run_agent(
             "submit_answer_succeeded": submit_answer_succeeded,
             "submit_validator_accepted": submit_validator_accepted,
             "required_submit_missing": required_submit_missing,
+            "submit_pending_atom_ids": derived_submit.get("submit_pending_atom_ids"),
+            "submit_pending_atom_count": derived_submit.get("submit_pending_atom_count"),
+            "submit_todo_status_line": derived_submit.get("submit_todo_status_line"),
             "submit_forced_retry_on_budget_exhaustion": submit_forced_retry_on_budget_exhaustion,
             "submit_forced_accept_on_budget_exhaustion": submit_forced_accept_on_budget_exhaustion,
+            "forced_terminal_accept_reason": forced_terminal_accept_reason,
             "submit_completion_mode": submit_completion_mode,
             "tool_arg_coercions": tool_arg_coercions,
             "tool_arg_coercion_calls": tool_arg_coercion_calls,
@@ -2170,11 +2811,13 @@ async def run_agent(
             "error": None if result.finish_reason != "error" else result.content,
             "warnings": warnings,
             "models_used": models_used,
+            **helper_trace,
+            **atom_lifecycle,
         }
 
     except asyncio.TimeoutError:
         elapsed = time.monotonic() - t0
-        turn_timeout_label = "off" if effective_turn_timeout <= 0 else f"{effective_turn_timeout}s"
+        turn_timeout_label = _format_runtime_turn_timeout_label(turn_timeout, question_timeout)
         timeout_error = (
             f"TIMEOUT after {round(elapsed, 2)}s "
             f"(question_timeout={'off' if question_timeout <= 0 else f'{question_timeout}s'}, "
@@ -2191,6 +2834,22 @@ async def run_agent(
         partial_cost: float = 0.0
         partial_metadata: dict | None = None
         partial_conversation_trace = None
+        foundation_events = _read_foundation_events_since(
+            db_path=observability_db,
+            offset=foundation_event_start_offset,
+            trace_id=trace_id or None,
+        )
+        llm_call_rows = _read_llm_calls_since(
+            db_path=observability_db,
+            offset=llm_call_start_offset,
+            trace_id=trace_id or None,
+        )
+        foundation_tool_calls = _extract_foundation_tool_calls(foundation_events)
+        foundation_timeout_summary = _summarize_timeout_foundation_events(
+            foundation_events,
+            llm_call_rows,
+        )
+        llm_observability = _aggregate_llm_call_observability(llm_call_rows)
         if _partial_result_on_timeout:
             partial_result = _partial_result_on_timeout[0]
             partial_tool_calls = extract_tool_calls(getattr(partial_result, "raw_response", None))
@@ -2213,6 +2872,12 @@ async def run_agent(
                 if isinstance(candidate_metadata, dict):
                     partial_metadata = candidate_metadata
                 partial_conversation_trace = getattr(raw_response, "conversation_trace", None)
+        if not partial_tool_calls and foundation_tool_calls:
+            partial_tool_calls = foundation_tool_calls
+        if not partial_usage:
+            partial_usage = dict(llm_observability["usage"])
+        if partial_cost <= 0 and llm_observability["cost"] > 0:
+            partial_cost = float(llm_observability["cost"])
 
         timeout_result: dict = {
             "answer": "",
@@ -2227,6 +2892,12 @@ async def run_agent(
             "failure_event_codes": failure_event_codes,
             "failure_event_code_counts": event_counts or {"QUESTION_TIMEOUT": 1},
             "partial_telemetry": True,
+            "turn_timeout_requested": turn_timeout,
+            "turn_timeout_planned": effective_turn_timeout,
+            "turn_timeout_runtime_enforced": runtime_turn_timeout,
+            "turn_timeout_policy": timeout_policy_label(),
+            "models_used": llm_observability["models_used"],
+            "llm_timeout_trace": llm_observability["llm_calls"],
         }
         if partial_conversation_trace is not None:
             timeout_result["conversation_trace"] = partial_conversation_trace
@@ -2237,13 +2908,34 @@ async def run_agent(
             timeout_result["evidence_turns_total"] = partial_metadata.get("evidence_turns_total")
             timeout_result["evidence_turns_with_new_evidence"] = partial_metadata.get("evidence_turns_with_new_evidence")
             timeout_result["evidence_turns_without_new_evidence"] = partial_metadata.get("evidence_turns_without_new_evidence")
+        timeout_result.update(foundation_timeout_summary)
+        timeout_result.update(
+            _helper_trace_provenance(
+                _read_helper_trace_events_since(
+                    project_root=project_root,
+                    offset=helper_trace_start_offset,
+                    question=question,
+                    benchmark_trace_id=trace_id or None,
+                )
+            )
+        )
+        timeout_result.update(
+            _atom_lifecycle_provenance(
+                _read_atom_lifecycle_events_since(
+                    project_root=project_root,
+                    offset=atom_lifecycle_start_offset,
+                    question=question,
+                    benchmark_trace_id=trace_id or None,
+                )
+            )
+        )
         return timeout_result
     except Exception as e:
         elapsed = time.monotonic() - t0
         error_text = str(e)
         primary_failure_class, terminal_event_code, event_counts = _classify_run_error(error_text)
         failure_event_codes = [terminal_event_code] if terminal_event_code else []
-        return {
+        error_result = {
             "answer": "",
             "tool_calls": [],
             "usage": {},
@@ -2256,6 +2948,27 @@ async def run_agent(
             "failure_event_codes": failure_event_codes,
             "failure_event_code_counts": event_counts,
         }
+        error_result.update(
+            _helper_trace_provenance(
+                _read_helper_trace_events_since(
+                    project_root=project_root,
+                    offset=helper_trace_start_offset,
+                    question=question,
+                    benchmark_trace_id=trace_id or None,
+                )
+            )
+        )
+        error_result.update(
+            _atom_lifecycle_provenance(
+                _read_atom_lifecycle_events_since(
+                    project_root=project_root,
+                    offset=atom_lifecycle_start_offset,
+                    question=question,
+                    benchmark_trace_id=trace_id or None,
+                )
+            )
+        )
+        return error_result
 
 
 async def main() -> None:
@@ -2269,8 +2982,15 @@ async def main() -> None:
         default=0,
         help="Hard timeout per question in seconds (0 disables; default: 0).",
     )
-    parser.add_argument("--turn-timeout", type=int, default=0,
-                        help="Per-LLM-call timeout in seconds within a question (0 disables; default: 0).")
+    parser.add_argument(
+        "--turn-timeout",
+        type=int,
+        default=None,
+        help=(
+            "Per-LLM-call timeout in seconds within a question "
+            "(default: auto=min(question_timeout,60); 0 disables)."
+        ),
+    )
     parser.add_argument("--resume", action="store_true", help="Resume from previous run")
     parser.add_argument("--model", default="codex", help="Agent model (default: codex). Any litellm model string works.")
     parser.add_argument("--effort", default="medium", help="Reasoning effort (Codex only): minimal/low/medium/high")
@@ -2454,6 +3174,8 @@ async def main() -> None:
     args.mode = effective_mode
     args.model = _normalize_primary_model_for_benchmark(requested_model)
     effective_codex_profile = _resolve_codex_profile(args.model, args.codex_profile)
+    effective_turn_timeout_cli = _resolve_effective_turn_timeout(args.turn_timeout, args.timeout)
+    runtime_turn_timeout_cli = _runtime_turn_timeout_s(args.turn_timeout, args.timeout)
     if args.model != requested_model:
         print(
             f"Routing primary model via OpenRouter: {requested_model} -> {args.model}",
@@ -2477,7 +3199,7 @@ async def main() -> None:
                 "Codex compact profile: auto-adjusting --num-retries 2 -> 0 to avoid timeout multiplication.",
                 file=sys.stderr,
             )
-        if args.timeout > 0 and args.turn_timeout > 0 and args.timeout <= args.turn_timeout:
+        if args.timeout > 0 and effective_turn_timeout_cli > 0 and args.timeout <= effective_turn_timeout_cli:
             print(
                 "WARNING: question timeout is <= turn timeout in codex compact profile; "
                 "question may terminate before meaningful progress.",
@@ -2746,8 +3468,11 @@ async def main() -> None:
     run_provenance["fail_on_fallback_use"] = bool(args.fail_on_fallback_use)
     run_provenance["question_timeout"] = args.timeout
     run_provenance["question_timeout_enabled"] = bool(args.timeout > 0)
-    run_provenance["turn_timeout"] = args.turn_timeout
-    run_provenance["turn_timeout_enabled"] = bool(args.turn_timeout > 0)
+    run_provenance["turn_timeout_requested"] = args.turn_timeout
+    run_provenance["turn_timeout"] = effective_turn_timeout_cli
+    run_provenance["turn_timeout_runtime_enforced"] = runtime_turn_timeout_cli
+    run_provenance["turn_timeout_enabled"] = bool(runtime_turn_timeout_cli > 0)
+    run_provenance["turn_timeout_policy"] = timeout_policy_label()
     total_llm_em: int | None = None
     n_done = len(results)
     feature_profile = {
@@ -2780,7 +3505,7 @@ async def main() -> None:
     else:
         backend = "MCP agent loop"
     question_timeout_label = "off" if args.timeout <= 0 else f"{args.timeout}s"
-    turn_timeout_label = "off" if args.turn_timeout <= 0 else f"{args.turn_timeout}s"
+    turn_timeout_label = _format_runtime_turn_timeout_label(args.turn_timeout, args.timeout)
     print(
         f"Model: {args.model} ({backend}, "
         f"question_timeout={question_timeout_label}, turn_timeout={turn_timeout_label})"
@@ -2858,8 +3583,11 @@ async def main() -> None:
             "timeout": args.timeout,
             "question_timeout": args.timeout,
             "question_timeout_enabled": bool(args.timeout > 0),
-            "turn_timeout": args.turn_timeout,
-            "turn_timeout_enabled": bool(args.turn_timeout > 0),
+            "turn_timeout_requested": args.turn_timeout,
+            "turn_timeout": effective_turn_timeout_cli,
+            "turn_timeout_runtime_enforced": runtime_turn_timeout_cli,
+            "turn_timeout_enabled": bool(runtime_turn_timeout_cli > 0),
+            "turn_timeout_policy": timeout_policy_label(),
             "max_tool_calls": args.max_tool_calls,
             "require_tool_reasoning": True,
             "max_turns_fuse": args.max_turns,
@@ -2947,11 +3675,16 @@ async def main() -> None:
             available_artifacts_final=agent_result.get("available_artifacts_final"),
         )
         warnings_list = list(agent_result.get("warnings") or [])
+        helper_fallback_used = bool(agent_result.get("helper_fallback_used"))
         model_fallback_used = any(
             isinstance(w, str) and w.startswith("FALLBACK:")
             for w in warnings_list
         )
-        fallback_used_any = bool(agent_result.get("finalization_fallback_used")) or model_fallback_used
+        fallback_used_any = (
+            bool(agent_result.get("finalization_fallback_used"))
+            or model_fallback_used
+            or helper_fallback_used
+        )
 
         return {
             "id": q_id,
@@ -2999,6 +3732,17 @@ async def main() -> None:
             "lane_policy": agent_result.get("lane_policy"),
             "tool_disclosure_repair_suggestions": agent_result.get("tool_disclosure_repair_suggestions"),
             "model_fallback_used": model_fallback_used,
+            "helper_fallback_used": helper_fallback_used,
+            "helper_fallback_event_count": agent_result.get("helper_fallback_event_count"),
+            "helper_error_count": agent_result.get("helper_error_count"),
+            "helper_models_used": agent_result.get("helper_models_used"),
+            "helper_decision_event_count": agent_result.get("helper_decision_event_count"),
+            "helper_decision_trace": agent_result.get("helper_decision_trace"),
+            "atom_lifecycle_event_count": agent_result.get("atom_lifecycle_event_count"),
+            "atom_completed_event_count": agent_result.get("atom_completed_event_count"),
+            "atom_unresolved_event_count": agent_result.get("atom_unresolved_event_count"),
+            "atom_manual_rejected_event_count": agent_result.get("atom_manual_rejected_event_count"),
+            "atom_lifecycle_trace": agent_result.get("atom_lifecycle_trace"),
             "fallback_used_any": fallback_used_any,
             "finalization_fallback_used": agent_result.get("finalization_fallback_used"),
             "finalization_fallback_succeeded": agent_result.get("finalization_fallback_succeeded"),
@@ -3023,8 +3767,12 @@ async def main() -> None:
             "submit_answer_succeeded": agent_result.get("submit_answer_succeeded"),
             "submit_validator_accepted": agent_result.get("submit_validator_accepted"),
             "required_submit_missing": agent_result.get("required_submit_missing"),
+            "submit_pending_atom_ids": agent_result.get("submit_pending_atom_ids"),
+            "submit_pending_atom_count": agent_result.get("submit_pending_atom_count"),
+            "submit_todo_status_line": agent_result.get("submit_todo_status_line"),
             "submit_forced_retry_on_budget_exhaustion": agent_result.get("submit_forced_retry_on_budget_exhaustion"),
             "submit_forced_accept_on_budget_exhaustion": agent_result.get("submit_forced_accept_on_budget_exhaustion"),
+            "forced_terminal_accept_reason": agent_result.get("forced_terminal_accept_reason"),
             "submit_completion_mode": agent_result.get("submit_completion_mode"),
             "composability": composability,
             "tool_calls": tool_names,
@@ -3072,6 +3820,7 @@ async def main() -> None:
         first_terminal = record.get("first_terminal_failure_event_code")
         submit_completion_mode = record.get("submit_completion_mode")
         fallback_used = bool(record.get("fallback_used_any"))
+        helper_fallback_used = bool(record.get("helper_fallback_used"))
         finalization_fallback_used = bool(record.get("finalization_fallback_used"))
         fallback_succeeded = bool(record.get("finalization_fallback_succeeded"))
         retrieval_stagnation = bool(record.get("retrieval_stagnation_triggered"))
@@ -3098,6 +3847,10 @@ async def main() -> None:
                     suffix_parts.append(
                         "finalization_fallback="
                         + ("success" if fallback_succeeded else "used")
+                    )
+                elif helper_fallback_used:
+                    suffix_parts.append(
+                        f"helper_fallback={int(record.get('helper_fallback_event_count') or 0)}"
                     )
                 else:
                     suffix_parts.append("model_fallback=used")
@@ -3148,6 +3901,26 @@ async def main() -> None:
                 lines.append(f"  ⚠ {w}")
         if record.get("models_used") and len(record["models_used"]) > 1:
             lines.append(f"  Models: {', '.join(record['models_used'])}")
+        if record.get("helper_models_used"):
+            lines.append(
+                "  HelperModels: "
+                + ", ".join(str(model_name) for model_name in (record.get("helper_models_used") or []))
+            )
+        if int(record.get("submit_pending_atom_count") or 0) > 0:
+            lines.append(
+                "  SubmitPending: "
+                f"{int(record.get('submit_pending_atom_count') or 0)} "
+                + ", ".join(str(item) for item in (record.get("submit_pending_atom_ids") or []))
+            )
+        atom_trace_events = int(record.get("atom_lifecycle_event_count") or 0)
+        if atom_trace_events:
+            lines.append(
+                "  AtomTrace: "
+                f"events={atom_trace_events} "
+                f"completed={int(record.get('atom_completed_event_count') or 0)} "
+                f"unresolved={int(record.get('atom_unresolved_event_count') or 0)} "
+                f"manual_rejected={int(record.get('atom_manual_rejected_event_count') or 0)}"
+            )
         llm_em_running = f"  LLM_EM={100*total_llm_em_now/n_done_now:.1f}%" if total_llm_em_now is not None else ""
         lines.append(f"  Running: EM={100*total_em_now/n_done_now:.1f}%{llm_em_running}  F1={100*total_f1_now/n_done_now:.1f}%  ${total_cost_now:.2f}  ({n_done_now} done)")
         return "\n".join(lines)
@@ -3175,6 +3948,8 @@ async def main() -> None:
             comp += f" A{arg_validation_rejections}"
         if record.get("fallback_used_any"):
             comp += " Ff"
+            if record.get("helper_fallback_used"):
+                comp += f"/H{int(record.get('helper_fallback_event_count') or 0)}"
         if record.get("retrieval_stagnation_triggered"):
             comp += " Rs"
         running_em = 100 * total_em_now / n_done_now
@@ -3423,6 +4198,8 @@ async def main() -> None:
         )
         fallback_used_count = sum(1 for r in results if bool(r.get("fallback_used_any")))
         fallback_used_rate = (100.0 * fallback_used_count / n_done) if n_done else 0.0
+        helper_fallback_used_count = sum(1 for r in results if bool(r.get("helper_fallback_used")))
+        helper_fallback_used_rate = (100.0 * helper_fallback_used_count / n_done) if n_done else 0.0
         finalization_fallback_used_count = sum(1 for r in results if bool(r.get("finalization_fallback_used")))
         finalization_fallback_used_rate = (100.0 * finalization_fallback_used_count / n_done) if n_done else 0.0
         retrieval_stagnation_count = sum(1 for r in results if bool(r.get("retrieval_stagnation_triggered")))
@@ -3488,6 +4265,9 @@ async def main() -> None:
         )
         print(
             f"  Any fallback used: {fallback_used_count}/{n_done} ({fallback_used_rate:.1f}%)"
+        )
+        print(
+            f"  Helper fallback used: {helper_fallback_used_count}/{n_done} ({helper_fallback_used_rate:.1f}%)"
         )
         print(
             f"  Finalization fallback used: {finalization_fallback_used_count}/{n_done} "
@@ -3737,6 +4517,8 @@ def _save_results(
     )
     fallback_used_any = sum(1 for r in results if bool(r.get("fallback_used_any")))
     fallback_used_any_rate = (100.0 * fallback_used_any / n_done) if n_done else 0.0
+    helper_fallback_used = sum(1 for r in results if bool(r.get("helper_fallback_used")))
+    helper_fallback_usage_rate = (100.0 * helper_fallback_used / n_done) if n_done else 0.0
     finalization_fallback_used = sum(1 for r in results if bool(r.get("finalization_fallback_used")))
     finalization_fallback_usage_rate = (100.0 * finalization_fallback_used / n_done) if n_done else 0.0
     retrieval_stagnation_count = sum(1 for r in results if bool(r.get("retrieval_stagnation_triggered")))
@@ -3782,6 +4564,8 @@ def _save_results(
             "n_forced_terminal_accept": forced_terminal_accept_count,
             "n_fallback_used_any": fallback_used_any,
             "fallback_usage_rate_any": fallback_used_any_rate,
+            "n_helper_fallback_used": helper_fallback_used,
+            "helper_fallback_usage_rate": helper_fallback_usage_rate,
             "n_finalization_fallback_used": finalization_fallback_used,
             "finalization_fallback_usage_rate": finalization_fallback_usage_rate,
             "n_retrieval_stagnation": retrieval_stagnation_count,

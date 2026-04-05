@@ -12,8 +12,10 @@ Add to ~/.claude/mcp_servers.json to use with Claude Code.
 """
 
 import asyncio
+from collections import Counter
 from contextlib import contextmanager
 from contextvars import ContextVar
+from datetime import datetime, timezone
 import json
 import logging
 import os
@@ -22,7 +24,7 @@ import re
 import sys
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 # === MCP STDIO SAFETY: prevent ALL non-JSONRPC stdout writes ===
 # litellm prints colored INFO/WARNING/ERROR to stdout via Python logging,
@@ -195,6 +197,12 @@ _ENTITY_SUBJECT_AUTO_PROFILE_MIN_SCORE = float(
 )
 _ATOM_CONTEXTUAL_PLACE_MIN_CONFIDENCE = float(
     os.environ.get("DIGIMON_ATOM_CONTEXTUAL_PLACE_MIN_CONFIDENCE", "0.78")
+)
+_ATOM_REFLECTION_TRIGGER_UNRESOLVED = max(
+    2, int(os.environ.get("DIGIMON_ATOM_REFLECTION_TRIGGER_UNRESOLVED", "2"))
+)
+_ATOM_REFLECTION_HISTORY_LIMIT = max(
+    2, int(os.environ.get("DIGIMON_ATOM_REFLECTION_HISTORY_LIMIT", "3"))
 )
 _QUERY_CONTRACT_BYPASS_REASON: ContextVar[str] = ContextVar(
     "digimon_query_contract_bypass_reason",
@@ -397,6 +405,55 @@ def _ensure_embedding_provider_initialized(reason: str = "") -> Any:
     return encoder
 
 
+def _configured_helper_fallback_models() -> list[str]:
+    """Return the deduped fallback chain for DIGIMON helper LLM calls."""
+    fallback_candidates: list[Any] = []
+
+    agentic_llm = _state.get("agentic_llm")
+    if agentic_llm is not None:
+        fallback_candidates.extend(getattr(agentic_llm, "_fallback_models", None) or [])
+
+    if not fallback_candidates:
+        llm = _state.get("llm")
+        if llm is not None:
+            fallback_candidates.extend(getattr(llm, "_fallback_models", None) or [])
+
+    if not fallback_candidates:
+        config = _state.get("config")
+        llm_config = getattr(config, "llm", None) if config is not None else None
+        fallback_candidates.extend(getattr(llm_config, "fallback_models", None) or [])
+
+    fallback_models: list[str] = []
+    seen: set[str] = set()
+    for candidate in fallback_candidates:
+        model_name = str(candidate or "").strip()
+        if not model_name or model_name in seen:
+            continue
+        seen.add(model_name)
+        fallback_models.append(model_name)
+    return fallback_models
+
+
+def _helper_structured_llm_policy(
+    *,
+    model_override: str | None = None,
+    num_retries: int = 2,
+) -> tuple[str, dict[str, Any]]:
+    """Resolve model + fallback kwargs for DIGIMON helper structured calls."""
+    llm = _state.get("agentic_llm")
+    config = _state.get("config")
+    config_model = getattr(getattr(config, "llm", None), "model", None) if config is not None else None
+    model = str(model_override or (llm.model if llm else config_model) or "").strip()
+    if not model:
+        raise RuntimeError("No DIGIMON helper model configured.")
+
+    call_kwargs: dict[str, Any] = {"num_retries": int(num_retries)}
+    fallback_models = [name for name in _configured_helper_fallback_models() if name != model]
+    if fallback_models:
+        call_kwargs["fallback_models"] = fallback_models
+    return model, call_kwargs
+
+
 async def _ensure_initialized():
     """Lazy initialization of DIGIMON components."""
     if "initialized" in _state:
@@ -469,7 +526,11 @@ async def _ensure_initialized():
         config.agentic_model = agentic_model
         try:
             from Core.Provider.LLMClientAdapter import LLMClientAdapter
-            _state["agentic_llm"] = LLMClientAdapter(agentic_model)
+            _state["agentic_llm"] = LLMClientAdapter(
+                agentic_model,
+                fallback_models=fallback,
+                num_retries=3,
+            )
             logger.info(f"Agentic LLM initialized: {agentic_model}")
         except ImportError:
             logger.warning("llm_client not available — agentic_model ignored, using default LLM")
@@ -723,6 +784,8 @@ _current_semantic_plan: dict[str, Any] = {}
 _current_semantic_plan_question: str = ""
 _atom_lifecycle_events: list[dict[str, Any]] = []
 _atom_validation_payloads: dict[str, list[dict[str, Any]]] = {}
+_atom_recovery_hints: dict[str, dict[str, Any]] = {}
+_helper_decision_events: list[dict[str, Any]] = []
 _QUERY_LEADIN_RE = re.compile(
     r"^\s*(?:find|identify|determine|lookup|look up|resolve|show me|tell me|"
     r"what(?:'s| is| was)?|who(?:'s| is| was)?|when(?:'s| is| was| did)?|"
@@ -794,6 +857,8 @@ def _reset_todos() -> None:
     _todos.clear()
     _atom_lifecycle_events.clear()
     _atom_validation_payloads.clear()
+    _atom_recovery_hints.clear()
+    _helper_decision_events.clear()
     _current_question = ""
     _current_expected_answer_kind = ""
 
@@ -828,6 +893,78 @@ def _pending_todo_ids_for_submit() -> list[str]:
         if todo_id:
             pending_ids.append(todo_id)
     return pending_ids
+
+
+def _pending_submit_repair_context(pending_ids: list[str]) -> dict[str, Any] | None:
+    """Return the most actionable pending-atom repair context for submit rejection payloads."""
+    for pending_id in pending_ids:
+        atom = _semantic_plan_atom_by_id(pending_id) or {}
+        todo = _todo_item_by_id(pending_id) or {}
+        recovery_hint = _public_atom_recovery_hint(pending_id) or {}
+
+        sub_question = str(atom.get("sub_question") or "").strip()
+        todo_content = str(todo.get("content") or "").strip()
+        next_action = str(recovery_hint.get("next_action") or "").strip()
+        suggested_query = str(recovery_hint.get("suggested_query") or "").strip()
+        target_tool_name = str(recovery_hint.get("target_tool_name") or "").strip()
+        target_method = str(recovery_hint.get("target_method") or "").strip()
+
+        guidance_parts = [f"Resolve pending atom {pending_id}"]
+        if sub_question:
+            guidance_parts.append(f"({sub_question})")
+        if next_action:
+            guidance_parts.append(f"Next: {next_action}")
+        elif todo_content:
+            guidance_parts.append(f"Next: {todo_content}")
+        if target_tool_name:
+            tool_display = target_tool_name
+            if target_method:
+                tool_display = f"{tool_display}({target_method})"
+            guidance_parts.append(f"Preferred tool: {tool_display}")
+        if suggested_query:
+            guidance_parts.append(f"Suggested query: {suggested_query}")
+
+        return {
+            "pending_atom_id": pending_id,
+            "pending_atom_question": sub_question or None,
+            "pending_atom_todo": todo_content or None,
+            "repair_guidance": " ".join(part.strip() for part in guidance_parts if part.strip()),
+            "target_tool_name": target_tool_name or None,
+            "target_method": target_method or None,
+            "suggested_query": suggested_query or None,
+        }
+    return None
+
+
+def _pending_submit_validation_payload() -> dict[str, Any] | None:
+    """Return a structured submit rejection payload when semantic-plan atoms remain."""
+    pending_ids = _pending_todo_ids_for_submit()
+    if not pending_ids:
+        return None
+    repair_context = _pending_submit_repair_context(pending_ids)
+    repair_guidance = ""
+    if isinstance(repair_context, dict):
+        repair_guidance = str(repair_context.get("repair_guidance") or "").strip()
+    return {
+        "status": "rejected",
+        "error": "Cannot submit while semantic-plan atoms remain unresolved.",
+        "pending_atoms": len(pending_ids),
+        "pending_ids": pending_ids,
+        "todo_status_line": _todo_status_line(),
+        "validation_error": {
+            "reason_code": "pending_atoms",
+            "message": (
+                repair_guidance
+                or "Resolve or explicitly exhaust the remaining semantic-plan atoms "
+                "before normal submission."
+            ),
+        },
+        "recovery_policy": {
+            "new_evidence_required_before_retry": True,
+            "requires_forced_terminal_path": True,
+            **(repair_context or {}),
+        },
+    }
 
 
 def _semantic_plan_atom_by_id(atom_id: str) -> dict[str, Any] | None:
@@ -870,14 +1007,50 @@ def _query_token_overlap(left: str, right: str) -> float:
     return len(left_tokens.intersection(right_tokens)) / len(left_tokens.union(right_tokens))
 
 
+def _extract_preserved_query_phrases(text: str) -> tuple[list[str], str]:
+    """Preserve explicit quoted anchors before generic query compaction runs."""
+    candidate = str(text or "")
+    preserved: list[str] = []
+    spans: list[tuple[int, int]] = []
+
+    for match in re.finditer(r'"([^"]+)"', candidate):
+        phrase = match.group(1).strip()
+        if phrase:
+            preserved.append(phrase)
+            spans.append(match.span())
+
+    if not preserved and candidate.count("'") >= 2:
+        first = candidate.find("'")
+        last = candidate.rfind("'")
+        if first >= 0 and last > first:
+            phrase = candidate[first + 1:last].strip()
+            if phrase and len(phrase.split()) >= 2:
+                preserved.append(phrase)
+                spans.append((first, last + 1))
+
+    if not spans:
+        return preserved, candidate
+
+    remainder_parts: list[str] = []
+    cursor = 0
+    for start, end in sorted(spans):
+        remainder_parts.append(candidate[cursor:start])
+        cursor = end
+    remainder_parts.append(candidate[cursor:])
+    remainder = " ".join(part for part in remainder_parts if part)
+    return preserved, remainder
+
+
 def _compact_search_query(text: str) -> str:
     """Strip question wrappers so retrieval queries focus on informative terms."""
     candidate = _QUERY_LEADIN_RE.sub("", (text or "").strip())
     candidate = _QUERY_PLACEHOLDER_RE.sub(" ", candidate)
+    preserved_phrases, candidate = _extract_preserved_query_phrases(candidate)
     candidate = re.sub(r"[^\w\s'/-]+", " ", candidate)
     tokens = [token.strip() for token in candidate.split() if token.strip()]
     filtered = [token for token in tokens if token.lower() not in _QUERY_STOPWORDS]
-    compact = " ".join(filtered or tokens)
+    compact_parts = preserved_phrases + (filtered or tokens)
+    compact = " ".join(compact_parts)
     return re.sub(r"\s+", " ", compact).strip(" ?.-")
 
 
@@ -955,6 +1128,87 @@ def _resolved_dependency_values(atom: dict[str, Any] | None) -> list[str]:
         seen.add(norm)
         values.append(value)
     return values
+
+
+def _resolved_dependency_value_map(atom: dict[str, Any] | None) -> dict[str, str]:
+    """Map dependency atom IDs to their resolved TODO answers."""
+    if not isinstance(atom, dict):
+        return {}
+    resolved: dict[str, str] = {}
+    for dep_id in atom.get("depends_on") or []:
+        dep_key = str(dep_id).strip()
+        if not dep_key:
+            continue
+        todo = _todo_item_by_id(dep_key)
+        if not todo or todo.get("status") != "done":
+            continue
+        value = _extract_todo_result_value(todo)
+        if value:
+            resolved[dep_key] = value
+    return resolved
+
+
+def _resolved_dependency_output_var_map(atom: dict[str, Any] | None) -> dict[str, str]:
+    """Map dependency output vars to their resolved TODO answers."""
+    if not isinstance(atom, dict):
+        return {}
+    resolved: dict[str, str] = {}
+    for dep_id, value in _resolved_dependency_value_map(atom).items():
+        dep_atom = _semantic_plan_atom_by_id(dep_id)
+        if not isinstance(dep_atom, dict):
+            continue
+        output_var = str(dep_atom.get("output_var") or "").strip()
+        if output_var:
+            resolved[output_var] = value
+    return resolved
+
+
+def _render_atom_query_with_dependency_values(
+    text: str,
+    *,
+    atom: dict[str, Any] | None,
+) -> str:
+    """Replace planner dependency-ID placeholders like ``people identified in a1`` with resolved values."""
+    rendered = str(text or "").strip()
+    if not rendered or not isinstance(atom, dict):
+        return rendered
+    dependency_map = _resolved_dependency_value_map(atom)
+    dependency_output_vars = _resolved_dependency_output_var_map(atom)
+    if not dependency_map and not dependency_output_vars:
+        return rendered
+    for dep_id, value in dependency_map.items():
+        replacement = str(value).strip()
+        if not replacement:
+            continue
+        noun_phrase_patterns = (
+            rf"\b(?:the\s+)?(?:entity|person|people|group|country|place|city|state|region|series|episode|number|date|year|method|answer)\s+identified\s+in\s+{re.escape(dep_id)}\b",
+            rf"\bidentified\s+in\s+{re.escape(dep_id)}\b",
+        )
+        for pattern in noun_phrase_patterns:
+            rendered = re.sub(pattern, replacement, rendered, flags=re.IGNORECASE)
+    for output_var, value in dependency_output_vars.items():
+        replacement = str(value).strip()
+        if not replacement:
+            continue
+        humanized = _humanize_output_var(output_var)
+        if humanized:
+            humanized_patterns = (
+                rf"\bthat\s+{re.escape(humanized)}\b",
+                rf"\bthis\s+{re.escape(humanized)}\b",
+                rf"\bthe\s+{re.escape(humanized)}\b",
+            )
+            for pattern in humanized_patterns:
+                rendered = re.sub(pattern, replacement, rendered, flags=re.IGNORECASE)
+        raw_output_var = str(output_var).strip()
+        if raw_output_var:
+            rendered = re.sub(
+                rf"\b{re.escape(raw_output_var)}\b",
+                replacement,
+                rendered,
+                flags=re.IGNORECASE,
+            )
+    rendered = re.sub(r"\s+", " ", rendered).strip()
+    return rendered
 
 
 def _normalize_resolved_value(value: Any) -> str:
@@ -1128,6 +1382,19 @@ def _rewrite_output_var_reference(text: str, *, output_var: str) -> str:
     for pattern in patterns:
         updated = re.sub(pattern, replacement, updated, flags=re.IGNORECASE)
 
+    # Planners sometimes leak raw snake_case output vars directly into the next
+    # atom's prose instead of using the explicit "$var" / "entity identified as"
+    # phrasing above. Only rewrite obviously synthetic variable tokens so we do
+    # not accidentally replace ordinary language.
+    raw_output_var = str(output_var or "").strip()
+    if raw_output_var and re.search(r"[_\-]", raw_output_var):
+        updated = re.sub(
+            rf"\b{re.escape(raw_output_var)}\b",
+            replacement,
+            updated,
+            flags=re.IGNORECASE,
+        )
+
     updated = re.sub(r"\bthat\s+that\b", "that", updated, flags=re.IGNORECASE)
     updated = re.sub(r"\bthe\s+that\b", "that", updated, flags=re.IGNORECASE)
     updated = re.sub(r"\s+\?", "?", updated)
@@ -1142,6 +1409,7 @@ def _normalize_semantic_plan_language(plan_dict: dict[str, Any]) -> dict[str, An
         return plan_dict
 
     output_vars_by_atom_id: dict[str, str] = {}
+    atom_ids_by_output_var: dict[str, str] = {}
     for atom in atoms:
         if not isinstance(atom, dict):
             continue
@@ -1149,13 +1417,25 @@ def _normalize_semantic_plan_language(plan_dict: dict[str, Any]) -> dict[str, An
         output_var = str(atom.get("output_var") or "").strip()
         if atom_id and output_var:
             output_vars_by_atom_id[atom_id] = output_var
+            atom_ids_by_output_var[output_var] = atom_id
 
     for atom in atoms:
         if not isinstance(atom, dict):
             continue
+        normalized_dep_ids: list[str] = []
+        seen_dep_ids: set[str] = set()
+        for dep in (str(dep).strip() for dep in (atom.get("depends_on") or [])):
+            if not dep:
+                continue
+            normalized_dep = atom_ids_by_output_var.get(dep, dep)
+            if normalized_dep in seen_dep_ids:
+                continue
+            seen_dep_ids.add(normalized_dep)
+            normalized_dep_ids.append(normalized_dep)
+        atom["depends_on"] = normalized_dep_ids
         dependency_vars = [
             output_vars_by_atom_id[dep_id]
-            for dep_id in (str(dep).strip() for dep in (atom.get("depends_on") or []))
+            for dep_id in normalized_dep_ids
             if dep_id in output_vars_by_atom_id
         ]
         if not dependency_vars:
@@ -1172,6 +1452,79 @@ def _normalize_semantic_plan_language(plan_dict: dict[str, Any]) -> dict[str, An
                 )
             atom[field_name] = normalized
     return plan_dict
+
+
+_POSSESSIVE_LOCATION_RE = re.compile(
+    r"\b([A-Z][A-Za-z0-9 .'\-]{0,80}?)'s\s+"
+    r"(country|city|birthplace|state|region|province|capital|location)\b"
+)
+
+
+def _question_possessive_location_requirements(question: str) -> list[tuple[str, str]]:
+    """Extract explicit possessive-location phrases that require a root lookup atom."""
+    requirements: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for match in _POSSESSIVE_LOCATION_RE.finditer(str(question or "")):
+        subject = re.sub(r"\s+", " ", str(match.group(1) or "")).strip().strip("'\"")
+        subject = re.split(
+            r"\b(?:and|or|but|of|in|on|at|from|to|between)\b",
+            subject,
+            flags=re.IGNORECASE,
+        )[-1].strip()
+        subject = re.sub(r"^(?:the|a|an)\s+", "", subject, flags=re.IGNORECASE).strip()
+        location_kind = str(match.group(2) or "").strip().lower()
+        if not subject or not location_kind:
+            continue
+        key = (subject.casefold(), location_kind)
+        if key in seen:
+            continue
+        seen.add(key)
+        requirements.append((subject, location_kind))
+    return requirements
+
+
+def _plan_missing_possessive_location_atom(question: str, plan: Any) -> bool:
+    """Return True when a possessive-location phrase lacks its own root atom in the plan."""
+    requirements = _question_possessive_location_requirements(question)
+    if not requirements:
+        return False
+    atoms: list[Any] = []
+    if isinstance(plan, dict):
+        raw_atoms = plan.get("atoms")
+        if isinstance(raw_atoms, list):
+            atoms = raw_atoms
+    else:
+        raw_atoms = getattr(plan, "atoms", None)
+        if isinstance(raw_atoms, list):
+            atoms = raw_atoms
+    if not atoms:
+        return False
+
+    for subject, location_kind in requirements:
+        subject_norm = subject.casefold()
+        location_norm = location_kind.casefold()
+        found_root_atom = False
+        for atom in atoms:
+            if isinstance(atom, dict):
+                sub_question = str(atom.get("sub_question") or "")
+                depends_on = atom.get("depends_on") or []
+                operation = str(atom.get("operation") or "").strip().lower()
+            else:
+                sub_question = str(getattr(atom, "sub_question", "") or "")
+                depends_on = getattr(atom, "depends_on", []) or []
+                operation = str(getattr(atom, "operation", "") or "").strip().lower()
+            text = sub_question.casefold()
+            if subject_norm not in text or location_norm not in text:
+                continue
+            if depends_on:
+                continue
+            if operation and operation not in {"lookup", "relation"}:
+                continue
+            found_root_atom = True
+            break
+        if not found_root_atom:
+            return True
+    return False
 
 
 def _bridge_candidate_names(payload: dict[str, Any], *, current_atom: dict[str, Any]) -> list[str]:
@@ -1253,6 +1606,8 @@ def _bridge_candidate_names(payload: dict[str, Any], *, current_atom: dict[str, 
 
     if matching_candidates:
         return (matching_candidates + unknown_candidates)[:_ATOM_BRIDGE_MAX_CANDIDATES]
+    if unknown_candidates:
+        return unknown_candidates[:_ATOM_BRIDGE_MAX_CANDIDATES]
     return candidates[:_ATOM_BRIDGE_MAX_CANDIDATES]
 
 
@@ -1407,6 +1762,27 @@ def _query_targets_cached_alias(requested_query: str, *, atom_id: str) -> bool:
     return False
 
 
+def _query_looks_degenerate_for_retrieval(text: str) -> bool:
+    """Return True when a query is dominated by placeholders or repeated low-signal tokens."""
+    probe = _normalize_query_compare_text(text)
+    if not probe:
+        return False
+    if re.search(r"\((that|those|this|these|it|they)\b[^)]*\)", str(text or "").lower()):
+        return True
+
+    tokens = [token for token in probe.split() if token not in _QUERY_STOPWORDS]
+    if len(tokens) < 4:
+        return False
+    duplicate_count = sum(count - 1 for count in Counter(tokens).values() if count > 1)
+    if duplicate_count >= 2:
+        return True
+    repeated_bigrams = {
+        " ".join(tokens[index:index + 2])
+        for index in range(len(tokens) - 1)
+    }
+    return len(repeated_bigrams) < max(len(tokens) // 2, 2)
+
+
 def _build_retrieval_query_contract(
     requested_query: str,
     *,
@@ -1425,6 +1801,7 @@ def _build_retrieval_query_contract(
         "active_atom_sub_question": "",
         "active_atom_status": "",
         "dependency_values_used": [],
+        "recovery_hint": None,
     }
     if atom is None:
         return requested, contract
@@ -1435,7 +1812,10 @@ def _build_retrieval_query_contract(
         return requested, contract
 
     atom_id = str(atom.get("atom_id") or "").strip()
-    atom_query = str(atom.get("sub_question") or "").strip()
+    atom_query = _render_atom_query_with_dependency_values(
+        str(atom.get("sub_question") or "").strip(),
+        atom=atom,
+    )
     active_status = str((todo or {}).get("status") or "").strip()
     dependency_values = _resolved_dependency_values(atom)
     contract.update(
@@ -1446,6 +1826,9 @@ def _build_retrieval_query_contract(
             "dependency_values_used": dependency_values,
         }
     )
+    recovery_hint = _public_atom_recovery_hint(atom_id)
+    if recovery_hint is not None:
+        contract["recovery_hint"] = recovery_hint
 
     effective = requested
     reasons: list[str] = []
@@ -1480,6 +1863,22 @@ def _build_retrieval_query_contract(
             dep_prefix = " ".join(dependency_values[:2])
             effective = f"{dep_prefix} {focus}".strip()
             reasons.append("dependency_values_forwarded")
+
+    suggested_query = str((recovery_hint or {}).get("suggested_query") or "").strip()
+    if suggested_query:
+        should_apply_recovery_hint = (
+            not requested
+            or _query_token_overlap(requested, _current_question) >= 0.75
+            or (atom_query and _query_token_overlap(requested, atom_query) >= 0.65)
+            or _query_looks_degenerate_for_retrieval(requested)
+            or _query_looks_degenerate_for_retrieval(effective)
+        )
+        if should_apply_recovery_hint and (
+            _normalize_query_compare_text(suggested_query)
+            != _normalize_query_compare_text(effective)
+        ):
+            effective = suggested_query
+            reasons.append("atom_reflection_query_override")
 
     compact_effective = _compact_search_query(effective or atom_query or requested)
     if compact_effective and _normalize_query_compare_text(compact_effective) != _normalize_query_compare_text(effective):
@@ -1532,6 +1931,7 @@ def _record_atom_lifecycle_event(event: dict[str, Any]) -> None:
     payload = dict(event)
     payload.setdefault("question", _current_question)
     payload.setdefault("todo_status_line", _todo_status_line())
+    payload.setdefault("benchmark_trace_id", _benchmark_trace_id_for_observability())
     _atom_lifecycle_events.append(payload)
     try:
         os.makedirs("results", exist_ok=True)
@@ -1539,6 +1939,451 @@ def _record_atom_lifecycle_event(event: dict[str, Any]) -> None:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
     except OSError:
         logger.warning("Failed to persist atom lifecycle event", exc_info=True)
+
+
+def _recent_unresolved_atom_events(
+    atom_id: str,
+    *,
+    limit: int = _ATOM_REFLECTION_HISTORY_LIMIT,
+) -> list[dict[str, Any]]:
+    """Return recent unresolved lifecycle events for one atom."""
+    if not atom_id:
+        return []
+    events = [
+        dict(event)
+        for event in _atom_lifecycle_events
+        if str(event.get("event") or "") == "atom_judged_unresolved"
+        and str(event.get("atom_id") or "") == atom_id
+    ]
+    if limit > 0:
+        return events[-limit:]
+    return events
+
+
+def _atom_validation_payload_summary(
+    atom_id: str,
+    *,
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    """Summarize recent validation payloads so recovery reflection sees what the atom saw."""
+    summaries: list[dict[str, Any]] = []
+    payloads = _atom_validation_payloads.get(atom_id) or []
+    for payload in payloads[-limit:]:
+        if not isinstance(payload, dict):
+            continue
+        summary: dict[str, Any] = {}
+        if payload.get("_tool_name"):
+            summary["tool_name"] = payload.get("_tool_name")
+        if payload.get("_method"):
+            summary["method"] = payload.get("_method")
+        query_contract = payload.get("query_contract")
+        if isinstance(query_contract, dict):
+            effective_query = str(query_contract.get("effective_query") or "").strip()
+            if effective_query:
+                summary["effective_query"] = effective_query
+        canonical_name = str(payload.get("canonical_name") or "").strip()
+        if canonical_name:
+            summary["canonical_name"] = canonical_name
+        entity_id = str(payload.get("entity_id") or "").strip()
+        if entity_id:
+            summary["entity_id"] = entity_id
+        connected_entities = payload.get("connected_entities")
+        if isinstance(connected_entities, list) and connected_entities:
+            summary["connected_entities"] = [str(value) for value in connected_entities[:6]]
+        chunks = payload.get("chunks")
+        if isinstance(chunks, list) and chunks:
+            chunk_summaries: list[dict[str, Any]] = []
+            for chunk in chunks[:3]:
+                if not isinstance(chunk, dict):
+                    continue
+                chunk_id = str(chunk.get("chunk_id") or "").strip()
+                text = str(chunk.get("text") or chunk.get("text_content") or "").strip()
+                entry: dict[str, Any] = {}
+                if chunk_id:
+                    entry["chunk_id"] = chunk_id
+                if text:
+                    entry["text_preview"] = text[:180]
+                if entry:
+                    chunk_summaries.append(entry)
+            if chunk_summaries:
+                summary["chunks"] = chunk_summaries
+        if summary:
+            summaries.append(summary)
+    return summaries
+
+
+def _public_atom_recovery_hint(atom_id: str) -> dict[str, Any] | None:
+    """Return the public subset of a stored recovery hint."""
+    raw_hint = _atom_recovery_hints.get(atom_id)
+    if not isinstance(raw_hint, dict):
+        return None
+    hint = {
+        key: value
+        for key, value in raw_hint.items()
+        if key not in {"fingerprint"}
+    }
+    atom = _semantic_plan_atom_by_id(atom_id)
+    if isinstance(atom, dict):
+        hint = _normalize_recovery_hint_surface(atom, hint)
+    return hint
+
+
+def _normalize_recovery_hint_surface(
+    atom: dict[str, Any],
+    hint: dict[str, Any],
+) -> dict[str, Any]:
+    """Normalize recovery hints onto supported consolidated tool surfaces."""
+    normalized = dict(hint)
+    target_tool = str(normalized.get("target_tool_name") or "").strip()
+    target_method = str(normalized.get("target_method") or "").strip()
+    probe = str(atom.get("sub_question") or "").strip().lower()
+
+    if target_tool == "relationship_search":
+        if _atom_expects_place_answer(atom) and "between" in probe:
+            endpoints = _between_place_endpoint_aliases(atom)[:2]
+            endpoint_text = " and ".join(endpoints) if endpoints else "both endpoints"
+            normalized["target_method"] = "graph"
+            normalized["next_action"] = (
+                "Use relationship_search(method='graph') on the resolved endpoints to inspect direct border "
+                f"relationships for {endpoint_text} before more semantic retrieval."
+            )
+        elif target_method not in {"graph", "semantic", "score", "agent"}:
+            normalized["target_method"] = "graph"
+    return normalized
+
+
+def _recovery_hint_should_force_surface_pivot(
+    atom: dict[str, Any],
+    combined_events: list[dict[str, Any]],
+) -> bool:
+    """Return True when repeated chunk misses on a relation-like entity atom should pivot surfaces."""
+    if _normalize_answer_kind(str(atom.get("answer_kind") or "")) != "entity":
+        return False
+    probe = str(atom.get("sub_question") or "").strip().lower()
+    if not probe:
+        return False
+    if not re.search(r"\b(between|from whom|from which|from what|who were|which people|what people|people)\b", probe):
+        return False
+    chunk_events = [
+        event
+        for event in combined_events
+        if str(event.get("tool_name") or "").strip() == "chunk_retrieve"
+    ]
+    if len(chunk_events) < _ATOM_REFLECTION_TRIGGER_UNRESOLVED:
+        return False
+    non_chunk_events = [
+        event
+        for event in combined_events
+        if str(event.get("tool_name") or "").strip()
+        and str(event.get("tool_name") or "").strip() != "chunk_retrieve"
+    ]
+    return not non_chunk_events
+
+
+async def _maybe_generate_atom_recovery_hint(
+    atom: dict[str, Any],
+    todo: dict[str, Any],
+    latest_update: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Generate a bounded recovery hint after repeated unresolved attempts on one atom."""
+    if str(latest_update.get("event") or "") != "atom_judged_unresolved":
+        return None
+    atom_id = str(atom.get("atom_id") or "").strip()
+    if not atom_id:
+        return None
+
+    unresolved_history = _recent_unresolved_atom_events(
+        atom_id,
+        limit=max(_ATOM_REFLECTION_HISTORY_LIMIT - 1, 0),
+    )
+    combined_events = [*unresolved_history, dict(latest_update)]
+    if len(combined_events) < _ATOM_REFLECTION_TRIGGER_UNRESOLVED:
+        return None
+
+    fingerprint = json.dumps(
+        {
+            "atom_id": atom_id,
+            "events": [
+                {
+                    "tool_name": str(event.get("tool_name") or ""),
+                    "method": str(event.get("method") or ""),
+                    "rationale": str(event.get("rationale") or ""),
+                    "next_action": str(event.get("next_action") or ""),
+                }
+                for event in combined_events[-_ATOM_REFLECTION_HISTORY_LIMIT:]
+            ],
+        },
+        sort_keys=True,
+    )
+    existing_hint = _atom_recovery_hints.get(atom_id)
+    if isinstance(existing_hint, dict) and existing_hint.get("fingerprint") == fingerprint:
+        return _public_atom_recovery_hint(atom_id)
+
+    from pydantic import BaseModel, Field
+    from llm_client import render_prompt
+
+    class AtomRecoveryDecision(BaseModel):
+        diagnosis: str = Field(
+            description="Short diagnosis of why the atom is still unresolved."
+        )
+        suggested_query: str = Field(
+            description="The next retrieval query to try. Must stay tightly focused on the active atom."
+        )
+        target_tool_name: str = Field(
+            description="Preferred next tool surface: entity_search, entity_info, relationship_search, chunk_retrieve, or none."
+        )
+        target_method: str = Field(
+            description="Preferred method hint for the next tool call. Empty if no specific method matters."
+        )
+        next_action: str = Field(
+            description="One concrete next action for the controller or agent."
+        )
+        avoid_values: list[str] = Field(
+            description="Values or bridge guesses to avoid repeating if they already failed."
+        )
+        confidence: float = Field(
+            description="Confidence from 0 to 1 that this recovery hint is useful."
+        )
+
+    prompt_path = str(Path(__file__).parent / "prompts" / "atom_recovery_reflection.yaml")
+    messages = render_prompt(
+        prompt_path,
+        question=_current_question or _current_semantic_plan_question or "",
+        atom_id=atom_id,
+        atom_sub_question=str(atom.get("sub_question") or ""),
+        todo_content=str(todo.get("content") or ""),
+        todo_status_line=_todo_status_line(),
+        dependency_values=", ".join(_resolved_dependency_values(atom)) or "(none)",
+        unresolved_events_json=json.dumps(combined_events[-_ATOM_REFLECTION_HISTORY_LIMIT:], indent=2),
+        validation_payload_summary_json=json.dumps(
+            _atom_validation_payload_summary(atom_id),
+            indent=2,
+        ),
+    )
+
+    try:
+        model, helper_kwargs = _helper_structured_llm_policy(num_retries=2)
+        trace_id = f"digimon.atom_recovery.{atom_id}.{uuid.uuid4().hex[:8]}"
+        decision, _meta = await _call_helper_structured(
+            model=model,
+            messages=messages,
+            response_model=AtomRecoveryDecision,
+            task="digimon.atom_recovery",
+            trace_id=trace_id,
+            input_state={
+                "atom_id": atom_id,
+                "atom_sub_question": str(atom.get("sub_question") or ""),
+                "todo_content": str(todo.get("content") or ""),
+                "todo_status_line": _todo_status_line(),
+                "unresolved_events": combined_events[-_ATOM_REFLECTION_HISTORY_LIMIT:],
+            },
+            **helper_kwargs,
+        )
+    except Exception as exc:
+        logger.warning("atom recovery reflection failed: %s", exc)
+        return None
+
+    hint = {
+        "atom_id": atom_id,
+        "diagnosis": str(decision.diagnosis or "").strip(),
+        "suggested_query": str(decision.suggested_query or "").strip(),
+        "target_tool_name": str(decision.target_tool_name or "").strip(),
+        "target_method": str(decision.target_method or "").strip(),
+        "next_action": str(decision.next_action or "").strip(),
+        "avoid_values": [str(value).strip() for value in (decision.avoid_values or []) if str(value).strip()],
+        "confidence": float(decision.confidence or 0.0),
+        "fingerprint": fingerprint,
+    }
+    if (
+        _recovery_hint_should_force_surface_pivot(atom, combined_events)
+        and hint["target_tool_name"] in {"", "none", "chunk_retrieve"}
+    ):
+        hint["target_tool_name"] = "entity_search"
+        if not hint["target_method"]:
+            hint["target_method"] = "string"
+        hint["next_action"] = (
+            "Switch surfaces: resolve the subject entity in the graph with "
+            "entity_search(method='string'), then inspect entity_info(profile) "
+            "or relationship_search(graph). Do not guess a bridge entity yet."
+        )
+    hint = _normalize_recovery_hint_surface(atom, hint)
+    _atom_recovery_hints[atom_id] = hint
+    _record_atom_lifecycle_event(
+        {
+            "event": "atom_reflection_generated",
+            "atom_id": atom_id,
+            "diagnosis": hint["diagnosis"],
+            "suggested_query": hint["suggested_query"],
+            "target_tool_name": hint["target_tool_name"],
+            "target_method": hint["target_method"],
+            "next_action": hint["next_action"],
+            "avoid_values": hint["avoid_values"],
+            "confidence": hint["confidence"],
+        }
+    )
+    return _public_atom_recovery_hint(atom_id)
+
+
+def _helper_decision_trace_path() -> Path:
+    """Return the JSONL path used for helper-call observability."""
+    return Path(_get_project_root()) / "results" / ".helper_decision_trace.jsonl"
+
+
+def _truncate_observability_value(value: Any, *, max_chars: int = 4000) -> Any:
+    """Serialize nested observability payloads without unbounded prompt bloat."""
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        if isinstance(value, str) and len(value) > max_chars:
+            return value[:max_chars].rstrip() + " ... [truncated]"
+        return value
+    if hasattr(value, "model_dump"):
+        try:
+            return _truncate_observability_value(value.model_dump(), max_chars=max_chars)
+        except Exception:
+            return repr(value)
+    if isinstance(value, dict):
+        return {
+            str(key): _truncate_observability_value(item, max_chars=max_chars)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple, set)):
+        return [
+            _truncate_observability_value(item, max_chars=max_chars)
+            for item in value
+        ]
+    return repr(value)
+
+
+def _benchmark_trace_id_for_observability() -> str | None:
+    """Best-effort current benchmark trace_id, available for direct-backend runs."""
+    try:
+        from Core.MCP.tool_consolidation import CURRENT_TRACE_ID
+
+        trace_id = str(CURRENT_TRACE_ID.get() or "").strip()
+        return trace_id or None
+    except Exception:
+        return None
+
+
+def _serialize_helper_result_meta(meta: Any) -> dict[str, Any]:
+    """Extract stable routing/fallback metadata from llm_client structured calls."""
+    warnings = [str(item) for item in (getattr(meta, "warnings", None) or []) if str(item).strip()]
+    warning_records = _truncate_observability_value(
+        getattr(meta, "warning_records", None) or []
+    )
+    routing_trace_raw = getattr(meta, "routing_trace", None)
+    routing_trace = (
+        _truncate_observability_value(routing_trace_raw)
+        if isinstance(routing_trace_raw, dict)
+        else None
+    )
+    attempted_models = []
+    if isinstance(routing_trace, dict):
+        attempted_models = [
+            str(model).strip()
+            for model in (routing_trace.get("attempted_models") or [])
+            if str(model).strip()
+        ]
+    selected_model = ""
+    if isinstance(routing_trace, dict):
+        selected_model = str(routing_trace.get("selected_model") or "").strip()
+    fallback_used = any(
+        warning.startswith(("FALLBACK:", "STICKY_FALLBACK:"))
+        for warning in warnings
+    ) or (len(attempted_models) > 1 and bool(selected_model) and selected_model != attempted_models[0])
+
+    usage = getattr(meta, "usage", None)
+    return {
+        "requested_model": str(getattr(meta, "requested_model", "") or "").strip() or None,
+        "resolved_model": str(getattr(meta, "resolved_model", "") or "").strip() or None,
+        "execution_model": str(getattr(meta, "execution_model", "") or "").strip() or None,
+        "routing_trace": routing_trace,
+        "warnings": warnings,
+        "warning_records": warning_records,
+        "fallback_used": bool(fallback_used),
+        "usage": _truncate_observability_value(usage) if isinstance(usage, dict) else None,
+        "cost": getattr(meta, "cost", None),
+        "finish_reason": str(getattr(meta, "finish_reason", "") or "").strip() or None,
+    }
+
+
+def _record_helper_decision_event(event: dict[str, Any]) -> None:
+    """Persist one helper decision event for benchmark diagnosis."""
+    payload = dict(event)
+    payload.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+    payload.setdefault("question", _current_question or _current_semantic_plan_question or "")
+    payload.setdefault("todo_status_line", _todo_status_line())
+    payload.setdefault("benchmark_trace_id", _benchmark_trace_id_for_observability())
+    _helper_decision_events.append(payload)
+    try:
+        trace_path = _helper_decision_trace_path()
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        with trace_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError:
+        logger.warning("Failed to persist helper decision event", exc_info=True)
+
+
+async def _call_helper_structured(
+    *,
+    model: str,
+    messages: list[dict[str, Any]],
+    response_model: Any,
+    task: str,
+    trace_id: str,
+    input_state: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> tuple[Any, Any]:
+    """Run one structured helper LLM call and persist diagnostic provenance."""
+    from llm_client import acall_llm_structured
+
+    base_event = {
+        "event_type": "helper_structured_call",
+        "task": task,
+        "helper_trace_id": trace_id,
+        "requested_model": model,
+        "question": str(
+            (input_state or {}).get("question")
+            or _current_question
+            or _current_semantic_plan_question
+            or ""
+        ).strip(),
+        "configured_fallback_models": [
+            str(name).strip()
+            for name in (kwargs.get("fallback_models") or [])
+            if str(name).strip()
+        ],
+        "input_state": _truncate_observability_value(input_state or {}),
+        "messages": _truncate_observability_value(messages),
+    }
+    try:
+        parsed, meta = await acall_llm_structured(
+            model,
+            messages,
+            response_model=response_model,
+            task=task,
+            trace_id=trace_id,
+            max_budget=0,
+            **kwargs,
+        )
+    except Exception as exc:
+        _record_helper_decision_event(
+            {
+                **base_event,
+                "status": "error",
+                "error": str(exc),
+            }
+        )
+        raise
+
+    _record_helper_decision_event(
+        {
+            **base_event,
+            "status": "ok",
+            "decision_payload": _truncate_observability_value(parsed),
+            **_serialize_helper_result_meta(meta),
+        }
+    )
+    return parsed, meta
 
 
 def _todo_dependencies_satisfied(atom: dict[str, Any] | None) -> bool:
@@ -1734,7 +2579,7 @@ async def _infer_atom_completion_with_llm(
 ) -> dict[str, Any] | None:
     """Ask a small internal judge whether the current atom is fully resolved."""
     from pydantic import BaseModel, Field
-    from llm_client import acall_llm_structured, render_prompt
+    from llm_client import render_prompt
 
     class AtomCompletionDecision(BaseModel):
         should_mark_done: bool = Field(
@@ -1785,17 +2630,25 @@ async def _infer_atom_completion_with_llm(
         evidence_text=evidence_text,
     )
 
-    llm = _state.get("agentic_llm")
-    model = llm.model if llm else _state["config"].llm.model
+    model, helper_kwargs = _helper_structured_llm_policy(num_retries=2)
     trace_id = f"digimon.atom_completion.{tool_name}.{uuid.uuid4().hex[:8]}"
     try:
-        decision, _meta = await acall_llm_structured(
-            model,
-            messages,
+        decision, _meta = await _call_helper_structured(
+            model=model,
+            messages=messages,
             response_model=AtomCompletionDecision,
             task="digimon.atom_completion",
             trace_id=trace_id,
-            max_budget=0,
+            input_state={
+                "tool_name": tool_name,
+                "method": method,
+                "atom_id": str(atom.get("atom_id") or ""),
+                "atom_sub_question": str(atom.get("sub_question") or ""),
+                "todo_content": str(todo.get("content") or ""),
+                "effective_query": effective_query,
+                "dependency_values": dependency_values,
+            },
+            **helper_kwargs,
         )
     except Exception as exc:
         logger.warning("atom completion judge failed: %s", exc)
@@ -1810,6 +2663,31 @@ async def _infer_atom_completion_with_llm(
             "method": method,
             "confidence": float(decision.confidence or 0.0),
             "rationale": decision.rationale,
+        }
+    if _answer_matches_between_endpoint(atom, resolved_value):
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": str(atom.get("atom_id") or ""),
+            "tool_name": tool_name,
+            "method": method,
+            "confidence": float(decision.confidence or 0.0),
+            "rationale": (
+                f"The proposed place '{resolved_value}' is one of the endpoint countries in a "
+                f"'between' relation, so it cannot itself be the between-country answer."
+            ),
+        }
+    if not _between_place_candidate_has_explicit_support(atom, resolved_value, payload):
+        endpoint_text = " and ".join(_between_place_endpoint_aliases(atom)[:2]) or "both endpoints"
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": str(atom.get("atom_id") or ""),
+            "tool_name": tool_name,
+            "method": method,
+            "confidence": float(decision.confidence or 0.0),
+            "rationale": (
+                f"The proposed place '{resolved_value}' is mentioned near one endpoint, but the evidence does not "
+                f"directly show it as the distinct country between {endpoint_text} or as bordering both endpoints."
+            ),
         }
 
     return {
@@ -1834,7 +2712,7 @@ async def _infer_contextual_place_completion_with_llm(
 ) -> dict[str, Any] | None:
     """Judge whether indirect but focused text evidence is enough to resolve a place relation atom."""
     from pydantic import BaseModel, Field
-    from llm_client import acall_llm_structured, render_prompt
+    from llm_client import render_prompt
 
     class PlaceCompletionDecision(BaseModel):
         should_mark_done: bool = Field(
@@ -1887,17 +2765,25 @@ async def _infer_contextual_place_completion_with_llm(
         evidence_text=evidence_text,
     )
 
-    llm = _state.get("agentic_llm")
-    model = llm.model if llm else _state["config"].llm.model
+    model, helper_kwargs = _helper_structured_llm_policy(num_retries=2)
     trace_id = f"digimon.atom_place_completion.{tool_name}.{uuid.uuid4().hex[:8]}"
     try:
-        decision, _meta = await acall_llm_structured(
-            model,
-            messages,
+        decision, _meta = await _call_helper_structured(
+            model=model,
+            messages=messages,
             response_model=PlaceCompletionDecision,
             task="digimon.atom_place_completion",
             trace_id=trace_id,
-            max_budget=0,
+            input_state={
+                "tool_name": tool_name,
+                "method": method,
+                "atom_id": str(atom.get("atom_id") or ""),
+                "atom_sub_question": str(atom.get("sub_question") or ""),
+                "todo_content": str(todo.get("content") or ""),
+                "effective_query": effective_query,
+                "dependency_values": dependency_values,
+            },
+            **helper_kwargs,
         )
     except Exception as exc:
         logger.warning("contextual place completion judge failed: %s", exc)
@@ -1914,6 +2800,31 @@ async def _infer_contextual_place_completion_with_llm(
             "confidence": confidence,
             "rationale": str(decision.rationale or "").strip()
             or "Place evidence is still too indirect to mark the atom done.",
+        }
+    if _answer_matches_between_endpoint(atom, resolved_value):
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": str(atom.get("atom_id") or ""),
+            "tool_name": tool_name,
+            "method": method,
+            "confidence": confidence,
+            "rationale": (
+                f"The proposed place '{resolved_value}' is one of the endpoint countries in a "
+                f"'between' relation, so it cannot itself be the between-country answer."
+            ),
+        }
+    if not _between_place_candidate_has_explicit_support(atom, resolved_value, payload):
+        endpoint_text = " and ".join(_between_place_endpoint_aliases(atom)[:2]) or "both endpoints"
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": str(atom.get("atom_id") or ""),
+            "tool_name": tool_name,
+            "method": method,
+            "confidence": confidence,
+            "rationale": (
+                f"The proposed place '{resolved_value}' is mentioned near one endpoint, but the evidence does not "
+                f"directly show it as the distinct country between {endpoint_text} or as bordering both endpoints."
+            ),
         }
 
     return {
@@ -2021,6 +2932,42 @@ async def _validate_manual_todo_completion(
             f"TODO '{atom_id}' cannot be marked done before dependencies are done: {', '.join(missing)}.",
         )
 
+    proposed_norm = _normalize_resolved_value(proposed_value)
+    previous_value = _extract_todo_result_value(previous_todo or {})
+    previous_norm = _normalize_resolved_value(previous_value)
+    if (
+        isinstance(previous_todo, dict)
+        and str(previous_todo.get("status") or "").strip().lower() == "done"
+        and previous_norm
+        and proposed_norm == previous_norm
+    ):
+        merged_refs: list[str] = []
+        for ref in (
+            list(previous_todo.get("evidence_refs") or [])
+            + list(todo_item.get("evidence_refs") or [])
+        ):
+            ref_text = str(ref or "").strip()
+            if ref_text and ref_text not in merged_refs:
+                merged_refs.append(ref_text)
+        normalized_item = dict(previous_todo)
+        normalized_item["id"] = str(todo_item.get("id") or atom_id or normalized_item.get("id") or "").strip()
+        normalized_item["content"] = str(todo_item.get("content") or normalized_item.get("content") or "").strip()
+        normalized_item["status"] = "done"
+        normalized_item["answer"] = proposed_value
+        if merged_refs:
+            normalized_item["evidence_refs"] = merged_refs
+        _record_atom_lifecycle_event(
+            {
+                "event": "atom_manual_reused",
+                "atom_id": atom_id,
+                "sub_question": atom.get("sub_question"),
+                "proposed_value": proposed_value,
+                "reason": "idempotent_done_rewrite",
+                "evidence_refs": merged_refs,
+            }
+        )
+        return normalized_item
+
     validation_payloads = list(_atom_validation_payloads.get(atom_id) or [])
     fallback_payload = _fallback_manual_validation_payload(atom)
     if fallback_payload:
@@ -2040,8 +2987,8 @@ async def _validate_manual_todo_completion(
             "Retrieve supporting evidence first, then include the answer and evidence_refs.",
         )
 
-    proposed_norm = _normalize_resolved_value(proposed_value)
     mismatch_update: dict[str, Any] | None = None
+    mismatch_payload: dict[str, Any] | None = None
     last_unresolved: dict[str, Any] | None = None
     validation_todo = previous_todo or todo_item
 
@@ -2065,6 +3012,7 @@ async def _validate_manual_todo_completion(
         judged_norm = _normalize_resolved_value(judged_value)
         if judged_norm != proposed_norm:
             mismatch_update = update
+            mismatch_payload = payload
             continue
 
         merged_refs: list[str] = []
@@ -2097,6 +3045,33 @@ async def _validate_manual_todo_completion(
 
     if mismatch_update:
         supported_value = str(mismatch_update.get("resolved_value") or "").strip()
+        if _manual_text_answer_can_canonicalize_to_supported(atom, proposed_value, supported_value):
+            merged_refs: list[str] = []
+            for ref in (
+                list(todo_item.get("evidence_refs") or [])
+                + list(mismatch_update.get("evidence_refs") or [])
+                + list((mismatch_payload or {}).get("evidence_refs") or [])
+            ):
+                ref_text = str(ref or "").strip()
+                if ref_text and ref_text not in merged_refs:
+                    merged_refs.append(ref_text)
+
+            normalized_item = dict(todo_item)
+            normalized_item["answer"] = supported_value
+            if merged_refs:
+                normalized_item["evidence_refs"] = merged_refs
+            _record_atom_lifecycle_event(
+                {
+                    "event": "atom_manual_canonicalized",
+                    "atom_id": atom_id,
+                    "sub_question": atom.get("sub_question"),
+                    "proposed_value": proposed_value,
+                    "supported_value": supported_value,
+                    "evidence_refs": merged_refs,
+                    "rationale": str(mismatch_update.get("rationale") or ""),
+                }
+            )
+            return normalized_item
         _record_atom_lifecycle_event(
             {
                 "event": "atom_manual_rejected",
@@ -2128,6 +3103,29 @@ async def _validate_manual_todo_completion(
         f"TODO '{atom_id}' cannot be marked done yet because the current evidence does not directly resolve it."
         + (f" {unresolved_reason}" if unresolved_reason else ""),
     )
+
+
+def _manual_text_answer_can_canonicalize_to_supported(
+    atom: dict[str, Any] | None,
+    proposed_value: str,
+    supported_value: str,
+) -> bool:
+    """Allow text-answer TODO writes to snap to the exact supported phrase when semantically narrower."""
+    if not isinstance(atom, dict):
+        return False
+    if _normalize_answer_kind(str(atom.get("answer_kind") or "")) != "text":
+        return False
+    proposed_norm = _normalize_resolved_value(proposed_value)
+    supported_norm = _normalize_resolved_value(supported_value)
+    if not proposed_norm or not supported_norm:
+        return False
+    if proposed_norm in supported_norm or supported_norm in proposed_norm:
+        return True
+    proposed_tokens = _signal_tokens(proposed_value)
+    supported_tokens = _signal_tokens(supported_value)
+    if not proposed_tokens or not supported_tokens:
+        return False
+    return proposed_tokens <= supported_tokens
 
 
 async def _probe_bridge_candidates_with_text(
@@ -2373,7 +3371,7 @@ async def _infer_bridge_candidate_with_llm(
             }
 
     from pydantic import BaseModel, Field
-    from llm_client import acall_llm_structured, render_prompt
+    from llm_client import render_prompt
 
     class BridgeDecision(BaseModel):
         should_advance: bool = Field(
@@ -2407,17 +3405,24 @@ async def _infer_bridge_candidate_with_llm(
         evidence_text=evidence_text,
     )
 
-    llm = _state.get("agentic_llm")
-    model = llm.model if llm else _state["config"].llm.model
+    model, helper_kwargs = _helper_structured_llm_policy(num_retries=2)
     trace_id = f"digimon.atom_bridge.{tool_name}.{uuid.uuid4().hex[:8]}"
     try:
-        decision, _meta = await acall_llm_structured(
-            model,
-            messages,
+        decision, _meta = await _call_helper_structured(
+            model=model,
+            messages=messages,
             response_model=BridgeDecision,
             task="digimon.atom_bridge",
             trace_id=trace_id,
-            max_budget=0,
+            input_state={
+                "tool_name": tool_name,
+                "method": method,
+                "atom_id": str(atom.get("atom_id") or ""),
+                "downstream_atom_id": str(downstream_atom.get("atom_id") or ""),
+                "source_entity": str(payload.get("canonical_name") or payload.get("entity_id") or ""),
+                "candidate_names": [str(c.get("value") or "") for c in candidates if isinstance(c, dict)],
+            },
+            **helper_kwargs,
         )
     except Exception as exc:
         logger.warning("atom bridge judge failed: %s", exc)
@@ -2448,12 +3453,158 @@ async def _infer_bridge_candidate_with_llm(
     }
 
 
+async def _validate_bridge_update_against_current_atom(
+    atom: dict[str, Any],
+    todo: dict[str, Any],
+    payload: dict[str, Any],
+    update: dict[str, Any],
+) -> dict[str, Any]:
+    """Require focused current-atom evidence before accepting high-risk bridge jumps."""
+    candidate_value = str(update.get("resolved_value") or "").strip()
+    if not candidate_value:
+        return update
+
+    dataset_name = str(payload.get("resolved_dataset_name") or payload.get("dataset_name") or "").strip()
+    if not dataset_name:
+        dataset_name = _dataset_name_from_graph_reference(str(payload.get("resolved_graph_reference_id") or ""))
+    if not dataset_name:
+        return update
+
+    current_atom_query = str(atom.get("sub_question") or "").strip()
+    focused_query = _compact_search_query(f"{candidate_value} {current_atom_query}")
+    if not focused_query:
+        return update
+
+    seen_chunks_snapshot = dict(_seen_chunks)
+    seen_chunk_text_snapshot = dict(_seen_chunk_text)
+    try:
+        with _query_contract_bypass("bridge_validation"):
+            raw = await chunk_text_search(query_text=focused_query, dataset_name=dataset_name, top_k=2)
+        validation_payload = json.loads(raw)
+    except Exception as exc:
+        logger.warning("bridge validation search failed: %s", exc)
+        _seen_chunks.clear()
+        _seen_chunks.update(seen_chunks_snapshot)
+        _seen_chunk_text.clear()
+        _seen_chunk_text.update(seen_chunk_text_snapshot)
+        return update
+    _seen_chunks.clear()
+    _seen_chunks.update(seen_chunks_snapshot)
+    _seen_chunk_text.clear()
+    _seen_chunk_text.update(seen_chunk_text_snapshot)
+
+    if not isinstance(validation_payload, dict):
+        return update
+
+    chunks = validation_payload.get("chunks")
+    if not isinstance(chunks, list) or not chunks:
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": str(atom.get("atom_id") or ""),
+            "tool_name": str(update.get("tool_name") or ""),
+            "method": str(update.get("method") or ""),
+            "confidence": 0.0,
+            "rationale": (
+                f"Bridge candidate '{candidate_value}' could not be confirmed with focused current-atom "
+                f"evidence for query '{focused_query}'."
+            ),
+        }
+
+    validation_payload.setdefault("resolved_dataset_name", dataset_name)
+    validation_payload.setdefault(
+        "resolved_graph_reference_id",
+        str(payload.get("resolved_graph_reference_id") or "").strip(),
+    )
+    validation_payload["query_contract"] = {
+        "effective_query": focused_query,
+    }
+
+    validated_update = await _infer_atom_completion_with_llm(
+        atom,
+        todo,
+        validation_payload,
+        tool_name="chunk_retrieve",
+        method="text",
+    )
+    if (
+        validated_update
+        and validated_update.get("event") != "atom_autocomplete"
+        and _atom_expects_place_answer(atom)
+    ):
+        place_update = await _infer_contextual_place_completion_with_llm(
+            atom,
+            todo,
+            validation_payload,
+            tool_name="chunk_retrieve",
+            method="text",
+        )
+        if place_update:
+            validated_update = place_update
+
+    if not validated_update or validated_update.get("event") != "atom_autocomplete":
+        rationale = ""
+        if isinstance(validated_update, dict):
+            rationale = str(validated_update.get("rationale") or "").strip()
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": str(atom.get("atom_id") or ""),
+            "tool_name": str(update.get("tool_name") or ""),
+            "method": str(update.get("method") or ""),
+            "confidence": float((validated_update or {}).get("confidence") or 0.0),
+            "rationale": (
+                f"Focused current-atom evidence did not directly confirm bridge candidate "
+                f"'{candidate_value}'."
+                + (f" {rationale}" if rationale else "")
+            ),
+        }
+
+    validated_value = str(validated_update.get("resolved_value") or "").strip()
+    candidate_norm = _normalize_resolved_value(candidate_value)
+    validated_norm = _normalize_resolved_value(validated_value)
+    if validated_norm != candidate_norm:
+        return {
+            "event": "atom_judged_unresolved",
+            "atom_id": str(atom.get("atom_id") or ""),
+            "tool_name": str(update.get("tool_name") or ""),
+            "method": str(update.get("method") or ""),
+            "confidence": float(validated_update.get("confidence") or 0.0),
+            "rationale": (
+                f"Focused current-atom evidence supports '{validated_value}' rather than bridge "
+                f"candidate '{candidate_value}'."
+            ),
+        }
+
+    merged_refs: list[str] = []
+    for ref in list(update.get("evidence_refs") or []) + list(validated_update.get("evidence_refs") or []):
+        ref_text = str(ref or "").strip()
+        if ref_text and ref_text not in merged_refs:
+            merged_refs.append(ref_text)
+
+    merged = dict(update)
+    merged["evidence_refs"] = merged_refs
+    merged["confidence"] = min(
+        float(update.get("confidence") or 0.0),
+        float(validated_update.get("confidence") or 0.0),
+    )
+    merged["rationale"] = (
+        f"{str(update.get('rationale') or '').strip()} "
+        f"Focused current-atom validation also resolved '{validated_value}'."
+    ).strip()
+    resolution_mode = str(update.get("resolution_mode") or "").strip()
+    if resolution_mode:
+        merged["resolution_mode"] = f"{resolution_mode}_validated"
+    return merged
+
+
 def _apply_atom_completion_update(atom: dict[str, Any], todo: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
     """Persist an atom-completion decision into TODO state and advance the plan."""
     resolved_value = str(update.get("resolved_value") or "").strip()
     evidence_refs = [str(ref).strip() for ref in (update.get("evidence_refs") or []) if str(ref).strip()]
+    atom_id = str(atom.get("atom_id") or "").strip()
     todo["status"] = "done"
     todo["answer"] = resolved_value
+    if atom_id:
+        _atom_recovery_hints.pop(atom_id, None)
     resolution_mode = str(update.get("resolution_mode") or "").strip()
     if resolution_mode:
         todo["resolution_mode"] = resolution_mode
@@ -2502,6 +3653,45 @@ def _best_atom_autocomplete_update(
     return max(updates, key=_rank)
 
 
+def _entity_search_subject_aliases(
+    top_match: dict[str, Any] | None,
+    *,
+    candidate_name: str,
+    candidate_entity_id: str,
+) -> set[str]:
+    """Collect normalized alias forms for the resolved string-search subject anchor."""
+    aliases: set[str] = set()
+    if isinstance(top_match, dict):
+        for key in (
+            "canonical_name",
+            "entity_name",
+            "resolved_entity_name",
+            "entity_id",
+            "resolved_entity_id",
+        ):
+            normalized = _normalize_resolved_value(top_match.get(key))
+            if normalized:
+                aliases.add(normalized)
+    for value in (candidate_name, candidate_entity_id):
+        normalized = _normalize_resolved_value(value)
+        if normalized:
+            aliases.add(normalized)
+    return aliases
+
+
+def _update_matches_subject_anchor(update: dict[str, Any], subject_aliases: set[str]) -> bool:
+    """Return True when a direct completion resolves to the current subject anchor itself."""
+    resolved_value = _normalize_resolved_value(update.get("resolved_value"))
+    if not resolved_value or not subject_aliases:
+        return False
+    return any(
+        resolved_value == alias
+        or resolved_value in alias
+        or alias in resolved_value
+        for alias in subject_aliases
+    )
+
+
 async def _maybe_complete_active_atom_from_payload(
     payload: dict[str, Any],
     *,
@@ -2537,6 +3727,11 @@ async def _maybe_complete_active_atom_from_payload(
             if candidate_name and resolved_graph_id:
                 bridge_candidate_updates: list[dict[str, Any]] = []
                 direct_candidate_updates: list[dict[str, Any]] = []
+                subject_aliases = _entity_search_subject_aliases(
+                    top_match,
+                    candidate_name=candidate_name,
+                    candidate_entity_id=candidate_entity_id,
+                )
                 requires_birth_evidence = _atom_requires_birth_evidence(atom)
                 try:
                     profile_raw = await entity_profile(
@@ -2593,11 +3788,32 @@ async def _maybe_complete_active_atom_from_payload(
                         method=candidate_method,
                     )
                     if bridge_update and bridge_update.get("event") == "atom_autocomplete":
+                        if _atom_requires_validated_bridge_resolution(atom):
+                            bridge_update = await _validate_bridge_update_against_current_atom(
+                                atom,
+                                todo,
+                                candidate_payload,
+                                bridge_update,
+                            )
+                    if bridge_update and bridge_update.get("event") == "atom_autocomplete":
                         bridge_candidate_updates.append(bridge_update)
-                best_update = _best_atom_autocomplete_update(
-                    bridge_candidate_updates or direct_candidate_updates,
-                    answer_kind=answer_kind,
-                )
+                anchored_direct_updates = [
+                    update
+                    for update in direct_candidate_updates
+                    if _update_matches_subject_anchor(update, subject_aliases)
+                ]
+                allow_bridge_autocomplete = not _atom_disallows_bridge_autocomplete(atom)
+                if anchored_direct_updates:
+                    best_update = _best_atom_autocomplete_update(
+                        anchored_direct_updates,
+                        answer_kind=answer_kind,
+                    )
+                else:
+                    best_update = _best_atom_autocomplete_update(
+                        direct_candidate_updates
+                        or (bridge_candidate_updates if allow_bridge_autocomplete else []),
+                        answer_kind=answer_kind,
+                    )
                 if best_update:
                     return _apply_atom_completion_update(atom, todo, best_update)
                 if _atom_requires_subject_chunk_probe(atom):
@@ -2615,6 +3831,16 @@ async def _maybe_complete_active_atom_from_payload(
 
     if tool_name not in {"chunk_retrieve", "relationship_search", "entity_info"}:
         return None
+
+    deterministic_place_update = _deterministic_between_place_candidate_update(
+        atom,
+        todo,
+        payload,
+        tool_name=tool_name,
+        method=method,
+    )
+    if deterministic_place_update and deterministic_place_update.get("event") == "atom_autocomplete":
+        return _apply_atom_completion_update(atom, todo, deterministic_place_update)
 
     update = await _infer_atom_completion_with_llm(
         atom,
@@ -2647,6 +3873,17 @@ async def _maybe_complete_active_atom_from_payload(
                 tool_name=tool_name,
                 method=method,
             )
+            if (
+                bridge_update
+                and bridge_update.get("event") == "atom_autocomplete"
+                and _atom_requires_validated_bridge_resolution(atom)
+            ):
+                bridge_update = await _validate_bridge_update_against_current_atom(
+                    atom,
+                    todo,
+                    payload,
+                    bridge_update,
+                )
         if bridge_update and bridge_update.get("event") == "atom_autocomplete":
             return _apply_atom_completion_update(atom, todo, bridge_update)
         if bridge_update and bridge_update.get("event") == "atom_judged_unresolved":
@@ -2662,6 +3899,12 @@ async def _maybe_complete_active_atom_from_payload(
                 "If the graph exposes multiple connected places, choose the bridge entity "
                 "that best fits the downstream atom before searching for the final date."
             )
+        reflection_hint = await _maybe_generate_atom_recovery_hint(atom, todo, update)
+        if reflection_hint is not None:
+            update["reflection_hint"] = reflection_hint
+            reflected_action = str(reflection_hint.get("next_action") or "").strip()
+            if reflected_action:
+                update["next_action"] = reflected_action
         _record_atom_lifecycle_event(update)
         return update
     return _apply_atom_completion_update(atom, todo, update)
@@ -2689,7 +3932,11 @@ def _normalize_answer_kind(answer_kind: str) -> str:
         "person": "entity",
         "location": "entity",
         "span": "entity",
-        "text": "entity",
+        "text": "text",
+        "phrase": "text",
+        "description": "text",
+        "method": "text",
+        "event": "text",
     }
     return aliases.get(kind, "")
 
@@ -2758,7 +4005,73 @@ def _atom_requires_subject_chunk_probe(atom: dict[str, Any] | None) -> bool:
     probe = str(atom.get("sub_question") or "").strip().lower()
     if not probe:
         return False
+    if _atom_requires_subject_location_probe(atom):
+        return True
     return bool(re.search(r"\b(named after|namesake|meaning)\b", probe))
+
+
+def _atom_disallows_bridge_autocomplete(atom: dict[str, Any] | None) -> bool:
+    """Return True when bridge-style graph jumps are too lossy for the current atom."""
+    if not isinstance(atom, dict):
+        return False
+    if _normalize_answer_kind(str(atom.get("answer_kind") or "")) != "entity":
+        return False
+    probe = str(atom.get("sub_question") or "").strip().lower()
+    if not probe:
+        return False
+    if _atom_requires_subject_location_probe(atom):
+        return True
+    structural_markers = (
+        "season",
+        "episode",
+        "chapter",
+        "volume",
+        "part ",
+        "round",
+        "book ",
+        "installment",
+    )
+    return any(marker in probe for marker in structural_markers)
+
+
+def _atom_requires_subject_location_probe(atom: dict[str, Any] | None) -> bool:
+    """Return True when a place-answer atom should stay anchored on the resolved subject entity."""
+    if not isinstance(atom, dict):
+        return False
+    if not _atom_expects_place_answer(atom):
+        return False
+    probe = str(atom.get("sub_question") or "").strip().lower()
+    if not probe:
+        return False
+    if "between" in probe or "border" in probe or "boundary" in probe or "adjacent" in probe:
+        return False
+    location_patterns = (
+        r"\bwhat is [^?]+ country\b",
+        r"\bwhich country is [^?]+ in\b",
+        r"\bwhat country is [^?]+ in\b",
+        r"\bcountry of\b",
+        r"'s country\b",
+        r"\blocated in\b",
+        r"\bsituated in\b",
+    )
+    return any(re.search(pattern, probe) for pattern in location_patterns)
+
+
+def _atom_requires_validated_bridge_resolution(atom: dict[str, Any] | None) -> bool:
+    """Return True when provisional bridge candidates need direct current-atom confirmation."""
+    if not isinstance(atom, dict):
+        return False
+    if _normalize_answer_kind(str(atom.get("answer_kind") or "")) != "entity":
+        return False
+    probe = str(atom.get("sub_question") or "").strip().lower()
+    if not probe:
+        return False
+    expected_types = _infer_expected_coarse_types(probe)
+    if "person" in expected_types:
+        return True
+    if _atom_expects_place_answer(atom) and re.search(r"\b(between|border|boundary|adjacent)\b", probe):
+        return True
+    return bool(re.search(r"\bfrom whom\b|\bfrom which\b|\bfrom what\b", probe))
 
 
 _ENTITY_HINT_RE = re.compile(
@@ -2772,8 +4085,306 @@ _DATE_HINT_RE = re.compile(
     r")\b"
 )
 _NUMBER_HINT_RE = re.compile(r"\b(how many|how much|what number|what amount|population|count|total)\b")
+_TEXT_HINT_RE = re.compile(
+    r"(^\s*how\s+(did|do|does|was|were|is|are)\b)|"
+    r"(^\s*why\b)|"
+    r"(\b(by what means|in what way|how were)\b)"
+)
 _YESNO_HINT_RE = re.compile(r"^\s*(is|are|was|were|do|does|did|can|could|will|has|have|had)\b")
 _CAPITALIZED_MENTION_RE = re.compile(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\b")
+_BETWEEN_ENDPOINT_MENTION_STOPWORDS = {
+    "what",
+    "which",
+    "who",
+    "where",
+    "when",
+    "identify",
+    "determine",
+    "country",
+    "place",
+}
+
+
+def _answer_matches_between_endpoint(atom: dict[str, Any] | None, resolved_value: str) -> bool:
+    """Reject endpoint places when an atom asks for the distinct country/place between two endpoints."""
+    if not isinstance(atom, dict):
+        return False
+    if not _atom_expects_place_answer(atom):
+        return False
+    probe = str(atom.get("sub_question") or "").strip()
+    if not probe or "between" not in probe.lower():
+        return False
+    resolved_norm = _normalize_resolved_value(resolved_value)
+    if not resolved_norm:
+        return False
+
+    endpoint_aliases: set[str] = set()
+    for value in _resolved_dependency_values(atom):
+        normalized = _normalize_resolved_value(value)
+        if normalized:
+            endpoint_aliases.add(normalized)
+    for mention in _CAPITALIZED_MENTION_RE.findall(probe):
+        normalized = _normalize_resolved_value(mention)
+        if normalized:
+            endpoint_aliases.add(normalized)
+    return any(
+        resolved_norm == alias or resolved_norm in alias or alias in resolved_norm
+        for alias in endpoint_aliases
+        if alias
+    )
+
+
+def _between_place_possessive_subject_aliases(atom: dict[str, Any] | None) -> list[str]:
+    """Return subject aliases from possessive place prompts like ``A Lim's country``."""
+    if not isinstance(atom, dict):
+        return []
+    probe = str(atom.get("sub_question") or "").strip()
+    if not probe:
+        return []
+    aliases: list[str] = []
+    seen: set[str] = set()
+    for raw in re.findall(
+        r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})'s\s+(?:country|place|region|state|city)\b",
+        probe,
+    ):
+        normalized = _normalize_resolved_value(raw)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            aliases.append(normalized)
+    return aliases
+
+
+def _infer_between_place_subject_container_aliases(
+    atom: dict[str, Any] | None,
+    payload: dict[str, Any] | None,
+) -> list[str]:
+    """Infer the container place for a possessive subject endpoint from current evidence."""
+    if not isinstance(atom, dict) or not isinstance(payload, dict):
+        return []
+    subject_aliases = _between_place_possessive_subject_aliases(atom)
+    if not subject_aliases:
+        return []
+    inferred: list[str] = []
+    seen: set[str] = set()
+    for text in _iter_between_place_support_text(payload):
+        for sentence in re.split(r"(?<=[.!?;])\s+|\n+", text):
+            lowered = sentence.lower()
+            ordered_mentions: list[tuple[int, str]] = []
+            for mention in _extract_context_entity_mentions(sentence, limit=12):
+                normalized = _normalize_resolved_value(mention)
+                if not normalized:
+                    continue
+                pos = lowered.find(normalized)
+                if pos == -1:
+                    continue
+                ordered_mentions.append((pos, normalized))
+            ordered_mentions.sort()
+            for subject_alias in subject_aliases:
+                subject_pos = lowered.find(subject_alias)
+                if subject_pos == -1:
+                    continue
+                for pos, normalized in ordered_mentions:
+                    if pos <= subject_pos:
+                        continue
+                    if normalized == subject_alias or normalized in _BETWEEN_ENDPOINT_MENTION_STOPWORDS:
+                        continue
+                    if normalized not in seen:
+                        seen.add(normalized)
+                        inferred.append(normalized)
+                if inferred:
+                    return inferred
+    return inferred
+
+
+def _between_place_endpoint_aliases(
+    atom: dict[str, Any] | None,
+    payload: dict[str, Any] | None = None,
+) -> list[str]:
+    """Return normalized endpoint aliases for place-between atoms."""
+    if not isinstance(atom, dict):
+        return []
+    endpoint_aliases: list[str] = []
+    seen: set[str] = set()
+    subject_aliases = set(_between_place_possessive_subject_aliases(atom))
+    for value in _resolved_dependency_values(atom):
+        normalized = _normalize_resolved_value(value)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            endpoint_aliases.append(normalized)
+    probe = str(atom.get("sub_question") or "").strip()
+    for mention in _CAPITALIZED_MENTION_RE.findall(probe):
+        normalized = _normalize_resolved_value(mention)
+        if normalized in _BETWEEN_ENDPOINT_MENTION_STOPWORDS:
+            continue
+        if normalized in subject_aliases:
+            continue
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            endpoint_aliases.append(normalized)
+    for normalized in _infer_between_place_subject_container_aliases(atom, payload):
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            endpoint_aliases.append(normalized)
+    for normalized in subject_aliases:
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            endpoint_aliases.append(normalized)
+    return endpoint_aliases
+
+
+def _iter_between_place_support_text(payload: dict[str, Any]) -> Iterable[str]:
+    """Yield compact evidence strings that can support a between-place candidate."""
+    chunks = payload.get("chunks")
+    if isinstance(chunks, list):
+        for chunk in chunks:
+            if not isinstance(chunk, dict):
+                continue
+            text = str(chunk.get("text") or chunk.get("text_content") or chunk.get("content") or "").strip()
+            if text:
+                yield text
+
+    relationships = payload.get("relationships")
+    if not isinstance(relationships, list):
+        relationships = payload.get("one_hop_relationships")
+    if isinstance(relationships, list):
+        for rel in relationships:
+            if not isinstance(rel, dict):
+                continue
+            src = str(rel.get("src_id") or rel.get("source") or rel.get("source_id") or "").strip()
+            tgt = str(rel.get("tgt_id") or rel.get("target") or rel.get("target_id") or "").strip()
+            desc = str(
+                rel.get("description")
+                or rel.get("relationship_description")
+                or rel.get("text")
+                or rel.get("predicate")
+                or ""
+            ).strip()
+            parts = [part for part in (src, desc, tgt) if part]
+            if parts:
+                yield " ".join(parts)
+
+
+def _between_place_candidate_has_explicit_support(
+    atom: dict[str, Any] | None,
+    resolved_value: str,
+    payload: dict[str, Any],
+) -> bool:
+    """Require direct evidence that the candidate is the distinct place between both endpoints."""
+    if not isinstance(atom, dict) or not isinstance(payload, dict):
+        return True
+    if not _atom_expects_place_answer(atom):
+        return True
+    probe = str(atom.get("sub_question") or "").strip().lower()
+    if "between" not in probe:
+        return True
+
+    candidate_norm = _normalize_resolved_value(resolved_value)
+    if not candidate_norm:
+        return False
+    endpoint_aliases = _between_place_endpoint_aliases(atom, payload)
+    if len(endpoint_aliases) < 2:
+        return True
+    endpoints = endpoint_aliases[:2]
+    border_pattern = re.compile(
+        r"\b(border|borders|bordered|bordering|adjacent|adjoins?|adjoined|neighbor(?:s|ed|ing)?|neighbour(?:s|ed|ing)?)\b"
+    )
+    between_pattern = re.compile(r"\bbetween\b")
+
+    for text in _iter_between_place_support_text(payload):
+        for sentence in re.split(r"(?<=[.!?;])\s+|\n+", text):
+            lowered = sentence.lower()
+            normalized = _normalize_resolved_value(sentence)
+            if candidate_norm not in normalized:
+                continue
+            if any(endpoint not in normalized for endpoint in endpoints):
+                continue
+            if between_pattern.search(lowered):
+                return True
+            border_match = border_pattern.search(lowered)
+            if border_match is None:
+                continue
+            if lowered.find(candidate_norm) < border_match.start():
+                return True
+    return False
+
+
+def _deterministic_between_place_candidate_update(
+    atom: dict[str, Any] | None,
+    todo: dict[str, Any] | None,
+    payload: dict[str, Any],
+    *,
+    tool_name: str,
+    method: str,
+) -> dict[str, Any] | None:
+    """Promote an explicit non-endpoint bridge country before asking the helper to guess."""
+    if not isinstance(atom, dict) or not isinstance(todo, dict) or not isinstance(payload, dict):
+        return None
+    if not _atom_expects_place_answer(atom):
+        return None
+    probe = str(atom.get("sub_question") or "").strip().lower()
+    if "between" not in probe:
+        return None
+    endpoint_aliases = _between_place_endpoint_aliases(atom, payload)
+    if len(endpoint_aliases) < 2:
+        return None
+    endpoints = endpoint_aliases[:2]
+    border_pattern = re.compile(
+        r"\b(border|borders|bordered|bordering|adjacent|adjoins?|adjoined|neighbor(?:s|ed|ing)?|neighbour(?:s|ed|ing)?)\b"
+    )
+
+    for text in _iter_between_place_support_text(payload):
+        for sentence in re.split(r"(?<=[.!?;])\s+|\n+", text):
+            lowered = sentence.lower()
+            normalized_sentence = _normalize_resolved_value(sentence)
+            if any(endpoint not in normalized_sentence for endpoint in endpoints):
+                continue
+            border_match = border_pattern.search(lowered)
+            if border_match is None:
+                continue
+            mentions = _extract_context_entity_mentions(sentence, limit=12)
+            ranked_candidates: list[tuple[int, int, str]] = []
+            for mention in mentions:
+                candidate_norm = _normalize_resolved_value(mention)
+                if not candidate_norm or candidate_norm in endpoints:
+                    continue
+                mention_pos = lowered.find(candidate_norm)
+                if mention_pos == -1:
+                    continue
+                ranked_candidates.append(
+                    (
+                        0 if mention_pos < border_match.start() else 1,
+                        mention_pos,
+                        mention.strip(),
+                    )
+                )
+            ranked_candidates.sort()
+            for _, _, candidate in ranked_candidates:
+                if not _between_place_candidate_has_explicit_support(atom, candidate, payload):
+                    continue
+                evidence_refs = list(payload.get("evidence_refs") or [])
+                if not evidence_refs:
+                    for chunk in payload.get("chunks") or []:
+                        if isinstance(chunk, dict):
+                            chunk_id = str(chunk.get("chunk_id") or "").strip()
+                            if chunk_id:
+                                evidence_refs.append(chunk_id)
+                return {
+                    "event": "atom_autocomplete",
+                    "atom_id": str(atom.get("atom_id") or ""),
+                    "resolved_value": candidate,
+                    "confidence": 1.0,
+                    "evidence_refs": evidence_refs,
+                    "rationale": (
+                        f"The evidence explicitly names '{candidate}' before the border relation and mentions both "
+                        f"{endpoints[0]} and {endpoints[1]}, so it is the distinct between-country."
+                    ),
+                    "tool_name": tool_name,
+                    "method": method,
+                    "resolution_mode": "deterministic_between_place_support",
+                }
+    return None
+
+
 def _infer_answer_kind(text: str) -> str:
     """Infer expected answer kind from question/task language."""
     probe = (text or "").strip().lower()
@@ -2789,6 +4400,8 @@ def _infer_answer_kind(text: str) -> str:
         return "date"
     if _NUMBER_HINT_RE.search(probe):
         return "number"
+    if _TEXT_HINT_RE.search(probe):
+        return "text"
     return "entity"
 
 
@@ -2833,7 +4446,7 @@ def _infer_expected_coarse_types(text: str) -> set[str]:
     if re.search(r"\b(birthplace|headquarter|headquarters|city|country|province|state|region|where|located)\b", probe):
         expected.add("place")
     if re.search(
-        r"\b(founder|author|actor|player|person|individual|who|performer|singer|musician|artist|designer|architect|explorer)\b",
+        r"\b(founder|author|actor|player|person|people|persons|individual|individuals|citizen|citizens|resident|residents|tribe|tribes|who|performer|singer|musician|artist|designer|architect|explorer)\b",
         probe,
     ):
         expected.add("person")
@@ -7054,7 +8667,12 @@ async def set_agentic_model(model: str) -> str:
     from Core.Provider.LLMClientAdapter import LLMClientAdapter
 
     old_model = _state["agentic_llm"].model if _state.get("agentic_llm") else None
-    _state["agentic_llm"] = LLMClientAdapter(model)
+    fallback_models = _configured_helper_fallback_models()
+    _state["agentic_llm"] = LLMClientAdapter(
+        model,
+        fallback_models=fallback_models,
+        num_retries=3,
+    )
     _state["agentic_model_source"] = "runtime_override"
 
     logger.info(f"Agentic model changed: {old_model} -> {model}")
@@ -8015,7 +9633,7 @@ async def select_analysis_mode(
     """
     await _ensure_initialized()
 
-    from llm_client import render_prompt, acall_llm_structured
+    from llm_client import render_prompt
     from pydantic import BaseModel, Field
 
     class AnalysisModeDecision(BaseModel):
@@ -8046,16 +9664,22 @@ async def select_analysis_mode(
         return json.dumps({"error": f"Prompt render failed: {e}"})
 
     # Use agentic LLM if available, else fall back to default LLM
-    llm = _state.get("agentic_llm")
-    model = llm.model if llm else _state["config"].llm.model
+    model, helper_kwargs = _helper_structured_llm_policy(num_retries=2)
 
     try:
         _sam_trace = f"digimon.select_analysis_mode.{dataset_name or 'none'}.{uuid.uuid4().hex[:8]}"
-        decision, meta = await acall_llm_structured(
-            model, messages, response_model=AnalysisModeDecision,
+        decision, meta = await _call_helper_structured(
+            model=model,
+            messages=messages,
+            response_model=AnalysisModeDecision,
             task="digimon.select_analysis_mode",
             trace_id=_sam_trace,
-            max_budget=0,
+            input_state={
+                "dataset_name": dataset_name,
+                "target_analysis": target_analysis,
+                "available_resources_count": len(resources),
+            },
+            **helper_kwargs,
         )
         logger.info(
             f"select_analysis_mode: recommended '{decision.recommended_mode}' "
@@ -8105,7 +9729,6 @@ if BENCHMARK_MODE:
         global _current_semantic_plan_question
         await _ensure_initialized()
 
-        from llm_client import acall_llm_structured
         from pydantic import BaseModel, Field
         from typing import Literal
 
@@ -8115,16 +9738,16 @@ if BENCHMARK_MODE:
             operation: str = Field(
                 description="Operation type: lookup, relation, compose, intersection, compare, temporal."
             )
-            answer_kind: Literal["entity", "date", "number", "yes_no"] = Field(
-                description="Expected answer type for this atom."
+            answer_kind: Literal["entity", "date", "number", "yes_no", "text"] = Field(
+                description="Expected answer type for this atom. Use text for short method/action/event phrases."
             )
             output_var: str = Field(description="Variable produced by this atom.")
             depends_on: list[str] = Field(default_factory=list, description="Upstream atom IDs.")
             done_criteria: str = Field(description="Evidence requirement to mark this atom done.")
 
         class SemanticPlan(BaseModel):
-            final_answer_kind: Literal["entity", "date", "number", "yes_no"] = Field(
-                description="Expected answer type for final answer."
+            final_answer_kind: Literal["entity", "date", "number", "yes_no", "text"] = Field(
+                description="Expected answer type for final answer. Use text for short method/action/event phrases."
             )
             atoms: list[PlanAtom] = Field(description="2-6 ordered atoms.")
             composition_rule: str = Field(
@@ -8166,6 +9789,8 @@ if BENCHMARK_MODE:
             "instead of replacing them with nearest named entities. "
             "Never collapse nested clauses. For patterns like 'X where Y is located', "
             "first create an atom for Y's location, then apply X to that result. "
+            "For possessive location phrases like \"X's country\", \"X's city\", or \"X's birthplace\", "
+            "create a separate root lookup atom that resolves that location before any downstream relation uses it. "
             "For conjunctions ('A and B'), create separate atoms for A and B, then an explicit "
             "intersection/compose atom. For comparatives/uniqueness ('only', 'largest', "
             "'larger than', ordinals), create an explicit compare/rank atom before downstream lookups. "
@@ -8184,7 +9809,11 @@ if BENCHMARK_MODE:
             "3) composition_rule must preserve how intermediate variables combine.\n"
             "4) uncertainty_points should call out ambiguous bridge entities if any.\n"
             "5) Preserve hidden intermediate variables implied by nested wording.\n"
-            "6) For bridge atoms, done_criteria should mention evidence needed to disambiguate alternatives.\n\n"
+            "6) Use answer_kind='text' for final answers that are short method/action/event phrases "
+            "(for example questions beginning with 'How did', 'How were', or 'Why').\n"
+            "7) For bridge atoms, done_criteria should mention evidence needed to disambiguate alternatives.\n"
+            "8) For possessive location phrases like \"X's country\" or \"X's birthplace\", create an explicit root atom "
+            "that resolves that location before any relation/composition atom consumes it.\n\n"
             "Mini examples:\n"
             "- 'region north of the region where X is located and location of Y' => "
             "locate region(X), locate region(Y), compose/intersect, then apply north-of relation.\n"
@@ -8196,22 +9825,25 @@ if BENCHMARK_MODE:
             {"role": "user", "content": user_prompt},
         ]
 
-        llm = _state.get("agentic_llm")
-        model = llm.model if llm else _state["config"].llm.model
         trace_id = f"digimon.semantic_plan.{uuid.uuid4().hex[:8]}"
 
         # Use deepseek for planning to avoid Gemini rate limits.
         # Planning is cheap (~500 tokens) and deepseek handles structured output well.
         plan_model = "deepseek/deepseek-chat"
+        plan_call_kwargs = _helper_structured_llm_policy(
+            model_override=plan_model,
+            num_retries=2,
+        )[1]
+        revise_model, revise_call_kwargs = _helper_structured_llm_policy(num_retries=2)
         try:
-            plan, _meta = await acall_llm_structured(
-                plan_model,
-                messages,
+            plan, _meta = await _call_helper_structured(
+                model=plan_model,
+                messages=messages,
                 response_model=SemanticPlan,
                 task="digimon.semantic_plan",
                 trace_id=trace_id,
-                max_budget=0,
-                num_retries=2,
+                input_state={"question": question, "phase": "draft"},
+                **plan_call_kwargs,
             )
 
             # Second-pass plan critic/reviser:
@@ -8231,6 +9863,7 @@ if BENCHMARK_MODE:
                 "3) Comparatives/uniqueness: include explicit compare/rank atom before downstream lookups.\n"
                 "4) Dependency validity: each atom should depend on required upstream outputs.\n"
                 "5) Answer type: final atom must produce final_answer_kind with explicit evidence-ready done_criteria.\n"
+                "   Use final_answer_kind=text for short method/action/event phrases rather than entities.\n"
                 "6) No shortcut substitutions of relation targets (e.g., replacing a composed target with a nearby entity).\n\n"
                 "Scope disambiguation rule:\n"
                 "- If a relation phrase ('north of', 'south of', 'east/west of', 'before/after', etc.) is followed by a conjunction scope, "
@@ -8250,17 +9883,65 @@ if BENCHMARK_MODE:
 
             revised_trace_id = f"digimon.semantic_plan.revise.{uuid.uuid4().hex[:8]}"
             try:
-                revised_plan, _rev_meta = await acall_llm_structured(
-                    model,
-                    critique_messages,
+                revised_plan, _rev_meta = await _call_helper_structured(
+                    model=revise_model,
+                    messages=critique_messages,
                     response_model=SemanticPlan,
                     task="digimon.semantic_plan.revise",
                     trace_id=revised_trace_id,
-                    max_budget=0,
+                    input_state={"question": question, "phase": "revise", "draft_plan": plan.model_dump()},
+                    **revise_call_kwargs,
                 )
                 plan = revised_plan
             except Exception as revise_err:
                 logger.warning("semantic_plan revise pass failed; using draft plan. err=%s", revise_err)
+
+            if _plan_missing_possessive_location_atom(question, plan):
+                location_requirements = [
+                    f"{subject}'s {location_kind}"
+                    for subject, location_kind in _question_possessive_location_requirements(question)
+                ]
+                repair_system = (
+                    "You repair multi-hop semantic plans that skipped an explicit possessive-location atom. "
+                    "When a question contains phrases like \"X's country\" or \"X's birthplace\", the corrected plan "
+                    "must include a root lookup atom that resolves that location before any downstream relation uses it."
+                )
+                repair_user = (
+                    f"Question: {question}\n\n"
+                    f"Current plan JSON:\n{json.dumps(plan.model_dump(), ensure_ascii=False, indent=2)}\n\n"
+                    f"Required possessive-location atoms missing or malformed: {location_requirements}\n"
+                    "Repair rules:\n"
+                    "1) Add or rewrite a root lookup atom that explicitly resolves each required possessive-location phrase.\n"
+                    "2) Downstream atoms may consume that result, but they must not replace the root lookup.\n"
+                    "3) Preserve any other valid atoms and composition already present.\n"
+                    "4) Return only the corrected plan in the same schema.\n"
+                )
+                repair_messages = [
+                    {"role": "system", "content": repair_system},
+                    {"role": "user", "content": repair_user},
+                ]
+                repair_trace_id = f"digimon.semantic_plan.possessive_repair.{uuid.uuid4().hex[:8]}"
+                try:
+                    repaired_plan, _repair_meta = await _call_helper_structured(
+                        model=revise_model,
+                        messages=repair_messages,
+                        response_model=SemanticPlan,
+                        task="digimon.semantic_plan.possessive_repair",
+                        trace_id=repair_trace_id,
+                        input_state={
+                            "question": question,
+                            "phase": "possessive_repair",
+                            "required_location_phrases": location_requirements,
+                            "prior_plan": plan.model_dump(),
+                        },
+                        **revise_call_kwargs,
+                    )
+                    plan = repaired_plan
+                except Exception as repair_err:
+                    logger.warning(
+                        "semantic_plan possessive-location repair failed; using prior plan. err=%s",
+                        repair_err,
+                    )
 
             if _plan_has_relation_scope_risk(question, plan):
                 repair_system = (
@@ -8282,13 +9963,14 @@ if BENCHMARK_MODE:
                 ]
                 repair_trace_id = f"digimon.semantic_plan.scope_repair.{uuid.uuid4().hex[:8]}"
                 try:
-                    repaired_plan, _repair_meta = await acall_llm_structured(
-                        model,
-                        repair_messages,
+                    repaired_plan, _repair_meta = await _call_helper_structured(
+                        model=revise_model,
+                        messages=repair_messages,
                         response_model=SemanticPlan,
                         task="digimon.semantic_plan.scope_repair",
                         trace_id=repair_trace_id,
-                        max_budget=0,
+                        input_state={"question": question, "phase": "scope_repair", "prior_plan": plan.model_dump()},
+                        **revise_call_kwargs,
                     )
                     plan = repaired_plan
                 except Exception as repair_err:
@@ -8423,7 +10105,6 @@ if BENCHMARK_MODE:
         """
         await _ensure_initialized()
 
-        from llm_client import acall_llm_structured
         from pydantic import BaseModel, Field
 
         class BridgeDecision(BaseModel):
@@ -8471,18 +10152,22 @@ if BENCHMARK_MODE:
             {"role": "user", "content": user_prompt},
         ]
 
-        llm = _state.get("agentic_llm")
-        model = llm.model if llm else _state["config"].llm.model
+        model, helper_kwargs = _helper_structured_llm_policy(num_retries=2)
         trace_id = f"digimon.bridge_disambiguate.{uuid.uuid4().hex[:8]}"
 
         try:
-            decision, _meta = await acall_llm_structured(
-                model,
-                messages,
+            decision, _meta = await _call_helper_structured(
+                model=model,
+                messages=messages,
                 response_model=BridgeDecision,
                 task="digimon.bridge_disambiguate",
                 trace_id=trace_id,
-                max_budget=0,
+                input_state={
+                    "question": question,
+                    "downstream_clue": downstream_clue,
+                    "candidate_names": [c["candidate"] for c in candidates],
+                },
+                **helper_kwargs,
             )
             # Ensure winner is one of provided candidates
             candidate_names = [c["candidate"] for c in candidates]
@@ -8647,9 +10332,9 @@ if BENCHMARK_MODE:
                 "Reasoning cannot be empty. Provide a concise evidence-grounded justification.",
             )
 
-        # Atom-completion gate removed: allow partial submission when evidence is exhausted.
-        # An imperfect answer scores better via LLM-judge than no answer (missing_required_submit).
-        # Agents are instructed via prompt to aim for complete atoms, but not blocked from submitting.
+        pending_validation = _pending_submit_validation_payload()
+        if pending_validation is not None:
+            return json.dumps(pending_validation)
 
         _reset_chunk_dedup()  # reset seen chunks for next question
         return json.dumps(
@@ -8657,6 +10342,9 @@ if BENCHMARK_MODE:
                 "status": "submitted",
                 "answer": normalized_answer,
                 "expected_answer_kind": _current_expected_answer_kind or None,
+                "pending_atoms": 0,
+                "pending_ids": [],
+                "todo_status_line": _todo_status_line(),
             }
         )
 

@@ -21,6 +21,7 @@ ADRs document significant architectural decisions.
 | 013 | Represent Answer-Critical Facts by Operator Utility, Not Topic | Accepted | 2026-03-22 |
 | 014 | Consolidated Tool Surface for Benchmark Agents | Accepted | 2026-03-23 |
 | 015 | Strategic Risks for Thesis Test — Relocated to Plan #17 Open Questions | Superseded | 2026-03-23 |
+| 016 | Declarative Decision Tracing and Capability-Declared Agent Runtimes | Proposed | 2026-04-04 |
 
 ## ADR Lifecycle
 
@@ -32,8 +33,10 @@ Proposed → Accepted/Rejected → Superseded (optional)
 
 1. Copy template to `NNNN-title.md`
 2. Fill in sections
-3. Add to index above
-4. Get review if needed
+3. Add an `Informed By` section linking the research note, plan, predecessor
+   ADRs, and key artifacts that informed the decision
+4. Add to index above
+5. Get review if needed
 
 ## ADR Template
 
@@ -42,6 +45,10 @@ Proposed → Accepted/Rejected → Superseded (optional)
 
 Status: Proposed | Accepted | Rejected | Superseded by ADR-XXXX
 Date: YYYY-MM-DD
+
+## Informed By
+List the research, plans, predecessor ADRs, and benchmark/runtime artifacts
+that directly informed this decision.
 
 ## Context
 What is the issue that we're seeing that motivates this decision?

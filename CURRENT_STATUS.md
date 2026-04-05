@@ -39,9 +39,33 @@ Result files:
 - Verification: `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T010250Z.json` (10/19 = 52.6%)
 - Plan #27 regression: `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T040050Z.json` (8/19 = 42.1%)
 - Plan #27 reverted: `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T045308Z.json` (6/19 = 31.6%)
+- Five-run distribution report: `docs/reports/musique_19q_iteration_report_2026_04_03.md`
 
 **Stochasticity reassessment (2026-04-03):**
-The "stably passing" list below is likely stale. 619265 failed in 3 of the last 4 runs (listed as stable). 766973 timed out in 2 runs. The 57.9% run was a high-end stochastic result. True mean is probably ~42-52% given the distribution of runs. Need ≥3 controlled runs at same settings to establish real baseline.
+Across the five historical status artifacts above, the observed mean is **43.16%**
+LLM_EM with **12.00 points** sample stdev and a **31.58%-57.89%** range. Those
+five runs were **not** at one fixed setting, so this is a historical distribution,
+not a promotion-grade baseline. The report also reclassifies the 19q slice into
+`3 stable pass`, `11 stochastic`, and `5 stable fail` questions.
+
+## Audit Corrections (verified 2026-04-02 / artifacts dated 2026-04-03)
+
+- **619265 is an exact-anchor preservation problem, not fundamentally a Batman Beyond aggregate-summary problem.**
+  The corpus contains `"The Bag or the Bat"` → `Ray Donovan`
+  (`results/MuSiQue/corpus/Corpus.json`, doc_ids 200 and 213). Passing runs
+  identify `Ray Donovan`; failing runs drift after the quoted title is compacted
+  and semantic search goes off-anchor.
+- **754156's benchmark gold is not `Laos`.**
+  The result artifacts record the gold as
+  `The dynasty regrouped and defeated the Portuguese`. Treat this as an
+  answer-kind / premature-intermediate-submit problem, not a country-name
+  question.
+- **The maintained code path does not use `entity_search top_k=10` by default.**
+  Live consolidated default is `top_k=5`; the earlier `10` experiment increased
+  noise and was reverted.
+- **Prompt metadata was stale.**
+  The active consolidated prompt now reflects `version 3.6`, including explicit
+  quoted-anchor preservation guidance.
 
 ### What submit gate removal fixed (+21pp improvement)
 
@@ -69,46 +93,45 @@ remaining check: empty-answer rejection.
 2. **Submit-immediately control flow**: "after 4+ failed atom attempts, submit your best guess"
 3. **Flexible atom resolution**: Accept synonym phrasing when marking atoms done
 
-### Stably passing (verified across ≥3 runs including 2026-04-03): 3–4 questions
+### Stable pass (5/5 in the historical status slice): 3 questions
 
-170823 (1986), 655505 (Sep 11 1962), 94201 (Mississippi River Delta), 731956
+170823 (1986), 511296 (Maria Shriver), 655505 (11 September 1962)
 
-Note: the prior "8 stably passing" list included 619265, 766973, 13548 which all failed
-in recent runs. See stochasticity reassessment above.
-
-### Stochastic (pass sometimes): ~10 questions
+### Stochastic (1-4 passes in the historical status slice): 11 questions
 
 | ID | Recent pass rate | Notes |
 |----|-----------------|-------|
-| 849312 | ~75% | 15th century — usually passes |
-| 511296 | ~75% | Maria Shriver — usually passes |
-| 731956 | ~75% | Johan Remkes — usually passes |
-| 619265 | ~25% | "12" season 5 episodes — was listed stable, actually stochastic |
-| 766973 | ~50% | Rockland County — sometimes times out |
-| 13548 | ~50% | June 1982 — inconsistent |
-| 9285 | ~50% | "June" vs "March" — query path variation |
-| 511454 | ~50% | "918" vs "1870" — retrieval stochasticity |
-| 305282 | ~50% | "Dec 14, 1814" vs wrong — path variation |
-| 152562 | ~50% | Passes in some runs |
+| 13548 | 60% | June 1982 case; still drifts to 2002/2009 in bad runs |
+| 511454 | 20% | "918" vs "1870"/"1974"/unknown |
+| 619265 | 40% in historical 5-run slice | Exact-title anchor case (`"The Bag or the Bat"` → `Ray Donovan`); latest bounded rerun after the post-anchor bridge guard passed 1/1 with final answer `12` in `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T130547Z.json` |
+| 731956 | 80% | Johan Remkes; one empty-answer miss remains in the five-run slice |
+| 766973 | 80% | Rockland County; recent misses are timeout / retrieval failures |
+| 136129 | 20% | Sometimes reaches `1952`, often stops at `Saint Peter` or `unknown` |
+| 305282 | 20% | December 14, 1814 chain remains brittle |
+| 849312 | 80% | Usually answers "15th century", but still slips to `1416` |
+| 9285 | 40% | Month-level ambiguity remains (`June`/`July`/`March`) |
+| 152562 | 20% | Still drifts across unrelated entity answers |
+| 94201 | 60% | Mississippi River vs Mississippi River Delta answer granularity |
 
-### Consistently failing: 6 questions
+### Stable fail (0/5 in the historical status slice): 5 questions
 
 | ID | Gold | Typical pred | Root cause |
 |----|------|-------------|-----------|
 | 199513 | Nazareth | "" or "Nauvoo, IL" | IEE — confuses Joseph of Nazareth with Joseph Smith |
-| 136129 | 1952 | "Saint Peter" | IEE — stops at intermediate entity |
 | 820301 | 22 | "1" | IEE — wrong answer, retrieval finds wrong chain |
 | 354635 | Time Warner Cable | "Adelphia" or "Comcast" | Close IEE — finds neighbor not target |
 | 71753 | 1930 | "1961" or "1921" | Wrong year — poor entity disambiguation |
-| 754156 | Laos | "expelled by the Portuguese" | Wrong type — text phrase not entity name |
+| 754156 | The dynasty regrouped and defeated the Portuguese | "Laos" / "Myanmar" / "expelled by the Portuguese" / "by airplanes" / "" / "communist takeover" | Multi-stage controller failure: `A2` idempotence bug, bad `soviet union` bridge path, and misdirected recovery-surface regression are fixed, but `A3` still stays unresolved and the controller can drift into repeated rejected-submit churn, then budget-exhaustion forced-finalization with an ungrounded answer |
 
 ### Remaining failure families
 
 | Family | Count | Description |
 |--------|-------|-------------|
-| INTERMEDIATE_ENTITY_ERROR (IEE) | 4 | Agent stops at wrong hop or confuses similar entities |
-| ANSWER_TYPE_MISMATCH | 1 | Retrieves relationship description, not entity name |
+| INTERMEDIATE_ENTITY_ERROR (IEE) | 3 stable-fail + several stochastic | Agent stops at wrong hop or confuses similar entities |
+| EXACT_ANCHOR_DRIFT | 1 | Quoted title / literal span is compacted and semantic retrieval drifts off the real anchor |
+| ANSWER_TYPE_MISMATCH | 1 | Final answer should be an action/event phrase but the agent submits an intermediate entity/location |
 | YEAR_DISAMBIGUATION | 1 | Finds plausible but wrong year in related entity |
+| GENERAL_STOCHASTICITY | 11 questions | The same question can flip across runs even without a new generalizable fix |
 
 ### Note: todo_write validator still active
 
@@ -116,11 +139,33 @@ in recent runs. See stochasticity reassessment above.
 agents from marking atoms done if proposed value doesn't match cached evidence. This may
 contribute to CONTROL_FLOW failures and some stochastic misses but was NOT removed in this
 session — it requires careful evaluation to avoid regression on correct evidence-gating.
+What changed in Plan #30 is narrower and intentional: if an atom was already
+completed with the same answer, full-list `todo_write` rewrites now preserve
+that validated state instead of re-running the manual validator and regressing
+against stale unresolved payloads.
 
-### Stochasticity policy
+### Process Controls
 
-Single-run single-question flips are noise. Promotion policy: ≥2 runs same result, or
-≥3 question net improvement. The +21pp improvement shown above is stable (2 runs, net +5q).
+- `make truth-check` now auto-searches both the live worktree and the
+  canonical checkout for referenced `results/...` artifacts. Use
+  `ARTIFACT_ROOT=<path>` only as an explicit override.
+- `make benchmark-report RESULT_GLOB='<precise-glob>' OUTPUT=docs/reports/<name>.md`
+  now auto-scans the live worktree plus the canonical checkout. Use a precise
+  glob or explicit `scripts/benchmark_iteration_report.py --input ...`
+  invocation when you need one controlled slice rather than broad history.
+- `make trace FILE=<artifact.json> QID=<question_id> [OUTPUT=/tmp/trace.txt]`
+  now renders one normalized question trace from the consolidated artifact.
+  It aligns semantic-plan helper decisions, tool calls, atom lifecycle events,
+  and terminal-answer provenance in one review surface.
+- `make trace-diff FILE=<artifact_a.json> FILE_B=<artifact_b.json> QID=<question_id>`
+  now compares the same question across two runs, including outcome delta,
+  semantic-plan delta, and atom-completion delta. Use this instead of manually
+  diffing raw JSON when diagnosing stochastic regressions.
+- Benchmark-facing `make` targets now run through
+  `scripts/run_with_digimon_python.py`, which resolves the `digimon`
+  interpreter directly instead of depending on `conda run -n digimon`.
+- Promotion rules now live in `docs/BENCHMARK_PROMOTION_POLICY.md`. Do not use
+  single-run flips or mixed-setting history as promotion-grade evidence.
 
 ## Cross-Reference (50q, 2026-03-26)
 
@@ -144,14 +189,22 @@ single-run reruns on subsets, not a full 50q confirmation.
 - Plan #21: Failure iteration sprint ✅ (closed — see plan for findings)
 - Plan #22: Control flow hardening ✅ (submit gate + refusal checks removed, +21pp on 19q)
 - Plan #25: Coordination prerequisite remediation ✅
-- Prompt v3.4: Answer granularity, verification step, flexible relationships, short queries, search loops
+- Prompt v3.6: Answer granularity, verification step, flexible relationships, short queries, quoted-anchor preservation
 - STAG_TURNS=6 default (configurable via Makefile, proven better than 4)
-- entity_search top_k=10 default
+- entity_search top_k=5 default (`10` was tested, worsened noise, and was reverted)
+- Plan #28 continuation: worktree artifact auto-detection + direct runtime-python wrapper + post-anchor bridge guard for anchored string entity hits + helper/atom lifecycle traces + restored normal submit gate + early shared submit-breaker path
+- Plan #30 Phase 1: truthful terminal-answer scoring in the benchmark lane. Control-churn forced-final answers with pending atoms are now suppressed from `predicted`, and per-question artifacts expose `forced_terminal_accept_reason` so forced-terminal acceptance is no longer mislabeled as budget exhaustion by default.
+- Plan #30 Phase 2 continuation: shared submit-churn gating plus idempotent done-atom preservation. Pending-atom submit churn now requires real TODO progress, and unchanged completed atoms survive repeated full-list `todo_write` rewrites via `atom_manual_reused` instead of burning budget on repeated manual rejections.
+- Bounded verification: `2hop__619265_45326` now has two important live proofs:
+  - post-anchor bridge guard removed the `showtime` drift and restored a correct `12` answer in `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T011403Z.json`
+  - after restoring the normal pending-atom submit gate, the intermediate smoke run `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T012611Z.json` exposed honest forced-terminal fallback
+  - after adding full submit provenance harvesting plus the shared early submit-breaker, the latest smoke run `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T014802Z.json` grounded `619265` cleanly in `13` tool calls with no forced-final acceptance
 
 ## Active Work
 
 - Plan #22: Canonicalization + projection hardening (Phase 2 rebuild documented; control flow hardening complete)
 - Plan #23: Semantic build boundary design (in progress, design phase)
+- Plan #28: Truthful overnight stabilization + contract repair (in progress)
 
 ## Latency Breakdown (measured 2026-04-03)
 
@@ -172,8 +225,8 @@ Total per question: ~6s operators + 58-82s LLM (47-48 turns sequential).
 
 ## Next Actions
 
-1. **Establish real baseline** — run 19q 3+ times at same settings; current 31-58% spread shows high stochasticity; true mean is unclear
-2. **IEE family fix** — 4/6 consistently-failing questions are IEE; entity disambiguation improvement would have broad impact. entity_search returns too many candidates; agent picks wrong semantic type.
-3. **619265 (Batman Beyond, "12")** — previously listed stable, now failing consistently. Agent gets "52 total episodes" from entity_info; needs to retrieve season-specific chunk. Fix: better chunk_retrieve query targeting "season 5".
-4. **todo_write validator review** — `_validate_manual_todo_completion` may contribute to agent getting stuck; hasn't been evaluated since gate removal
-5. **50q confirmatory run** — once 19q baseline is stable, run 50q to confirm the +22pp improvement is real
+1. **Repair the remaining unresolved-hop reasoning on `754156` now that submit-loop hygiene is truthful** — the latest probe `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T060338Z.json` confirms the loop-control fixes are working: repeated suppressed submits now stop earlier under `control_churn`, with lower cost/tool usage than the prior `...T055724Z.json` and `...T054718Z.json` runs. The next slice should target the still-unresolved `atom3/atom4` chain itself, not more submit-loop policy work.
+2. **Use the normalized trace surfaces before further planner/controller fixes** — for `754156`, `make trace` on `...T071136Z.json` makes the current failure family explicit: the plan evolves into the wrong `atom_3`, the helper then marks `Somali Muslim Ajuran Empire` done with confidence `1.0`, and all later `atom_4` recovery loops inherit that wrong subject. `make trace-diff` against `...T065932Z.json` isolates the regression from `a3=Portuguese` to `atom_3=Somali Muslim Ajuran Empire` without rereading raw JSON.
+2. **Investigate `LINEARIZATION_DATA_LOSS` in `chunk_retrieve(method=by_ids)`** — probe `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T035805Z.json` surfaced a warning that raw chunk content existed while the linearized summary appeared empty. This may be hiding exactly the evidence the controller needs on unresolved-hop questions.
+3. **Keep timeout provenance truthful while `LLM_CLIENT_TIMEOUT_POLICY=ban` remains active** — this shell disables per-call timeouts globally, so benchmark artifacts must continue surfacing requested/planned timeout separately from `turn_timeout_runtime_enforced` instead of pretending `auto:60s` is active.
+4. **Validate helper fallback quality + observability before spending on the 19q gate** — helper calls now follow configured `llm_client` fallbacks, but the earlier smoke run `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T133705Z.json` still regressed `619265` to `10`, and nested helper fallback usage is not yet fully surfaced in benchmark provenance.

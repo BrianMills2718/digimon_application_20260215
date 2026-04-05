@@ -8,6 +8,7 @@ This subtree contains repo-local documentation for DIGIMON.
 - active plans and benchmark protocol -> `plans/`
 - installed meta-process docs -> `meta-patterns/`
 - reports and benchmark artifacts -> `reports/`
+- handoffs and benchmark policy -> this directory
 
 ## Working Rules
 

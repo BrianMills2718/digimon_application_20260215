@@ -1,3 +1,5 @@
+SHELL := /bin/bash
+
 # === META-PROCESS TARGETS ===
 # Added by meta-process install.sh
 
@@ -14,9 +16,16 @@ DATASET ?= HotpotQAsmallest
 NUM ?= 3
 MODEL ?= openrouter/openai/gpt-5.4-mini
 STAG_TURNS ?= 6
-PYTHON ?= .venv/bin/python
-PYTEST ?= .venv/bin/pytest
-LLM_CLIENT_CLI := conda run -n digimon python -m llm_client
+QUESTION_COUNT ?= 19
+RESULT_GLOB ?= results/MuSiQue_gpt-5-4-mini_consolidated_*Z.json
+ARTIFACT_ROOT ?=
+REPORT_DATASET ?=
+REPORT_MODEL ?=
+REPORT_LATEST ?=
+PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python)
+PYTEST ?= $(if $(wildcard .venv/bin/pytest),.venv/bin/pytest,pytest)
+DIGIMON_RUNTIME_PYTHON := $(PYTHON) scripts/run_with_digimon_python.py
+LLM_CLIENT_CLI := $(DIGIMON_RUNTIME_PYTHON) -m llm_client
 CORE_TESTS := \
 	tests/unit/test_benchmark_tool_modes.py \
 	tests/unit/test_eval_graph_manifest.py \
@@ -212,7 +221,7 @@ summary:  ## Quick dashboard: spend, calls, errors, top models (DAYS=7)
 .PHONY: bench bench-baseline bench-musique graph-stats
 
 bench:  ## Run benchmark (DATASET=HotpotQAsmallest NUM=3 MODEL=gpt-5.4-mini)
-	conda run -n digimon python eval/run_agent_benchmark.py \
+	$(DIGIMON_RUNTIME_PYTHON) eval/run_agent_benchmark.py \
 		--agent-spec none --allow-missing-agent-spec \
 		--missing-agent-spec-reason "relocated" \
 		--dataset $(DATASET) --num $(NUM) \
@@ -221,7 +230,7 @@ bench:  ## Run benchmark (DATASET=HotpotQAsmallest NUM=3 MODEL=gpt-5.4-mini)
 		--missing-agent-spec-reason "agent_spec relocated"
 
 bench-baseline:  ## Run baseline (no graph) benchmark
-	conda run -n digimon python eval/run_agent_benchmark.py \
+	$(DIGIMON_RUNTIME_PYTHON) eval/run_agent_benchmark.py \
 		--agent-spec none --allow-missing-agent-spec \
 		--missing-agent-spec-reason "relocated" \
 		--dataset $(DATASET) --num $(NUM) \
@@ -229,8 +238,8 @@ bench-baseline:  ## Run baseline (no graph) benchmark
 		--agent-spec none --allow-missing-agent-spec \
 		--missing-agent-spec-reason "agent_spec relocated"
 
-bench-musique:  ## Run MuSiQue 19q diagnostic set (STAG_TURNS=4 default)
-	conda run -n digimon python eval/run_agent_benchmark.py \
+bench-musique:  ## Run MuSiQue 19q diagnostic set (STAG_TURNS=6 default)
+	$(DIGIMON_RUNTIME_PYTHON) eval/run_agent_benchmark.py \
 		--agent-spec none --allow-missing-agent-spec \
 		--missing-agent-spec-reason "relocated" \
 		--dataset MuSiQue \
@@ -240,35 +249,49 @@ bench-musique:  ## Run MuSiQue 19q diagnostic set (STAG_TURNS=4 default)
 		--agent-spec none --allow-missing-agent-spec --missing-agent-spec-reason "relocated"
 
 graph-stats:  ## Show graph node/edge counts for a dataset
-	@conda run -n digimon python -c "import networkx as nx; G=nx.read_graphml('results/$(DATASET)/er_graph/nx_data.graphml'); print(f'Nodes: {G.number_of_nodes()}, Edges: {G.number_of_edges()}')"
+	@$(DIGIMON_RUNTIME_PYTHON) -c "import networkx as nx; G=nx.read_graphml('results/$(DATASET)/er_graph/nx_data.graphml'); print(f'Nodes: {G.number_of_nodes()}, Edges: {G.number_of_edges()}')"
 
 # --- Graph Build ---
 .PHONY: build-progress enrich add-passages add-passages-dry
 
 build-progress:  ## Check graph build checkpoint progress
-	@conda run -n digimon python -c "import json; d=json.load(open('results/$(DATASET)/er_graph/_checkpoint_processed.json')); print(f'{len(d)} chunks processed')" 2>/dev/null || echo "No checkpoint found"
+	@$(DIGIMON_RUNTIME_PYTHON) -c "import json; d=json.load(open('results/$(DATASET)/er_graph/_checkpoint_processed.json')); print(f'{len(d)} chunks processed')" 2>/dev/null || echo "No checkpoint found"
 
 enrich:  ## Run post-build enrichment (synonym edges + centrality)
-	conda run -n digimon python scripts/post_build_enrichment.py --dataset $(DATASET)
+	$(DIGIMON_RUNTIME_PYTHON) scripts/post_build_enrichment.py --dataset $(DATASET)
 
 add-passages:  ## Add passage nodes to existing graph (no rebuild, $0 cost)
-	conda run -n digimon python scripts/add_passage_nodes.py --dataset $(DATASET)
+	$(DIGIMON_RUNTIME_PYTHON) scripts/add_passage_nodes.py --dataset $(DATASET)
 
 add-passages-dry:  ## Preview passage node additions
-	conda run -n digimon python scripts/add_passage_nodes.py --dataset $(DATASET) --dry-run
+	$(DIGIMON_RUNTIME_PYTHON) scripts/add_passage_nodes.py --dataset $(DATASET) --dry-run
 
 # --- Diagnosis ---
-.PHONY: diagnose diagnose-failures linearization-check check-rules
+.PHONY: diagnose trace trace-diff diagnose-failures linearization-check check-rules truth-check benchmark-report
 
-diagnose:  ## Diagnose a specific question (FILE= QID= required)
+diagnose:  ## Render normalized trace for one question (FILE= QID= required)
 ifndef FILE
-	@conda run -n digimon python scripts/diagnose_question.py
+	@$(DIGIMON_RUNTIME_PYTHON) scripts/diagnose_question.py
 else
-	@conda run -n digimon python scripts/diagnose_question.py $(FILE) $(QID)
+	@$(DIGIMON_RUNTIME_PYTHON) scripts/diagnose_question.py $(FILE) $(QID) $(if $(OUTPUT),--output $(OUTPUT),)
 endif
 
+trace: diagnose  ## Alias for normalized question trace
+
+trace-diff:  ## Diff one question across two artifacts (FILE= FILE_B= QID= required)
+ifndef FILE
+	$(error FILE is required. Usage: make trace-diff FILE=results/a.json FILE_B=results/b.json QID=<id>)
+endif
+ifndef FILE_B
+	$(error FILE_B is required. Usage: make trace-diff FILE=results/a.json FILE_B=results/b.json QID=<id>)
+endif
+ifndef QID
+	$(error QID is required. Usage: make trace-diff FILE=results/a.json FILE_B=results/b.json QID=<id>)
+endif
+	@$(DIGIMON_RUNTIME_PYTHON) scripts/diagnose_question.py $(FILE) $(QID) --diff-other $(FILE_B) $(if $(OUTPUT),--output $(OUTPUT),)
+
 diagnose-failures:  ## Diagnose all failures in latest MuSiQue run
-	@conda run -n digimon python -c "\
+	@$(DIGIMON_RUNTIME_PYTHON) -c "\
 	import json, glob, subprocess, sys; \
 	files = sorted(glob.glob('results/MuSiQue_gpt-5-4-mini_consolidated_*.json')); \
 	latest = files[-1]; \
@@ -279,11 +302,11 @@ diagnose-failures:  ## Diagnose all failures in latest MuSiQue run
 
 .PHONY: timing
 timing:  ## Operator timing breakdown from last benchmark run (DAYS=1 TRACE=)
-	@conda run -n digimon python scripts/timing_report.py --days $(DAYS) $(if $(TRACE),--trace $(TRACE),)
+	@$(DIGIMON_RUNTIME_PYTHON) scripts/timing_report.py --days $(DAYS) $(if $(TRACE),--trace $(TRACE),)
 
 .PHONY: sentinel
 sentinel:  ## Run sentinel set — regression check on known-passing questions (~$0.10)
-	conda run -n digimon python eval/run_agent_benchmark.py \
+	$(DIGIMON_RUNTIME_PYTHON) eval/run_agent_benchmark.py \
 		--agent-spec none --allow-missing-agent-spec \
 		--missing-agent-spec-reason "relocated" \
 		--dataset MuSiQue \
@@ -297,7 +320,7 @@ oracle:  ## Run LLM-verified oracle diagnostic on latest MuSiQue failures (write
 	@LATEST=$$(ls -t results/MuSiQue_gpt-5-4-mini_consolidated_*.json 2>/dev/null | head -1); \
 	if [ -z "$$LATEST" ]; then echo "No MuSiQue results found. Run make bench-musique first."; exit 1; fi; \
 	echo "Diagnosing failures from $$LATEST"; \
-	conda run -n digimon python eval/oracle_diagnostic.py \
+	$(DIGIMON_RUNTIME_PYTHON) eval/oracle_diagnostic.py \
 		--results "$$LATEST" \
 		--report investigations/digimon/$$(date +%Y-%m-%d)-oracle-diagnosis.md
 
@@ -306,23 +329,37 @@ oracle-fast:  ## Run heuristic-only oracle diagnostic (no LLM cost)
 	@LATEST=$$(ls -t results/MuSiQue_gpt-5-4-mini_consolidated_*.json 2>/dev/null | head -1); \
 	if [ -z "$$LATEST" ]; then echo "No MuSiQue results found. Run make bench-musique first."; exit 1; fi; \
 	echo "Diagnosing failures from $$LATEST (heuristic only)"; \
-	conda run -n digimon python eval/oracle_diagnostic.py \
+	$(DIGIMON_RUNTIME_PYTHON) eval/oracle_diagnostic.py \
 		--results "$$LATEST" --no-llm \
 		--report investigations/digimon/$$(date +%Y-%m-%d)-oracle-diagnosis-heuristic.md
 
 linearization-check:  ## Check for linearization data loss warnings
 	@echo "=== Linearization Data Loss Warnings ==="
 	@grep '"data_loss_warning": true' results/.linearization_log.jsonl 2>/dev/null | \
-		conda run -n digimon python -c "import sys,json; lines=[json.loads(l) for l in sys.stdin]; print(f'{len(lines)} data loss warnings'); [print(f'  {l[\"tool\"]}({l[\"method\"]}): raw={l[\"raw_len\"]}b → summary={l[\"summary_len\"]}b') for l in lines[-10:]]" \
+		$(DIGIMON_RUNTIME_PYTHON) -c "import sys,json; lines=[json.loads(l) for l in sys.stdin]; print(f'{len(lines)} data loss warnings'); [print(f'  {l[\"tool\"]}({l[\"method\"]}): raw={l[\"raw_len\"]}b → summary={l[\"summary_len\"]}b') for l in lines[-10:]]" \
 		|| echo "  No warnings (or no log file yet)"
 	@echo ""
 	@echo "=== Compression Stats ==="
 	@cat results/.linearization_log.jsonl 2>/dev/null | \
-		conda run -n digimon python -c "import sys,json; lines=[json.loads(l) for l in sys.stdin]; print(f'{len(lines)} total linearizations, avg compression={sum(l[\"compression\"] for l in lines)/max(len(lines),1):.1%}')" \
+		$(DIGIMON_RUNTIME_PYTHON) -c "import sys,json; lines=[json.loads(l) for l in sys.stdin]; print(f'{len(lines)} total linearizations, avg compression={sum(l[\"compression\"] for l in lines)/max(len(lines),1):.1%}')" \
 		|| echo "  No log file yet"
 
 check-rules:  ## Check CLAUDE.md rule violations (json_object, hardcoded paths, except:pass)
 	@~/projects/.claude/scripts/check-rules.sh . || true
+
+truth-check:  ## Validate CURRENT_STATUS.md and handoff claims against code + artifacts
+	@args=(scripts/validate_status_truth.py); \
+	if [ -n "$(ARTIFACT_ROOT)" ]; then args+=(--artifact-root "$(ARTIFACT_ROOT)"); fi; \
+	python "$${args[@]}"
+
+benchmark-report:  ## Summarize repeated benchmark artifacts (RESULT_GLOB=... QUESTION_COUNT=19 OUTPUT=)
+	@args=(scripts/benchmark_iteration_report.py --repo-root . --glob "$(RESULT_GLOB)" --question-count "$(QUESTION_COUNT)"); \
+	if [ -n "$(ARTIFACT_ROOT)" ]; then args+=(--glob-root "$(ARTIFACT_ROOT)"); fi; \
+	if [ -n "$(REPORT_DATASET)" ]; then args+=(--dataset "$(REPORT_DATASET)"); fi; \
+	if [ -n "$(REPORT_MODEL)" ]; then args+=(--model "$(REPORT_MODEL)"); fi; \
+	if [ -n "$(REPORT_LATEST)" ]; then args+=(--latest "$(REPORT_LATEST)"); fi; \
+	if [ -n "$(OUTPUT)" ]; then args+=(--output "$(OUTPUT)"); fi; \
+	python "$${args[@]}"
 
 # --- Help ---
 .PHONY: help help-meta
@@ -373,7 +410,10 @@ help:  ## Show all targets
 	@echo "Observability:"
 	@grep -E '^(cost|cost-by-model|cost-by-task|errors|recent|summary):.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
 	@echo ""
-	@echo "Graph And Diagnosis:"
-	@grep -E '^(graph-stats|build-progress|enrich|add-passages|add-passages-dry|diagnose|diagnose-failures|linearization-check|check-rules):.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
+	@echo "Diagnosis:"
+	@grep -E '^(diagnose|trace|trace-diff|diagnose-failures|timing|truth-check|benchmark-report):.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
 	@echo ""
-	@echo "Options: DAYS=7 DATASET=HotpotQAsmallest NUM=3 MODEL=openrouter/openai/gpt-5.4-mini LIMIT=20"
+	@echo "Graph And Diagnosis:"
+	@grep -E '^(graph-stats|build-progress|enrich|add-passages|add-passages-dry|diagnose|diagnose-failures|linearization-check|check-rules|truth-check|benchmark-report):.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  make %-20s %s\n", $$1, $$2}'
+	@echo ""
+	@echo "Options: DAYS=7 DATASET=HotpotQAsmallest NUM=3 MODEL=openrouter/openai/gpt-5.4-mini LIMIT=20 QUESTION_COUNT=19"

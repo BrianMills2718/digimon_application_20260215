@@ -1,0 +1,55 @@
+========================================================================================
+TRACE DIFF: 4hop3__754156_88460_30152_20999
+A: results/MuSiQue_gpt-5-4-mini_consolidated_20260405T065932Z.json
+B: results/MuSiQue_gpt-5-4-mini_consolidated_20260405T071136Z.json
+========================================================================================
+question: How were the people from whom new coins were a proclamation of independence by the Somali Muslim Ajuran Empire expelled from the country between Thailand and A Lim's country?
+
+[OUTCOME DELTA]
+predicted:
+  A: defeated in 1613
+  B: by force
+llm_em:
+  A: 1
+  B: 0
+submit_completion_mode:
+  A: missing_required_submit
+  B: missing_required_submit
+submit_pending_atom_ids:
+  A: ['a4']
+  B: ['atom_4']
+forced_terminal_accept_reason:
+  A: budget_exhaustion
+  B: budget_exhaustion
+primary_failure_class:
+  A: control_churn
+  B: control_churn
+n_tool_calls:
+  A: 28
+  B: 34
+
+[SEMANTIC PLAN DELTA]
+A atoms (4):
+- Which country is A Lim's country?
+- What is the country between Thailand and a_lim_country?
+- Who were the people from whom new coins were a proclamation of independence by the Somali Muslim Ajuran Empire?
+- How were coin_issuers expelled from target_country?
+B atoms (4):
+- What is the country of A Lim?
+- What is the country located between Thailand and A_Lims_country?
+- Which people were involved in a proclamation of independence by the Somali Muslim Ajuran Empire with new coins?
+- How were people_with_new_coins_and_independence expelled from country_between_thailand_and_alim?
+
+[ATOM COMPLETION DELTA]
+a1: A=Laos | B=None
+a2: A=Myanmar | B=None
+a3: A=Portuguese | B=None
+atom_1: A=None | B=Laos
+atom_2: A=None | B=Myanmar
+atom_3: A=None | B=Somali Muslim Ajuran Empire
+
+[TRACE COUNTS]
+helper_decision_event_count: A=28 | B=33
+atom_lifecycle_event_count: A=28 | B=33
+submit_answer_call_count: A=5 | B=8
+forced_final_attempts: A=1 | B=1

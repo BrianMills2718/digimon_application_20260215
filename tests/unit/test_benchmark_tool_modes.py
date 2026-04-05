@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+import json
+
 from Core.Common.benchmark_tool_modes import filter_tool_names_for_benchmark_mode
+from llm_client import MCPAgentResult, MCPToolCallRecord
 from eval.run_agent_benchmark import (
+    _aggregate_llm_call_observability,
+    _extract_foundation_tool_calls,
+    _extract_full_submit_records,
+    _atom_lifecycle_provenance,
     _conversation_trace_has_pending_todos,
+    _derive_forced_terminal_accept_reason,
     _derive_submit_observability,
+    _format_runtime_turn_timeout_label,
+    _format_turn_timeout_label,
+    _helper_trace_provenance,
+    _read_atom_lifecycle_events_since,
+    _read_helper_trace_events_since,
     _preserve_terminal_answer_after_submit_validation,
+    _resolve_effective_turn_timeout,
     _submit_tool_call_accepted,
+    _summarize_timeout_foundation_events,
 )
 
 
@@ -138,11 +153,14 @@ def test_preserve_terminal_answer_clears_freeform_answer_after_failed_submit() -
         derived_submit=derived,
         submit_forced_accept_on_budget_exhaustion=False,
         finalization_fallback_succeeded=False,
+        first_terminal_failure_event_code=None,
+        failure_event_codes=None,
+        conversation_trace=None,
     ) == ""
 
 
-def test_preserve_terminal_answer_keeps_forced_accept_metadata_answer() -> None:
-    """Forced-final acceptance metadata should still produce a scored answer."""
+def test_preserve_terminal_answer_keeps_budget_exhaustion_forced_accept_metadata_answer() -> None:
+    """True budget exhaustion may still preserve a forced-terminal metadata answer."""
     derived = _derive_submit_observability(
         [
             {
@@ -160,7 +178,66 @@ def test_preserve_terminal_answer_keeps_forced_accept_metadata_answer() -> None:
         derived_submit=derived,
         submit_forced_accept_on_budget_exhaustion=True,
         finalization_fallback_succeeded=False,
+        first_terminal_failure_event_code="SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION",
+        failure_event_codes=["SUBMIT_FORCED_ACCEPT_BUDGET_EXHAUSTION"],
+        conversation_trace=None,
     ) == "918"
+
+
+def test_preserve_terminal_answer_drops_control_churn_forced_accept_with_pending_atoms() -> None:
+    """Control-churn forced-final answers must not be scored while atoms remain pending."""
+    derived = _derive_submit_observability(
+        [
+            {
+                "tool": "submit_answer",
+                "result_preview": json.dumps(
+                    {
+                        "status": "rejected",
+                        "pending_atoms": 3,
+                        "pending_ids": ["A2", "A3", "A4"],
+                        "todo_status_line": "[TODO: 1/4 done] [x] A1 | [ ] A2 | [ ] A3 | [ ] A4",
+                        "validation_error": {"reason_code": "pending_atoms"},
+                    }
+                ),
+            }
+        ]
+    )
+
+    assert _preserve_terminal_answer_after_submit_validation(
+        "by airplanes",
+        answer_source="metadata",
+        derived_submit=derived,
+        submit_forced_accept_on_budget_exhaustion=True,
+        finalization_fallback_succeeded=False,
+        first_terminal_failure_event_code="CONTROL_CHURN_THRESHOLD_EXCEEDED",
+        failure_event_codes=[
+            "CONTROL_CHURN_THRESHOLD_EXCEEDED",
+            "SUBMIT_FORCED_ACCEPT_FORCED_FINAL",
+            "REQUIRED_SUBMIT_MISSING",
+        ],
+        conversation_trace=[
+            {
+                "role": "user",
+                "content": "[TODO_STATE] [TODO: 1/4 done] [x] A1 | [ ] A2 | [ ] A3 | [ ] A4",
+            }
+        ],
+    ) == ""
+
+
+def test_derive_forced_terminal_accept_reason_prefers_control_churn_over_legacy_boolean() -> None:
+    """The legacy forced-accept boolean must not mask a control-churn terminal reason."""
+    assert (
+        _derive_forced_terminal_accept_reason(
+            submit_forced_accept_on_budget_exhaustion=True,
+            finalization_fallback_succeeded=False,
+            first_terminal_failure_event_code="CONTROL_CHURN_THRESHOLD_EXCEEDED",
+            failure_event_codes=[
+                "CONTROL_CHURN_THRESHOLD_EXCEEDED",
+                "SUBMIT_FORCED_ACCEPT_FORCED_FINAL",
+            ],
+        )
+        == "control_churn"
+    )
 
 
 def test_conversation_trace_detects_pending_todos() -> None:
@@ -181,3 +258,282 @@ def test_conversation_trace_ignores_fully_completed_todos() -> None:
             {"role": "assistant", "content": "Nazareth"},
         ]
     )
+
+
+def test_read_helper_trace_events_since_filters_to_current_question(tmp_path) -> None:
+    """Helper trace harvesting should ignore unrelated question events."""
+    trace_path = tmp_path / "results" / ".helper_decision_trace.jsonl"
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    trace_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"question": "Question A", "status": "ok", "fallback_used": False}),
+                json.dumps({"question": "Question B", "status": "ok", "fallback_used": True}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    events = _read_helper_trace_events_since(
+        project_root=str(tmp_path),
+        offset=0,
+        question="Question B",
+    )
+
+    assert len(events) == 1
+    assert events[0]["question"] == "Question B"
+
+
+def test_helper_trace_provenance_counts_helper_fallbacks() -> None:
+    """Helper trace summary should surface nested fallback usage explicitly."""
+    provenance = _helper_trace_provenance(
+        [
+            {
+                "requested_model": "gemini/gemini-2.5-flash",
+                "resolved_model": "openrouter/openai/gpt-5.4-mini",
+                "fallback_used": True,
+                "status": "ok",
+            },
+            {
+                "requested_model": "deepseek/deepseek-chat",
+                "resolved_model": "deepseek/deepseek-chat",
+                "fallback_used": False,
+                "status": "error",
+            },
+        ]
+    )
+
+    assert provenance["helper_fallback_used"] is True
+    assert provenance["helper_fallback_event_count"] == 1
+    assert provenance["helper_error_count"] == 1
+    assert provenance["helper_models_used"] == [
+        "deepseek/deepseek-chat",
+        "gemini/gemini-2.5-flash",
+        "openrouter/openai/gpt-5.4-mini",
+    ]
+
+
+def test_derive_submit_observability_surfaces_pending_atoms() -> None:
+    """Submit observability should retain pending atom IDs from validator rejections."""
+    derived = _derive_submit_observability(
+        [
+            {
+                "tool": "submit_answer",
+                "result_preview": json.dumps(
+                    {
+                        "status": "rejected",
+                        "pending_atoms": 2,
+                        "pending_ids": ["A1", "A2"],
+                        "todo_status_line": "[TODO: 0/2 done] [ ] A1 | [ ] A2",
+                        "validation_error": {"reason_code": "pending_atoms"},
+                    }
+                ),
+            }
+        ]
+    )
+
+    assert derived["submit_answer_succeeded"] is False
+    assert derived["submit_pending_atom_count"] == 2
+    assert derived["submit_pending_atom_ids"] == ["A1", "A2"]
+    assert derived["submit_todo_status_line"] == "[TODO: 0/2 done] [ ] A1 | [ ] A2"
+
+
+def test_derive_submit_observability_prefers_full_submit_payload_over_truncated_preview() -> None:
+    """Full submit payloads should recover pending IDs even when previews are truncated."""
+    derived = _derive_submit_observability(
+        [
+            {
+                "tool": "submit_answer",
+                "result_preview": '{"status":"rejected","pending_atoms":1,"pending_ids":["A1"]',
+                "result_full": json.dumps(
+                    {
+                        "status": "rejected",
+                        "pending_atoms": 1,
+                        "pending_ids": ["A1"],
+                        "todo_status_line": "[TODO: 1/2 done] [x] A1 | [>] A2",
+                        "validation_error": {"reason_code": "pending_atoms"},
+                    }
+                ),
+            }
+        ]
+    )
+
+    assert derived["submit_pending_atom_count"] == 1
+    assert derived["submit_pending_atom_ids"] == ["A1"]
+
+
+def test_extract_full_submit_records_recovers_untruncated_submit_results() -> None:
+    """MCPAgentResult-backed tool records should preserve full submit payloads for diagnosis."""
+    raw = MCPAgentResult(
+        tool_calls=[
+            MCPToolCallRecord(
+                server="srv",
+                tool="submit_answer",
+                arguments={"answer": "12"},
+                result=json.dumps(
+                    {
+                        "status": "rejected",
+                        "pending_atoms": 1,
+                        "pending_ids": ["a2"],
+                        "validation_error": {"reason_code": "pending_atoms"},
+                    }
+                ),
+            )
+        ]
+    )
+
+    records = _extract_full_submit_records(raw, [])
+
+    assert len(records) == 1
+    assert records[0]["tool"] == "submit_answer"
+    assert '"pending_ids": ["a2"]' in records[0]["result_full"]
+
+
+def test_read_atom_lifecycle_events_since_prefers_benchmark_trace_id(tmp_path) -> None:
+    """Atom lifecycle harvesting should use benchmark trace IDs when present."""
+    trace_path = tmp_path / "results" / ".atom_lifecycle_events.jsonl"
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    trace_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"question": "Question A", "benchmark_trace_id": "trace-a", "event": "atom_completed"}),
+                json.dumps({"question": "Question B", "benchmark_trace_id": "trace-b", "event": "atom_judged_unresolved"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    events = _read_atom_lifecycle_events_since(
+        project_root=str(tmp_path),
+        offset=0,
+        question="Question A",
+        benchmark_trace_id="trace-b",
+    )
+
+    assert len(events) == 1
+    assert events[0]["benchmark_trace_id"] == "trace-b"
+
+
+def test_atom_lifecycle_provenance_counts_mutations() -> None:
+    """Atom lifecycle summary should expose completion and unresolved counts."""
+    provenance = _atom_lifecycle_provenance(
+        [
+            {"event": "atom_completed", "atom_id": "a1"},
+            {"event": "atom_judged_unresolved", "atom_id": "a2"},
+            {"event": "atom_manual_rejected", "atom_id": "a2"},
+        ]
+    )
+
+    assert provenance["atom_lifecycle_event_count"] == 3
+    assert provenance["atom_completed_event_count"] == 1
+    assert provenance["atom_unresolved_event_count"] == 1
+    assert provenance["atom_manual_rejected_event_count"] == 1
+
+
+def test_extract_foundation_tool_calls_recovers_pending_tool_attempt() -> None:
+    """Timeout reconstruction should preserve tool attempts even without a result artifact."""
+    records = _extract_foundation_tool_calls(
+        [
+            {
+                "event_type": "ToolCalled",
+                "operation": {"name": "semantic_plan"},
+                "inputs": {
+                    "params": {
+                        "question": "Q",
+                        "tool_reasoning": "Need a semantic plan first.",
+                    }
+                },
+            }
+        ]
+    )
+
+    assert len(records) == 1
+    assert records[0]["tool"] == "semantic_plan"
+    assert records[0]["arguments"]["question"] == "Q"
+    assert records[0]["has_result"] is False
+    assert records[0]["observed_via"] == "foundation_events"
+
+
+def test_summarize_timeout_foundation_events_marks_pending_tool_execution() -> None:
+    """Timeout summaries should identify the active tool when a tool call never completes."""
+    summary = _summarize_timeout_foundation_events(
+        [
+            {"event_type": "LLMCalled", "operation": {"name": "_inner_acall_llm"}},
+            {
+                "event_type": "ToolCalled",
+                "operation": {"name": "semantic_plan"},
+                "inputs": {"params": {"question": "Q"}},
+            },
+        ],
+        [{"model": "openrouter/openai/gpt-5.4-mini", "finish_reason": "tool_calls"}],
+    )
+
+    assert summary["timeout_stage"] == "tool_execution"
+    assert summary["timeout_active_tool"] == "semantic_plan"
+    assert summary["foundation_attempted_tools"] == ["semantic_plan"]
+    assert summary["foundation_pending_tools"] == ["semantic_plan"]
+    assert summary["timeout_models_used"] == ["openrouter/openai/gpt-5.4-mini"]
+
+
+def test_aggregate_llm_call_observability_sums_usage_and_cost() -> None:
+    """Timeout recovery should be able to synthesize usage/cost from llm_call rows."""
+    aggregated = _aggregate_llm_call_observability(
+        [
+            {
+                "model": "m1",
+                "prompt_tokens": 10,
+                "completion_tokens": 3,
+                "total_tokens": 13,
+                "cost": 0.2,
+            },
+            {
+                "model": "m2",
+                "prompt_tokens": 4,
+                "completion_tokens": 1,
+                "total_tokens": 5,
+                "cost": 0.05,
+            },
+        ]
+    )
+
+    assert aggregated["usage"] == {
+        "prompt_tokens": 14,
+        "completion_tokens": 4,
+        "total_tokens": 18,
+    }
+    assert aggregated["cost"] == 0.25
+    assert aggregated["models_used"] == ["m1", "m2"]
+
+
+def test_resolve_effective_turn_timeout_uses_auto_default_when_unspecified() -> None:
+    """Unspecified turn timeout should default to min(question_timeout, 60)."""
+    assert _resolve_effective_turn_timeout(None, 180) == 60
+    assert _resolve_effective_turn_timeout(None, 30) == 30
+    assert _resolve_effective_turn_timeout(None, 0) == 0
+    assert _resolve_effective_turn_timeout(0, 180) == 0
+
+
+def test_format_turn_timeout_label_distinguishes_auto_from_off() -> None:
+    """CLI labels should show when turn timeout came from the auto default."""
+    assert _format_turn_timeout_label(None, 180) == "auto:60s"
+    assert _format_turn_timeout_label(None, 0) == "auto(off)"
+    assert _format_turn_timeout_label(0, 180) == "off"
+    assert _format_turn_timeout_label(45, 180) == "45s"
+
+
+def test_format_runtime_turn_timeout_label_surfaces_policy_disabled(monkeypatch) -> None:
+    """Runtime labels should show when global timeout policy disables a planned timeout."""
+    monkeypatch.setenv("LLM_CLIENT_TIMEOUT_POLICY", "ban")
+
+    assert _format_runtime_turn_timeout_label(None, 180) == "disabled-by-policy(auto:60s)"
+    assert _format_runtime_turn_timeout_label(45, 180) == "disabled-by-policy(45s)"
+
+
+def test_format_runtime_turn_timeout_label_passes_through_when_allowed(monkeypatch) -> None:
+    """Runtime labels should match planned labels when timeout policy allows them."""
+    monkeypatch.setenv("LLM_CLIENT_TIMEOUT_POLICY", "allow")
+
+    assert _format_runtime_turn_timeout_label(None, 180) == "auto:60s"
+    assert _format_runtime_turn_timeout_label(0, 180) == "off"

@@ -218,6 +218,16 @@ endpoint merge semantics.
 ### 2026-04-02 — claude-code — bug-pattern
 **Evidence pointer tracking is broken for DIGIMON's linearized tool results.**
 The llm_client stagnation detector (`_tool_evidence_pointer_labels` in
+
+### 2026-04-05 — codex — best-practice
+Raw consolidated result JSON is still the fullest source of truth, but it is no
+longer the best primary review surface for question-level diagnosis. Use
+`make trace FILE=<artifact.json> QID=<qid>` to inspect one normalized causal
+trace and `make trace-diff FILE=<a.json> FILE_B=<b.json> QID=<qid>` to compare
+two runs. These views align semantic-plan helper decisions, tool calls,
+atom-lifecycle events, and terminal-answer provenance in one place, which makes
+it much easier to see when DIGIMON changed the plan, what the helper judged,
+and which wrong atom completion poisoned the rest of the controller loop.
 `agent_artifacts.py`) parses tool results as JSON looking for `chunk_id`,
 `evidence_refs` fields. DIGIMON's linearized results are plain text, not JSON,
 so every evidence turn produces zero evidence pointers and the stagnation
@@ -233,6 +243,18 @@ JSON-wrapped tool results.
 Proper fix needed in llm_client: modify `_collect_evidence_pointer_labels`
 to handle plain-text results, or add a separate metadata channel for
 evidence pointers that doesn't change the visible tool result.
+
+### 2026-04-02 — codex — bug-pattern
+Question `2hop__619265_45326` is not fundamentally a Batman Beyond aggregate-summary failure. The corpus anchor is the quoted episode title `"The Bag or the Bat"`, which points to `Ray Donovan` (`results/MuSiQue/corpus/Corpus.json`, doc_ids 200 and 213). Failing runs drift only after the query contract compacts the quoted title into loose keywords and semantic retrieval goes off-anchor. Treat this as an exact-anchor preservation failure family.
+
+### 2026-04-02 — codex — bug-pattern
+Question `4hop3__754156_88460_30152_20999` is mislabeled in older notes. The benchmark artifact gold is `The dynasty regrouped and defeated the Portuguese`, not `Laos`. The real failure family is premature submission of intermediate geography (`Laos`, `Myanmar`) instead of the final action/event answer span.
+
+### 2026-04-02 — codex — integration-issue
+Fresh DIGIMON worktrees are not benchmark-runnable by default even when the git tree is clean. The direct benchmark lane assumes local-only artifacts that are absent in a new worktree: `Option/Config2.yaml` and `results/MuSiQue/...` build artifacts. For bounded worktree verification, link or provision those explicitly before running `eval/run_agent_benchmark.py`; otherwise the run fails before the agent loop starts.
+
+### 2026-04-02 — codex — bug-pattern
+Quoted-anchor preservation is necessary but not sufficient for `2hop__619265_45326`. After the contract repair, a bounded live trace (`digimon.benchmark.MuSiQue.2hop__619265_45326.716b5580`) preserved the episode-title anchor, but the agent later re-bound the series hop to `showtime` through bridge probing. The next systemic fix should constrain bridge selection once a source chunk has already named the target series, so distributors/networks do not displace the anchored entity.
 
 ### 2026-04-02 — codex — best-practice
 The `digimon-kgrag` FastMCP tool objects support planner metadata directly via
@@ -403,3 +425,305 @@ partial answer. This is the expected trade-off: gate removal helps 12 questions 
 hurts 1 that was previously getting no-answer (empty) vs wrong-answer (Minneapolis).
 LLM-judge: empty=None (no score), wrong=0 — neither scores, so net is 0 either way.
 But it's worth noting this regression pattern for the IEE fix work.
+
+### 2026-04-03 — codex — best-practice
+**Worktree truth/report commands need an explicit artifact root until benchmark history is portable.**
+Fresh claimed worktrees do not reliably contain the historical `results/*.json`
+benchmark artifacts even when the canonical repo does. The new commands are built
+to accept `ARTIFACT_ROOT=<canonical-repo-root>` so `make truth-check` and
+`make benchmark-report` can validate docs against the real artifact store without
+guessing or silently degrading.
+
+### 2026-04-03 — codex — schema-gotcha
+**Use per-question `results[].llm_em` for iteration reporting, not top-level `avg_llm_em_judged`.**
+Some DIGIMON artifacts expose a top-level `avg_llm_em_judged` that does not match
+the maintained 11/19-style question-count summary used in status docs. The new
+`scripts/benchmark_iteration_report.py` intentionally derives headline LLM_EM from
+the per-question `results` list so mean/spread and stability reports stay aligned
+with the artifact rows humans actually inspect.
+
+### 2026-04-03 — codex — integration-issue
+**`conda run -n digimon` is not reliable enough for governance commands in this shell.**
+In this environment, `conda run -n digimon` fails before script execution with a
+`conda-libmamba-solver` / `libmambapy.QueryFormat` entrypoint error. Benchmark runs
+may still require the full env, but governance/reporting commands should stay on
+plain `python` unless they genuinely need conda-managed dependencies.
+
+### 2026-04-03 — codex — best-practice
+**Truth/report commands now auto-search both the live worktree and canonical checkout for `results/...` artifacts.**
+Plan #28 added `scripts/runtime_paths.py`, which resolves linked-worktree
+canonical roots via `.git` pointer files plus `commondir`. `make truth-check`
+and `make benchmark-report` therefore no longer need a manual
+`ARTIFACT_ROOT=<canonical-repo-root>` in the normal case; that flag is now just
+an explicit override.
+
+### 2026-04-03 — codex — workaround
+**Benchmark-facing `make` targets now bypass `conda run` and exec the resolved DIGIMON interpreter directly.**
+`scripts/run_with_digimon_python.py` resolves the runtime interpreter from
+`DIGIMON_PYTHON`, the active env, or a Conda install inferred from `CONDA_EXE`
+/ `conda` on `PATH`, then `exec`s the requested Python command while exporting
+`DIGIMON_PYTHON` for child processes. This avoids the noisy
+`conda-libmamba-solver` startup failure path and keeps `eval/run_agent_benchmark.py`
+plus MCP child-process launching on the same interpreter.
+
+### 2026-04-03 — codex — bug-pattern
+**After a high-confidence string entity hit, direct subject-anchor completions must beat bridge neighbors.**
+The pre-guard 619265 family failure was not just retrieval drift; bridge probing
+could override a correct direct subject resolution (`Ray Donovan`) with a
+neighboring broadcaster/network entity (`showtime`), after which dependency
+scope rewriting propagated the wrong node. Plan #28 now preserves direct
+autocompletions that resolve to the string-search anchor itself before
+considering bridge candidates. Verified by a bounded live rerun:
+`results/MuSiQue_gpt-5-4-mini_consolidated_20260403T130547Z.json` answered
+`12` correctly in `11` tool calls.
+
+### 2026-04-03 — codex — integration-issue
+**Fresh worktrees can still miss `Data/MuSiQue` even after artifact-root portability is fixed.**
+The live 619265 verification run succeeded only after passing
+`--data-root /home/brian/projects/Digimon_for_KG_application/Data` because the
+worktree's local `Data/` directory did not include the MuSiQue dataset. Treat
+dataset-root portability as a separate remaining gap from artifact-root
+portability.
+
+### 2026-04-03 — codex — performance
+**Do not treat the current fixed-setting 19q gate as decision-grade while helper-model Gemini quota is unstable.**
+The attempted baseline run `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T131543Z.json`
+was stopped at `7/19` completed because semantic-plan revise and
+atom-completion helpers were repeatedly failing with Gemini
+`429 RESOURCE_EXHAUSTED`. Under that condition DIGIMON falls back to draft
+plans and loses helper judgments, so a triple-run baseline would be dominated
+by provider instability rather than clean before/after controller signal.
+
+### 2026-04-03 — codex — integration-issue
+**DIGIMON helper structured calls had been bypassing the configured fallback chain.**
+The main benchmark lane already passed `fallback_models` into `llm_client`, but
+helper calls like semantic-plan revise and atom-completion were extracting only
+`agentic_llm.model` and calling `acall_llm_structured(...)` directly. Plan #28
+patched those helpers to forward `fallback_models` + retries, and a live smoke
+run then showed repeated Gemini `429 RESOURCE_EXHAUSTED` helper calls falling
+back instead of failing hard. However the same smoke artifact
+`results/MuSiQue_gpt-5-4-mini_consolidated_20260403T133705Z.json` regressed
+`619265` to answer `10`, and the benchmark summary still recorded
+`fallback_used_any=false`. Treat helper fallback quality and nested-fallback
+observability as the next blocker before re-spending on the 19q gate.
+
+### 2026-04-04 — codex — best-practice
+**Decision-trace architecture should split shared substrate, project declarations, and optional canonicalization adapters.**
+For decision-trace and modular-agent work, keep the ownership boundary
+explicit: shared infra should own the trace envelope, runtime declaration,
+persistence, and rendering; DIGIMON should only declare its own decision
+points and extractors. `onto-canon6` identity/canonicalization is most
+promising as an offline trace-normalization adapter, not as a default
+benchmark hot-path dependency.
+
+### 2026-04-04 — codex — bug-pattern
+**Plan #28 observability now exposes both helper decisions and atom lifecycle mutations per benchmark question.**
+`digimon_mcp_stdio_server.py` now writes helper structured-call events to
+`results/.helper_decision_trace.jsonl` and atom lifecycle events to
+`results/.atom_lifecycle_events.jsonl`, both tagged with the active
+`benchmark_trace_id` when available. `eval/run_agent_benchmark.py` harvests
+those sidecars into per-question result artifacts as `helper_decision_trace`
+and `atom_lifecycle_trace`, so first-bad-turn diagnosis no longer depends on
+manually reconstructing state from conversation text.
+
+### 2026-04-04 — codex — bug-pattern
+**The 619265-family regression was a structural bridge-autocomplete bug after a correct anchor, not a helper fallback bug.**
+With the new traces, the failing `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T010651Z.json`
+run showed `a1 -> Ray Donovan`, then `a2 -> showtime` via
+`resolution_mode=bridge_probe` on `entity_info(profile)`, which poisoned the
+downstream episode-count atom. The fix was to disallow bridge-style
+entity-profile autocomplete for structural relation targets like seasons,
+episodes, chapters, volumes, parts, and installments. After that guard, the
+bounded rerun `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T011403Z.json`
+removed the `showtime` mutation entirely and restored the correct final answer.
+
+### 2026-04-04 — codex — integration-issue
+**Normal `submit_answer` still accepts evidence-exhausted guesses with pending semantic-plan atoms.**
+The same successful rerun `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T011403Z.json`
+shows `A2` remained unresolved in both helper and atom lifecycle traces, yet
+`submit_answer` returned `{"status":"submitted","answer":"12"}` and the run
+scored as a pass. This is no longer hidden: use `atom_lifecycle_trace` plus
+`submit_answer_succeeded` to distinguish grounded completions from partial
+best-guess submissions. Any future tightening of this policy should be done
+carefully, because restoring a hard pending-atom submit gate will materially
+change benchmark behavior unless the forced-final path is redesigned at the
+same time.
+
+### 2026-04-04 — codex — bug-pattern
+**Restoring the normal pending-atom submit gate turns `619265` into an honest forced-terminal success, not a grounded controller pass.**
+After restoring strict rejection for normal `submit_answer` calls with pending
+atoms, the bounded rerun
+`results/MuSiQue_gpt-5-4-mini_consolidated_20260405T012611Z.json` still ended
+at the correct answer `12`, but only because the benchmark runner forced final
+acceptance after exhausting the 20-call retrieval budget. The artifact now
+records `submit_completion_mode=missing_required_submit`,
+`submit_forced_accept_on_budget_exhaustion=true`,
+`submit_validation_reason_counts.pending_atoms=3`,
+`primary_failure_class=control_churn`, and
+`secondary_failure_classes=["required_submit_missing"]`. Treat this as the
+current truthful diagnosis: the bridge-drift bug is fixed, but DIGIMON still
+cannot reliably convert that evidence into a grounded submit on this question.
+
+### 2026-04-04 — codex — integration-issue
+**Top-level benchmark result fields still lose pending-atom identity when a run ends via forced terminalization instead of a successful submit.**
+In `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T012611Z.json`, the
+result correctly exposes `submit_validation_reason_counts.pending_atoms=3`, but
+top-level fields such as `submit_pending_atom_ids` and
+`submit_pending_atom_count` are empty because no successful `submit_answer`
+payload survived into final result harvesting. The detailed evidence still
+exists in `tool_calls`, `helper_decision_trace`, and `atom_lifecycle_trace`,
+but the summary surface is incomplete. The next observability repair should
+preserve the last rejected-submit payload in the final per-question result.
+
+### 2026-04-04 — codex — best-practice
+**Benchmark submit provenance must be derived from full MCP submit records, not truncated previews.**
+`extract_tool_calls()` deliberately truncates `result_preview` to keep artifacts
+bounded, but submit validator payloads are small and carry the exact diagnostic
+state (`pending_ids`, `todo_status_line`, recovery policy). Plan #28 now
+derives submit observability from the full `MCPAgentResult.tool_calls` records
+when available, while still keeping the public artifact surface compact.
+
+### 2026-04-04 — codex — bug-pattern
+**A shared early breaker for repeated forced-terminal submit rejections converts `619265` from forced-final success into a grounded submit.**
+The follow-up smoke run
+`results/MuSiQue_gpt-5-4-mini_consolidated_20260405T014802Z.json` used the new
+`llm_client` breaker that short-circuits repeated submit-validator loops when
+the validator explicitly says the flow now requires a forced-terminal path.
+Outcome: `619265` still answered `12`, but now in `13` tool calls instead of
+`30`, with `submit_answer_call_count=2`, `submit_validation_reason_counts={"pending_atoms": 1}`,
+`submit_completion_mode=grounded_submit`, `submit_forced_accept_on_budget_exhaustion=false`,
+and no remaining failure event codes. The first submit was rejected on `a2`,
+the loop pivoted once, then completed the atom and submitted cleanly.
+
+### 2026-04-04 — codex — best-practice
+**Repeated unresolved atom judgments should feed a typed recovery hint back into query rewriting, not just sit in traces.**
+Plan #28 now turns repeated `atom_judged_unresolved` events on the same active
+atom into an `atom_reflection_generated` lifecycle event plus a stored
+recovery hint (`suggested_query`, target surface, avoid-values, next action).
+The query-contract layer consumes that hint when the agent is still issuing a
+generic active-atom query, so the next retrieval step can materially change
+instead of repeating the same broad search. This keeps "reflection" bounded
+and controller-visible rather than inflating helper prompts.
+
+### 2026-04-04 — codex — integration-issue
+**The first live reflection probe on `754156` was inconclusive because the question timed out before any tool call.**
+The smoke run
+`results/MuSiQue_gpt-5-4-mini_consolidated_20260405T024436Z.json` ended with
+`QUESTION_TIMEOUT`, `n_tool_calls=0`, empty helper/atom traces, and no
+provider failure. Treat this as a harness/runtime issue, not evidence for or
+against the new reflection loop. The next live validation step should rerun
+the same question once first-turn timeout behavior is understood, because this
+artifact contains no controller signal.
+
+### 2026-04-04 — codex — integration-issue
+**Benchmark per-turn timeout labels were overstating enforcement when the shared `llm_client` timeout policy was globally banned.**
+In this shell, `LLM_CLIENT_TIMEOUT_POLICY=ban`, which means provider/request
+timeouts are disabled even if DIGIMON passes `timeout=60` or `timeout=180` to
+`acall_llm` / `acall_llm_structured`. Before the latest runner repair,
+benchmark output still printed `turn_timeout=60s`, which was misleading. Plan
+#28 now distinguishes requested/planned turn timeout from
+`turn_timeout_runtime_enforced` and annotates labels like
+`disabled-by-policy(auto:60s)` so timeout artifacts stay truthful.
+
+### 2026-04-04 — codex — bug-pattern
+**`754156` is no longer a first-turn timeout case; it currently fails as unresolved-hop control churn plus forced-terminal answer acceptance.**
+The bounded rerun
+`results/MuSiQue_gpt-5-4-mini_consolidated_20260405T032944Z.json` completed in
+`135.34s` with `16` tool calls and no helper fallback. The controller resolved
+`A1 -> Myanmar`, then repeatedly failed to ground `A2` despite reflection
+redirecting search toward `Somali Muslim Ajuran Empire`. It eventually hit
+`CONTROL_CHURN_THRESHOLD_EXCEEDED`, forced-finalized `by airplanes`, and left
+`A2/A3/A4` pending. Treat this as a controller-policy problem (submit churn +
+forced-terminal acceptance under unresolved atoms), not as a raw timeout or
+prompt-only failure.
+
+### 2026-04-04 — codex — best-practice
+**Phase #30 made control-churn forced-final answers fail honestly in benchmark artifacts instead of scoring them as predictions.**
+The repair in `eval/run_agent_benchmark.py` now derives a local
+`forced_terminal_accept_reason` from failure codes plus pending-atom state
+before preserving any terminal answer. Verified probe
+`results/MuSiQue_gpt-5-4-mini_consolidated_20260405T040232Z.json` still ended
+via `CONTROL_CHURN_THRESHOLD_EXCEEDED`, but now records `predicted=''`,
+`submit_completion_mode=missing_required_submit`, and
+`forced_terminal_accept_reason='control_churn'`. Treat this as the new
+truthful benchmark contract: forced-terminal acceptance is not the same thing
+as a valid grounded submit.
+
+### 2026-04-04 — codex — integration-issue
+**`chunk_retrieve(method=by_ids)` can hide real evidence behind `LINEARIZATION_DATA_LOSS`, which is likely contributing to unresolved-hop controller churn.**
+Probe `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T035805Z.json`
+emitted:
+`LINEARIZATION_DATA_LOSS tool=chunk_retrieve method=by_ids ... raw has content but linearized says empty`.
+That means the controller may be seeing an effectively empty summary even when
+the raw chunk payload contains answer-bearing evidence. This is a high-value
+Phase #30 follow-up because controller anti-churn and recovery quality both
+depend on truthful tool linearization.
+
+### 2026-04-04 — codex — bug-pattern
+**Repeated full-list `todo_write` calls were revalidating already-completed atoms against stale unresolved payloads, which created fake controller churn.**
+Probe `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T041229Z.json`
+showed `a2` being correctly completed as `Myanmar`, then repeatedly failing
+again through `todo_write` because the full TODO list kept resubmitting the
+same done atom and `_validate_manual_todo_completion` re-ran against older
+unresolved evidence. After the idempotence repair, probe
+`results/MuSiQue_gpt-5-4-mini_consolidated_20260405T051256Z.json` records
+`atom_manual_reused` events for `a2`/`a3` instead of repeated
+`atom_manual_rejected` failures. Treat unchanged done-atom rewrites as
+state-preservation, not a fresh validation opportunity.
+
+### 2026-04-04 — codex — bug-pattern
+**`754156` no longer burns budget on repeated `todo_write` failures; the next blocker is wrong bridge propagation into `a3/a4`.**
+In the post-idempotence probe
+`results/MuSiQue_gpt-5-4-mini_consolidated_20260405T051256Z.json`, the run now
+fails honestly with `predicted=''`,
+`submit_completion_mode=missing_required_submit`, and pending atom `a4`, but
+there are no `atom_manual_rejected` events for completed `a2`. Instead, the
+controller resolves `a3` to `soviet union`, then `a4` inherits the wrong chain
+and repeated submit attempts are rejected under the shared TODO/evidence
+progress gates. This means the next bounded fix should target relation-specific
+recovery or bridge validation on `a3/a4`, not done-atom idempotence.
+
+### 2026-04-04 — codex — bug-pattern
+**The `754156` wrong-bridge completion is gone, but the controller still fails to follow through on the reflected recovery path.**
+Probe `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T053035Z.json`
+removed the earlier `a3 -> soviet union` bridge error: the latest run leaves
+`a3`/`a4` unresolved instead of accepting the wrong bridge candidate. But the
+controller still does not ground the Portuguese hop. It accumulates broad
+retrieval loops, never converts the reflection hint into a decisive recovery
+path, exhausts the 20-call budget, and then forced-finalizes `communist
+takeover` under `budget_exhaustion` with `submit_completion_mode =
+missing_required_submit`. The next bounded fix should target recovery-hint
+follow-through and loop suppression on unresolved atoms, not bridge
+validation.
+
+### 2026-04-04 — codex — integration-issue
+**The focused unit ladder was briefly blocked by a config bootstrap defect, now fixed by making `LLMConfig.region_name` nullable again.**
+
+### 2026-04-04 — codex — bug-pattern
+**A narrowed recovery-surface guard fixes the false `a2` blockage on `754156`, but the remaining failure is unchanged-evidence submit churn around unresolved `a3`.**
+Probe `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T054718Z.json`
+validated the refined controller policy after the bad `...T053930Z.json`
+regression: there were no policy-induced off-target blocks on `a2`, the run
+progressed far enough that only `a3` remained pending, and the bad `a3 ->
+soviet union` bridge completion stayed gone. The remaining failure family is
+now narrower: repeated rejected `submit_answer` attempts with an unchanged
+evidence digest accumulate tool-call errors until the benchmark runner hits
+budget exhaustion and forced-finalizes anyway. The next bounded fix should
+promote unresolved-atom repair or honest termination when submit evidence has
+not changed, not revisit recovery-surface routing.
+`Config/LLMConfig.py` had `region_name: str = None`, while
+`Option/Config2.yaml` omits that field. When DIGIMON imported through fallback
+config instantiation instead of the main YAML path, Pydantic rejected
+`llm.region_name=None` during test collection. Making the field
+`Optional[str]` restored the focused suite (`81 passed`) without changing any
+controller policy.
+
+### 2026-04-04 — codex — best-practice
+**Once DIGIMON can surface the blocked atom and repair hint, repeated suppressed submits should terminate early under `control_churn` rather than consuming the full tool budget.**
+Probe `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T060338Z.json`
+validated the shared breaker added in `llm_client` after the guidance path was
+still being ignored in `...T055724Z.json`. The run still failed, but it failed
+more truthfully: `forced_terminal_accept_reason` became `control_churn`
+instead of `budget_exhaustion`, tool calls dropped from `32` to `28`, and cost
+dropped from `$0.46` to `$0.41`. That means the next phase should focus on the
+remaining unresolved-hop reasoning itself, not on more submit-loop hygiene.

@@ -11,6 +11,8 @@ Utility scripts for development and CI. All scripts support `--help` for options
 | `sync_plan_status.py` | Sync plan status |
 | `merge_pr.py` | Merge PRs via GitHub CLI |
 | `check_doc_coupling.py` | Verify docs updated when source changes |
+| `validate_status_truth.py` | Check status/handoff claims against live code and artifacts |
+| `benchmark_iteration_report.py` | Summarize repeated benchmark runs into mean/spread + stability |
 
 ## Common Commands
 

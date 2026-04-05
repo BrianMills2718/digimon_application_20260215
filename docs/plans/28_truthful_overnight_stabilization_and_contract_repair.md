@@ -1,0 +1,521 @@
+# Plan #28: Truthful Overnight Stabilization And Contract Repair
+
+**Status:** In Progress
+**Type:** implementation
+**Priority:** High
+**Blocked By:** None
+**Blocks:** Next 19q / 50q decision-grade reruns
+
+---
+
+## Gap
+
+**Current:**
+
+The maintained DIGIMON benchmark lane is no longer blocked by missing product
+value. It already demonstrated a meaningful 50q MuSiQue lift over baseline
+(20.0% → 42.0% LLM-judge on 2026-03-26). The current blocker is **truthful
+execution**: the overnight handoff, `CURRENT_STATUS.md`, and some in-repo
+operating assumptions are now out of sync with the actual code and benchmark
+artifacts.
+
+Verified examples from the 2026-04-03 artifact set:
+
+1. **Question 619265 is misdiagnosed in the current handoff.**
+   The real corpus anchor is `"The Bag or the Bat"` → `Ray Donovan`
+   (`results/MuSiQue/corpus/Corpus.json`, doc_id 200 and 213). This is not
+   fundamentally a "Batman Beyond aggregate-summary trap" problem. The failing
+   path is an **exact-anchor/query-rewrite failure family** where the control
+   layer compacts the quoted title into `Bag Bat`, allowing semantic drift.
+
+2. **Question 754156 is also misdescribed in the handoff.**
+   The benchmark artifact gold is
+   `"The dynasty regrouped and defeated the Portuguese"`, not `Laos`.
+   The run artifacts show repeated premature submission of intermediate
+   geography (`Laos`, `Myanmar`) despite the final answer being an action/event
+   phrase. This is an **answer-kind / premature-submit / chain-completion**
+   problem, not an entity-name question.
+
+3. **Current repo truth drift exists in multiple control artifacts.**
+   - `prompts/agent_benchmark_consolidated.yaml` still says `version: "3.0"`
+     while the handoff and current prompt content describe later behavior.
+   - `CURRENT_STATUS.md` says `entity_search top_k=10 default`, but the live
+     consolidated tool default is `top_k=5` and `KNOWLEDGE.md` records that
+     10 was worse and was reverted.
+   - `Makefile` help text still says `bench-musique` uses `STAG_TURNS=4` while
+     the live default is `STAG_TURNS ?= 6`.
+
+4. **The tool surface does not fully match how the agent is already trying to
+   use it.**
+   - The agent repeatedly calls `entity_info(method="resolve", entity_name=...)`,
+     but the underlying implementation currently requires `entity_names`.
+   - The prompt encourages graph follow-ups generically, but some graph-mode
+     calls still fail when the agent has not yet resolved the required entity
+     IDs.
+
+**Target:**
+
+1. Restore a truthful execution surface: active plan, `CLAUDE.md`,
+   `CURRENT_STATUS.md`, prompt versioning, and Makefile help must match the
+   actual maintained lane.
+2. Repair the highest-confidence systemic failure family:
+   **exact-anchor preservation + tool-contract truthfulness**.
+3. Verify the repair on a frozen targeted slice before spending more budget on
+   full 19q / 50q reruns.
+4. Only continue broad overnight iteration if the maintained lane shows real
+   improvement under fixed settings and the controlling docs are truthful.
+
+---
+
+## Why This Matters
+
+Without a truthful control plane, "run continuously" becomes wasteful rather
+than autonomous. DIGIMON's current differentiator is not "being a GraphRAG
+implementation" in the abstract; it is the hypothesis that a control layer can
+choose retrieval surfaces adaptively. That hypothesis cannot be tested cleanly
+if:
+
+- the benchmark failure families are mislabeled,
+- the prompt/tool contract lies about how tools work,
+- or the overnight phase sequence keeps optimizing stale diagnoses.
+
+The first repair is therefore **truthful execution**, not another blind prompt
+tweak.
+
+---
+
+## References Reviewed
+
+- `CLAUDE.md`
+- `CURRENT_STATUS.md`
+- `KNOWLEDGE.md`
+- `docs/handoff_2026_04_03.md`
+- `docs/plans/27_retrieval_strategy_heuristics.md`
+- `prompts/agent_benchmark_consolidated.yaml`
+- `Core/MCP/tool_consolidation.py`
+- `digimon_mcp_stdio_server.py`
+- `tests/unit/test_semantic_plan_query_contract.py`
+- `tests/test_tool_consolidation.py`
+- `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T003635Z.json`
+- `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T045308Z.json`
+- `results/MuSiQue/corpus/Corpus.json`
+
+External comparators reviewed from official sources:
+
+- Microsoft GraphRAG
+- HippoRAG 2
+- LightRAG
+- Neo4j GraphRAG for Python
+
+---
+
+## Files Affected
+
+- `CLAUDE.md`
+- `CURRENT_STATUS.md`
+- `docs/plans/CLAUDE.md`
+- `docs/plans/28_truthful_overnight_stabilization_and_contract_repair.md`
+- `prompts/agent_benchmark_consolidated.yaml`
+- `Core/MCP/tool_consolidation.py`
+- `digimon_mcp_stdio_server.py`
+- `tests/unit/test_semantic_plan_query_contract.py`
+- `tests/test_tool_consolidation.py`
+- `scripts/validate_status_truth.py`
+- `scripts/benchmark_iteration_report.py`
+- `tests/unit/test_validate_status_truth.py`
+- `tests/unit/test_benchmark_iteration_report.py`
+- `docs/HANDOFF_TEMPLATE.md`
+- `docs/BENCHMARK_PROMOTION_POLICY.md`
+- `docs/reports/musique_19q_iteration_report_2026_04_03.md`
+- `docs/handoff_2026_04_03.md`
+
+---
+
+## Implementation Phases (next 24 hours)
+
+### Phase 0 — Truth Restoration
+
+Update the authoritative operating artifacts so the current overnight lane is
+based on verified behavior, not stale narrative.
+
+**Tasks**
+- Add a truthfulness gate to `CLAUDE.md`: if handoff/status docs conflict with
+  code or artifacts, correct the docs first and continue from verified state.
+- Create this plan and register it in `docs/plans/CLAUDE.md`.
+- Correct stale status facts:
+  - prompt version field
+  - live `top_k` default
+  - live `STAG_TURNS` default/help text
+  - 619265 / 754156 failure-family descriptions
+
+**Acceptance**
+- Active overnight plan exists and is linked from the plan index.
+- `CLAUDE.md` explicitly requires correcting stale diagnostics before continued
+  autonomous execution.
+- `CURRENT_STATUS.md` no longer contradicts the maintained code path on the
+  verified facts above.
+
+### Phase 1 — Exact-Anchor And Tool-Contract Repair
+
+Land the smallest general control-layer changes that directly address the most
+evidenced failure family.
+
+**Tasks**
+- Preserve quoted anchors / explicit titles in `_compact_search_query()` so
+  retrieval does not collapse `"The Bag or the Bat"` into `Bag Bat`.
+- Preserve explicit quoted anchors during active-atom query rewriting.
+- Allow consolidated `entity_info(method="resolve")` to accept single-name
+  calls that the agent is already attempting (`entity_name=...`), translating
+  them to the underlying `entity_names=[...]` contract.
+- Update prompt guidance to explicitly preserve quoted anchors and favor exact
+  text/string search before semantic drift when a question contains a title or
+  literal name span.
+
+**Acceptance**
+- New or updated unit tests cover quoted-anchor preservation.
+- New or updated unit tests cover single-name resolve compatibility.
+- Maintained tests for query-contract rewriting and consolidated tools pass.
+
+### Phase 2 — Targeted Verification
+
+Verify the slice on the minimal frozen set that exercises the repaired family.
+
+**Target questions**
+- `2hop__619265_45326` — quoted-title anchor preservation
+- `2hop__199513_801817` — namesake/alias + exact string/entity resolution
+- `3hop1__136129_87694_124169` — downstream chain depends on truthful atom closure
+- `4hop3__754156_88460_30152_20999` — answer-kind / premature-submit sanity check
+
+**Tasks**
+- Run targeted tests first.
+- Run bounded diagnostic reruns only after tests pass.
+- Record whether the repair changes retrieval trajectories in the expected way
+  (for example, whether exact quoted titles survive into effective queries).
+
+**Acceptance**
+- Deterministic tests pass.
+- At least one targeted runtime artifact shows the repaired contract behavior.
+- Any remaining miss is classified truthfully by failure family.
+
+### Phase 3 — Fixed-Setting 19q Baseline
+
+Only after Phases 0-2 are complete, re-establish the 19q baseline under one
+fixed configuration.
+
+**Tasks**
+- Run the 19q diagnostic set 3 times at identical settings.
+- Compute mean, spread, and per-question stability.
+- Update `CURRENT_STATUS.md` with the new baseline distribution.
+
+**Acceptance**
+- Three result artifacts exist at one fixed setting.
+- Mean and spread are recorded.
+- No claim of improvement is made from a single-run outlier.
+
+### Phase 4 — Spend / Continue / Pivot Gate
+
+Use the corrected evidence to decide whether another overnight sprint is
+warranted.
+
+**Continue spending time only if all are true**
+- the control plane is truthful,
+- the repaired slice reduces real failure behavior,
+- and the 19q mean is improving or the remaining misses are now cleanly
+  concentrated in one or two generalizable families.
+
+**Pivot away from custom DIGIMON control-layer work if any are true**
+- the same failure families remain after truthful contract repair,
+- the 19q mean does not improve beyond stochastic noise,
+- or most new work is rebuilding capabilities already available in maintained
+  GraphRAG libraries instead of testing DIGIMON's adaptive-routing thesis.
+
+---
+
+## Failure Modes And Diagnostics
+
+| Failure mode | Observable signal | Diagnosis path | Next action |
+|---|---|---|---|
+| Stale control artifact | Doc says X, code/artifact says Y | Compare handoff/status file to code defaults and latest result JSON | Correct docs before any new tuning |
+| Exact-anchor destruction | Effective query drops stopwords from quoted titles | Inspect `query_contract.effective_query` in tool previews | Preserve quoted spans in compaction/rewrite |
+| Tool contract mismatch | `entity_names is required`, `entity_ids is required`, validation errors | Check result JSON counts and question diagnose traces | Accept common aliases or tighten prompt instructions |
+| Premature intermediate submit | Final answer equals a mid-chain entity/place | Diagnose trace, compare gold/predicted with atom progression | Repair answer-type / chain-completion guidance, not the graph |
+| Benchmark-noise false confidence | One run spikes up or down | Require 3 fixed-setting runs | Report mean/spread, not single best |
+
+---
+
+## Simpler Alternatives / External Learnings
+
+These are not implementation tasks for this plan, but they shape the spend
+decision:
+
+1. **If the goal is production QA rather than control-policy research, DIGIMON
+   should stop rebuilding commodity GraphRAG infrastructure.**
+   Neo4j GraphRAG, LightRAG, and Microsoft GraphRAG already provide maintained
+   retrieval/index/query layers. DIGIMON should only own the adaptive control
+   layer or a clearly differentiated evaluation harness.
+
+2. **If the goal is better multi-hop retrieval with lower indexing cost, HippoRAG 2
+   is the strongest external baseline to compare against before doing more
+   custom graph-build work.**
+
+3. **If the goal is faster iteration and observability, LightRAG's current
+   tracing / citation / reranker defaults are a practical bar DIGIMON should
+   either meet or reuse, not ignore.**
+
+---
+
+## Acceptance Criteria
+
+- [x] Plan and plan index updated
+- [x] `CLAUDE.md` truthfulness gate added
+- [x] Quoted-anchor preservation implemented and tested
+- [x] `entity_info(resolve)` single-name compatibility implemented and tested
+- [x] Prompt/version/control artifacts updated to truthful state
+- [x] Truth validator + benchmark report tooling landed and verified
+- [x] Handoff/status/process docs updated to use generated truth surfaces
+- [x] Targeted verification completed and findings recorded
+- [x] 19q fixed-setting triple-run baseline explicitly deferred with reason
+
+## Progress (2026-04-02)
+
+- Plan created and linked from `docs/plans/CLAUDE.md`.
+- `CLAUDE.md` updated with a truthfulness gate for autonomous execution.
+- Implemented deterministic contract repairs:
+  - quoted-anchor preservation in `_compact_search_query()`
+  - consolidated `entity_info(method="resolve")` compatibility for single-name calls
+  - prompt guidance for exact quoted anchors
+- Verified with:
+  - `python -m compileall Core/MCP/tool_consolidation.py digimon_mcp_stdio_server.py`
+  - `/home/brian/projects/Digimon_for_KG_application/.venv/bin/pytest -q tests/unit/test_semantic_plan_query_contract.py tests/test_tool_consolidation.py`
+    → `54 passed`
+- Worktree runtime verification surfaced an operational prerequisite:
+  `eval/run_agent_benchmark.py` in a fresh worktree depends on local-only
+  `Option/Config2.yaml` and `results/MuSiQue/...` artifacts. This is now
+  recorded in `KNOWLEDGE.md` and must be provisioned explicitly for future
+  benchmark runs from claimed worktrees.
+- Bounded runtime probe on `2hop__619265_45326` produced live observability
+  traces (`trace_id=digimon.benchmark.MuSiQue.2hop__619265_45326.716b5580`).
+  The quoted anchor now survives into the live question state, but the run can
+  still drift later to a wrong bridge candidate (`showtime`). Conclusion:
+  exact-anchor preservation is necessary but not sufficient; the next fix must
+  constrain bridge selection once the source chunk already names the series.
+- Added worktree portability repairs:
+  - `scripts/runtime_paths.py` auto-resolves canonical artifact roots and the
+    DIGIMON runtime interpreter
+  - `scripts/run_with_digimon_python.py` replaces repo `conda run` entrypoints
+  - `make truth-check` / `make benchmark-report` no longer require a manual
+    `ARTIFACT_ROOT` in the normal case
+- Implemented post-anchor bridge guarding for high-confidence
+  `entity_search(method='string')` subject hits: if a direct completion resolves
+  to the anchored subject itself, bridge probes cannot override it with a
+  neighboring entity.
+- Verified the guard deterministically with:
+  - `python -m compileall digimon_mcp_stdio_server.py`
+  - `/home/brian/projects/Digimon_for_KG_application/.venv/bin/pytest -q tests/unit/test_semantic_plan_query_contract.py -k 'entity_search_string or bridge_probe or bridge_inference'`
+    → `12 passed`
+- Verified the guard in a bounded live rerun:
+  - `python scripts/run_with_digimon_python.py eval/run_agent_benchmark.py --agent-spec none --allow-missing-agent-spec --missing-agent-spec-reason relocated --dataset MuSiQue --data-root /home/brian/projects/Digimon_for_KG_application/Data --questions 2hop__619265_45326 --model openrouter/openai/gpt-5.4-mini --backend direct --retrieval-stagnation-turns 6 --question-delay 0 --tag plan28_anchor_guard_q619265`
+  - result artifact: `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T130547Z.json`
+  - outcome: `12/12`, `EM=1.0`, `LLM_EM=1.0`, `11` tool calls, no retrieval stagnation trigger
+- Remaining portability gap after the live rerun:
+  fresh worktrees can still lack `Data/MuSiQue`, so bounded benchmark reruns may
+  require `--data-root <canonical-checkout>/Data` until dataset provisioning is
+  made worktree-portable.
+- Attempted the fixed-setting 19q baseline with:
+  - `python scripts/run_with_digimon_python.py eval/run_agent_benchmark.py --agent-spec none --allow-missing-agent-spec --missing-agent-spec-reason relocated --dataset MuSiQue --data-root /home/brian/projects/Digimon_for_KG_application/Data --questions-file eval/fixtures/musique_19q_diagnostic_ids.txt --model openrouter/openai/gpt-5.4-mini --backend direct --retrieval-stagnation-turns 6 --question-delay 2 --tag plan28_guard_baseline_r1`
+  - partial artifact: `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T131543Z.json`
+  - partial log: `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T131543Z.log`
+- Deferred the full 19q triple-run gate after `7/19` completed questions because
+  semantic-plan revise and atom-completion helpers were hitting pervasive
+  Gemini `429 RESOURCE_EXHAUSTED` failures throughout the run. Under that
+  condition the baseline would measure provider quota instability as much as
+  DIGIMON logic, so spending two more runs would not be decision-grade.
+- Patched helper structured calls to forward configured `llm_client`
+  fallback models + retries instead of hard-pinning `agentic_llm.model`.
+  This covers semantic-plan revise/scope-repair, atom completion, contextual
+  place completion, bridge judging, bridge disambiguation, and
+  `select_analysis_mode`.
+- Live smoke verification after the patch:
+  - command:
+    `python scripts/run_with_digimon_python.py eval/run_agent_benchmark.py --agent-spec none --allow-missing-agent-spec --missing-agent-spec-reason relocated --dataset MuSiQue --data-root /home/brian/projects/Digimon_for_KG_application/Data --questions 2hop__619265_45326 --model openrouter/openai/gpt-5.4-mini --backend direct --retrieval-stagnation-turns 6 --question-delay 0 --tag plan28_helper_fallback_smoke`
+  - artifact: `results/MuSiQue_gpt-5-4-mini_consolidated_20260403T133705Z.json`
+  - result: completed, but regressed `619265` to predicted `10`
+  - live stderr showed repeated helper fallback events from
+    `gemini/gemini-2.5-flash` to `openrouter/openai/gpt-5.4-mini`
+  - remaining issue: artifact still reported `fallback_used_any=false`, so
+    nested helper fallback usage is not yet surfaced in benchmark provenance
+- Added process-enforcement tooling:
+  - `scripts/validate_status_truth.py` + `make truth-check`
+  - `scripts/benchmark_iteration_report.py` + `make benchmark-report`
+  - `docs/HANDOFF_TEMPLATE.md`
+  - `docs/BENCHMARK_PROMOTION_POLICY.md`
+- Generated `docs/reports/musique_19q_iteration_report_2026_04_03.md` from the
+  five maintained 19q status artifacts. Historical slice summary:
+  `43.16%` mean LLM_EM, `12.00` sample stdev, `31.58%-57.89%` range.
+- Rewrote `docs/handoff_2026_04_03.md` and tightened `CURRENT_STATUS.md` until
+  `python scripts/validate_status_truth.py --artifact-root <canonical-repo-root>`
+  reported a clean truth surface.
+- Added benchmark-side observability harvesting for:
+  - `results/.helper_decision_trace.jsonl` → per-question `helper_decision_trace`
+  - `results/.atom_lifecycle_events.jsonl` → per-question `atom_lifecycle_trace`
+  Both are now keyed by `benchmark_trace_id` when available, so diagnosis no
+  longer depends on reconstructing state transitions from `conversation_trace`.
+- The new traces exposed a more exact controller bug on `619265`:
+  after `a1 -> Ray Donovan`, `a2` could still autocomplete to `showtime` via
+  `entity_info(profile)` bridge probing, because structural relation targets
+  like seasons were being treated like ordinary bridge entities.
+- Patched structural relation atoms to reject bridge-style autocomplete from
+  loose graph neighbors. Guarded terms currently include seasons, episodes,
+  chapters, volumes, parts, rounds, and installments.
+- Verified the new observability + controller guard with:
+  - `python -m compileall digimon_mcp_stdio_server.py eval/run_agent_benchmark.py`
+  - `/home/brian/projects/Digimon_for_KG_application/.venv/bin/pytest -q tests/unit/test_semantic_plan_query_contract.py tests/unit/test_benchmark_tool_modes.py`
+    → `59 passed`
+  - bounded live rerun:
+    `python scripts/run_with_digimon_python.py eval/run_agent_benchmark.py --agent-spec none --allow-missing-agent-spec --missing-agent-spec-reason relocated --dataset MuSiQue --data-root /home/brian/projects/Digimon_for_KG_application/Data --questions 2hop__619265_45326 --model openrouter/openai/gpt-5.4-mini --backend direct --retrieval-stagnation-turns 6 --question-delay 0 --timeout 180 --tag plan28_helper_trace_smoke_r4`
+    artifact: `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T011403Z.json`
+    outcome: `12/12`, `EM=1.0`, `LLM_EM=1.0`, helper trace attached, atom lifecycle trace attached, no `showtime` mutation
+- New explicitly documented residual issue after the successful rerun:
+  `submit_answer` still accepts best-effort partial submissions with pending
+  semantic-plan atoms. In the same `20260405T011403Z` artifact, `A2` remained
+  unresolved in both helper and atom lifecycle traces, yet submission of `12`
+  succeeded and the run passed. Treat this as the next controller-policy
+  question; do not silently tighten it without redesigning the forced-final
+  behavior at the same time.
+- Implemented the controller-policy tightening as a bounded slice:
+  normal `submit_answer` now rejects pending semantic-plan atoms again, while
+  the benchmark runner records pending-submit provenance fields and still
+  preserves the forced-terminal acceptance path when the tool budget is
+  exhausted.
+- Verified the tightened gate deterministically with:
+  - `python -m compileall digimon_mcp_stdio_server.py eval/run_agent_benchmark.py`
+  - `/home/brian/projects/Digimon_for_KG_application/.venv/bin/pytest -q tests/unit/test_semantic_plan_query_contract.py tests/unit/test_benchmark_tool_modes.py`
+    → `62 passed`
+- Verified the tightened gate in a bounded live rerun:
+  - command:
+    `python scripts/run_with_digimon_python.py eval/run_agent_benchmark.py --agent-spec none --allow-missing-agent-spec --missing-agent-spec-reason relocated --dataset MuSiQue --data-root /home/brian/projects/Digimon_for_KG_application/Data --questions 2hop__619265_45326 --model openrouter/openai/gpt-5.4-mini --backend direct --retrieval-stagnation-turns 6 --question-delay 0 --timeout 180 --tag plan28_submit_gate_smoke_r1`
+  - artifact: `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T012611Z.json`
+  - outcome: still `12/12`, but no grounded submit occurred
+  - truthful interpretation:
+    - `submit_answer` was rejected three times for `pending_atoms`
+    - the agent then churned through the remaining budget
+    - benchmark finalization forced acceptance after budget exhaustion
+    - result classification became
+      `submit_completion_mode=missing_required_submit`,
+      `submit_forced_accept_on_budget_exhaustion=true`,
+      `primary_failure_class=control_churn`,
+      `secondary_failure_classes=["required_submit_missing"]`
+- New blocker after the tightened gate:
+  the bridge-drift class is fixed, but `619265` still reaches a correct answer
+  only through forced-terminal acceptance. The next work should focus on
+  reducing post-rejection control churn and preserving the last rejected-submit
+  payload in top-level benchmark result fields, because
+  `submit_pending_atom_ids` is still empty in the final artifact when no
+  successful submit occurs.
+- Implemented both follow-up repairs:
+  - benchmark submit observability now derives from full `MCPAgentResult`
+    submit records instead of truncated `result_preview` strings
+  - shared `llm_client` turn policy now breaks early when repeated submit
+    validator rejections explicitly signal that the flow has moved into a
+    forced-terminal path
+- Verified the repairs with:
+  - `python -m compileall eval/run_agent_benchmark.py`
+  - `/home/brian/projects/Digimon_for_KG_application/.venv/bin/pytest -q tests/unit/test_benchmark_tool_modes.py`
+  - `python -m compileall /home/brian/projects/llm_client/llm_client/agent/mcp_turn_outcomes.py /home/brian/projects/llm_client/tests/test_mcp_agent.py`
+  - `pytest -q /home/brian/projects/llm_client/tests/test_mcp_agent.py -k 'submit_retry_requires_new_evidence_signal or repeated_submit_rejections_can_force_final_early'`
+- Verified the end-to-end effect in a bounded live rerun:
+  - command:
+    `python scripts/run_with_digimon_python.py eval/run_agent_benchmark.py --agent-spec none --allow-missing-agent-spec --missing-agent-spec-reason relocated --dataset MuSiQue --data-root /home/brian/projects/Digimon_for_KG_application/Data --questions 2hop__619265_45326 --model openrouter/openai/gpt-5.4-mini --backend direct --retrieval-stagnation-turns 6 --question-delay 0 --timeout 180 --tag plan28_submit_breaker_smoke_r2`
+  - artifact: `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T014802Z.json`
+  - outcome:
+    - still `12/12`
+    - `13` tool calls instead of `30`
+    - one rejected submit preserved in provenance (`submit_validation_reason_counts.pending_atoms=1`)
+    - final accepted submit is now grounded (`submit_completion_mode=grounded_submit`)
+    - no forced-final acceptance (`submit_forced_accept_on_budget_exhaustion=false`)
+- Updated interpretation:
+  `619265` is now a genuinely grounded pass under the current controller stack.
+  The next diagnostic target should be another premature-submit family question
+  such as `754156` or `199513`, not more churn on `619265`.
+- Implemented a bounded reflection loop for stalled atoms:
+  - repeated `atom_judged_unresolved` events on the same active atom now
+    trigger a typed recovery helper that emits `diagnosis`, `suggested_query`,
+    target surface/method, avoid-values, and one concrete next action
+  - the resulting `atom_reflection_generated` event is persisted into atom
+    lifecycle traces
+  - the active-atom query-contract layer consumes the recovery hint when the
+    agent is still issuing a generic atom query, so the next retrieval step can
+    materially change instead of replaying the same broad search
+- Verified the reflection slice with:
+  - `python -m compileall digimon_mcp_stdio_server.py`
+  - `/home/brian/projects/Digimon_for_KG_application/.venv/bin/pytest -q tests/unit/test_semantic_plan_query_contract.py tests/unit/test_benchmark_tool_modes.py`
+    → `71 passed`
+- First live reflection probe status:
+  - command:
+    `python scripts/run_with_digimon_python.py eval/run_agent_benchmark.py --agent-spec none --allow-missing-agent-spec --missing-agent-spec-reason relocated --dataset MuSiQue --data-root /home/brian/projects/Digimon_for_KG_application/Data --questions 4hop3__754156_88460_30152_20999 --model openrouter/openai/gpt-5.4-mini --backend direct --retrieval-stagnation-turns 6 --question-delay 0 --timeout 180 --tag plan28_atom_reflection_smoke_q754156_r6`
+  - artifact: `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T024436Z.json`
+  - outcome: inconclusive runtime timeout before first tool call
+  - truthful interpretation:
+    - `QUESTION_TIMEOUT`
+    - `n_tool_calls=0`
+    - no helper decision trace
+    - no atom lifecycle trace
+    - this artifact does not validate or invalidate the new reflection logic
+      because controller execution never actually started
+  - next step:
+    understand the first-turn timeout on this question, then rerun the same
+    probe to evaluate whether the stored recovery hint changes the controller's
+    next retrieval query in a live trace
+- Timeout provenance repair landed in the benchmark runner:
+  - timeout artifacts now reconstruct partial tool telemetry from
+    `foundation_events` + `llm_calls` when cancellation loses the in-memory
+    partial result
+  - the runner now snapshots observability DB row offsets at question start and
+    harvests only the current question's appended rows on timeout
+  - per-turn timeout defaults are now truthful: omitted `--turn-timeout`
+    resolves to `min(question_timeout, 60)` instead of silently acting like
+    explicit `0`
+  - the benchmark surface now distinguishes:
+    - `turn_timeout_requested`
+    - `turn_timeout_planned`
+    - `turn_timeout_runtime_enforced`
+    - `turn_timeout_policy`
+  - when the shared policy disables request timeouts, labels now render as
+    `disabled-by-policy(auto:60s)` rather than pretending the timeout is live
+- Follow-up live probe on `754156` after the timeout/observability repair:
+  - command:
+    `python scripts/run_with_digimon_python.py eval/run_agent_benchmark.py --agent-spec none --allow-missing-agent-spec --missing-agent-spec-reason relocated --dataset MuSiQue --data-root /home/brian/projects/Digimon_for_KG_application/Data --questions 4hop3__754156_88460_30152_20999 --model openrouter/openai/gpt-5.4-mini --backend direct --retrieval-stagnation-turns 6 --question-delay 0 --timeout 180 --tag plan28_timeout_obs_r7`
+  - artifact: `results/MuSiQue_gpt-5-4-mini_consolidated_20260405T032944Z.json`
+  - outcome:
+    - no first-turn timeout
+    - completed in `135.34s` with `16` tool calls
+    - `A1` grounded to `Myanmar`
+    - `A2/A3/A4` remained pending
+    - repeated submit rejections escalated to
+      `CONTROL_CHURN_THRESHOLD_EXCEEDED`
+    - forced-terminal acceptance produced final answer `by airplanes`
+  - truthful interpretation:
+    - the reflection loop did change the controller path and produced useful
+      `atom_reflection_generated` events
+    - the current `754156` bottleneck is not missing reflection and not raw
+      timeout behavior
+    - it is unresolved-hop controller churn plus forced-terminal answer
+      acceptance while multiple atoms remain pending
+  - important environment note:
+    - this shell currently has `LLM_CLIENT_TIMEOUT_POLICY=ban`
+    - direct benchmark runs therefore cannot rely on provider/request timeout
+      enforcement even when a planned per-turn timeout exists
+    - the runner now surfaces that mismatch truthfully; it does not yet
+      override the shared timeout policy
+
+---
+
+## Notes
+
+- This plan intentionally does **not** assume the current handoff diagnosis is
+  correct. Verified artifacts outrank narrative summaries.
+- No question-specific patches are allowed. The repaired rules must generalize
+  to any quoted title / exact-anchor retrieval and any single-name resolve call.
+- If Phase 2 shows no signal, do **not** escalate into more prompt churn. Move
+  to the spend/pivot gate and reassess whether DIGIMON's custom controller is
+  still the right place to invest.
